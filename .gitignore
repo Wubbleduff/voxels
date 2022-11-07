@@ -1,0 +1,10 @@
+x64/
+x86/
+.vs/
+run_trees/
+output/
+intermediate/
+lib/glad/
+lib/glfw-3.3.4.bin.WIN64/
+
+imgui.ini
