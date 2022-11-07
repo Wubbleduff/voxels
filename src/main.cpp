@@ -13,9 +13,9 @@
 #include "game_math.h"
 
 // TODO  move
-static const u32 chunk_w = 32;
+static const u32 chunk_w = 128;
 static const u32 chunk_h = 32;
-static const u32 chunk_d = 32;
+static const u32 chunk_d = 128;
 static const u32 MAX_VOXELS = chunk_w*chunk_h*chunk_d;
 static const u32 NUM_VOXEL_DATA_FIELDS = 3;
 
@@ -396,7 +396,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
         assert(graphics_state->batch_voxel_shader_program != -1);
 
         const u32 voxel_buffer_size = SHADER_BUFFER_WIDTH * NUM_VOXEL_DATA_FIELDS * sizeof(f32);
-        assert(MAX_VOXELS * NUM_VOXEL_DATA_FIELDS * sizeof(f32) < voxel_buffer_size);
+        //assert(MAX_VOXELS * NUM_VOXEL_DATA_FIELDS * sizeof(f32) < voxel_buffer_size);
         glGenBuffers(1, &graphics_state->batch_voxel_ssbo);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, graphics_state->batch_voxel_ssbo);
         glBufferData(GL_SHADER_STORAGE_BUFFER, voxel_buffer_size, nullptr, GL_DYNAMIC_DRAW);
@@ -474,7 +474,18 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 graphics_state->camera_pos += normalize(camera_vel) * TIME_STEP * 30.0f;
             }
 
+            static bool gen = true;
+            static f32 ox = 0.025f;
+            static f32 oy = 0.025f;
+            static f32 scale = 1.0f;
+            gen = ImGui::DragFloat("x", &ox, 0.001f) || gen;
+            gen = ImGui::DragFloat("y", &oy, 0.001f) || gen;
+            gen = ImGui::DragFloat("scale", &scale) || gen;
+            ldif(gen)
             {
+                u32 num_voxels = 0;
+                static f32 data[NUM_VOXEL_DATA_FIELDS][MAX_VOXELS] = {};
+
                 glUseProgram(graphics_state->batch_voxel_shader_program);
                 check_gl_errors("use program");
 
@@ -486,42 +497,44 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 glBindVertexArray(graphics_state->batch_voxel_vao);
                 glBindBuffer(GL_ARRAY_BUFFER, graphics_state->batch_voxel_vbo);
 
-#if 1
-                static f32 data[NUM_VOXEL_DATA_FIELDS][MAX_VOXELS] = {};
-                static bool gen = true;
-                static f32 ox = 0.025f;
-                static f32 oy = 0.025f;
-                static f32 scale = 1.0f;
-                gen = ImGui::DragFloat("x", &ox, 0.001f) || gen;
-                gen = ImGui::DragFloat("y", &oy, 0.001f) || gen;
-                gen = ImGui::DragFloat("scale", &scale) || gen;
-                u32 num_voxels = chunk_w*chunk_h*chunk_d;
-                if(gen)
+                for(u32 chunk_i = 0; chunk_i < 2; chunk_i++)
                 {
-                    for(u32 y = 0; y < chunk_h; y++)
+                    for(s32 y = 0; y < chunk_h; y++)
                     {
-                        for(u32 z = 0; z < chunk_d; z++)
+                        for(s32 z = 0; z < chunk_d; z++)
                         {
-                            for(u32 x = 0; x < chunk_w; x++)
+                            for(s32 x = 0; x < chunk_w; x++)
                             {
-                                f32 height = max(perlin_noise(x*ox, z*oy)*scale + 2.0f, 2.0f);
+                                s32 X = x + chunk_i*chunk_w;
+                                //s32 X = x;
+                                f32 height = max(perlin_noise(X*ox, z*oy)*scale + 2.0f, 2.0f);
 
-                                if((f32)y < height)
+                                s32 x0 = X - 1;
+                                s32 x1 = X + 1;
+                                s32 z0 = z - 1;
+                                s32 z1 = z + 1;
+
+                                f32 height_x0 = max(perlin_noise(x0*ox, z*oy)*scale + 2.0f, 2.0f);
+                                f32 height_x1 = max(perlin_noise(x1*ox, z*oy)*scale + 2.0f, 2.0f);
+                                f32 height_z0 = max(perlin_noise(X*ox, z0*oy)*scale + 2.0f, 2.0f);
+                                f32 height_z1 = max(perlin_noise(X*ox, z1*oy)*scale + 2.0f, 2.0f);
+
+                                float Y = (f32)y;
+                                bool surrounded =
+                                    Y < height_x0 && Y < height_x1 &&
+                                    Y + 1 < height && Y - 1 < height &&
+                                    Y < height_z0 && Y < height_z1;
+
+                                if((f32)y < height && !surrounded)
                                 {
-                                    data[0][y*chunk_w*chunk_d + z*chunk_d + x] = (f32)x;
-                                    data[1][y*chunk_w*chunk_d + z*chunk_d + x] = (f32)y;
-                                    data[2][y*chunk_w*chunk_d + z*chunk_d + x] = (f32)z;
-                                }
-                                else
-                                {
-                                    data[0][y*chunk_w*chunk_d + z*chunk_d + x] = 0.0f;
-                                    data[1][y*chunk_w*chunk_d + z*chunk_d + x] = 0.0f;
-                                    data[2][y*chunk_w*chunk_d + z*chunk_d + x] = 0.0f;
+                                    data[0][num_voxels] = (f32)X;
+                                    data[1][num_voxels] = (f32)y;
+                                    data[2][num_voxels] = (f32)z;
+                                    num_voxels++;
                                 }
                             }
                         }
                     }
-
 
                     u32 offset_x = 0*SHADER_BUFFER_WIDTH*sizeof(f32);
                     u32 offset_y = 1*SHADER_BUFFER_WIDTH*sizeof(f32);
@@ -533,26 +546,14 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                     glBufferSubData(GL_SHADER_STORAGE_BUFFER, offset_z, size, data[2]);
                     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, graphics_state->batch_voxel_ssbo);
 
-                    gen = false;
+                    ImGui::Text("num_voxels %i", num_voxels);
+
+                    glDrawElementsInstanced(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0, num_voxels);
+                    check_gl_errors("draw");
                 }
-#else
-                static const u32 NUM_VOXELS = 4;
-                static f32 data[NUM_VOXEL_DATA_FIELDS][MAX_VOXELS] = {
-                    {0.0f, 0.0f, 0.0f, 0.0f},
-                    {0.0f, 0.0f, 0.0f, 0.0f},
-                    {0.0f, 2.0f, 4.0f, 6.0f},
-                };
 
-                glBindBuffer(GL_SHADER_STORAGE_BUFFER, graphics_state->batch_voxel_ssbo);
-                glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0*SHADER_BUFFER_WIDTH*sizeof(f32), sizeof(f32) * NUM_VOXELS, data[0]);
-                glBufferSubData(GL_SHADER_STORAGE_BUFFER, 1*SHADER_BUFFER_WIDTH*sizeof(f32), sizeof(f32) * NUM_VOXELS, data[1]);
-                glBufferSubData(GL_SHADER_STORAGE_BUFFER, 2*SHADER_BUFFER_WIDTH*sizeof(f32), sizeof(f32) * NUM_VOXELS, data[2]);
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, graphics_state->batch_voxel_ssbo);
-#endif
-
-                glDrawElementsInstanced(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0, num_voxels);
-                check_gl_errors("draw");
             }
+            gen = false;
 
             {
                 f64 frame_ms = (glfwGetTime() - current_time) * 1000.0;
