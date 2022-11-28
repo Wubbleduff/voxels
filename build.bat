@@ -13,7 +13,7 @@ set INCLUDE_DIRS=/I"src" /I"lib\glad\include" /I"lib\glfw\include" /I"lib\imgui"
 set LIBS=user32.lib gdi32.lib shell32.lib opengl32.lib lib\glfw\glfw.lib
 
 set DEBUG_MACROS=/DDEBUG
-set DEBUG_COMPILE_FLAGS=/c /Zi /EHsc /Fo%INTERMEDIATE%\
+set DEBUG_COMPILE_FLAGS=/c /O2 /Zi /EHsc /Fo%INTERMEDIATE%\
 
 
 mkdir %INTERMEDIATE%

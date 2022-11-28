@@ -747,6 +747,7 @@ static v2 random_gradient(s32 x, s32 y)
     float random = a * (3.14159265 / ~(~0u >> 1));
     return v2(cosf(random), sinf(random));
 }
+
 static float smoothstep(float a0, float a1, float w)
 {
     return (a1 - a0) * (3.0 - w * 2.0) * w * w + a0;
@@ -755,9 +756,9 @@ static float perlin_noise(float x, float y)
 {
     v2 p = v2(x, y);
 
-    float x0 = (s32)x;
+    float x0 = x > 0.0f ? (s32)x : (s32)(x - 1.0f);
     float x1 = x0 + 1;
-    float y0 = (s32)y;
+    float y0 = y > 0.0f ? (s32)y : (s32)(y - 1.0f);
     float y1 = y0 + 1;
 
     v2 d0 = p - v2(x0, y0);
