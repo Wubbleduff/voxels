@@ -69,11 +69,40 @@ struct v2i
     }
 };
 
+struct mat3
+{
+    float m[3][3];
+    
+    mat3() : m {
+        {1.0f, 0.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f},
+        {0.0f, 0.0f, 0.0f} }
+    {}
+    
+    mat3(float aa, float ab, float ac,
+         float ba, float bb, float bc,
+         float ca, float cb, float cc) :
+    m { {aa, ab, ac},
+        {ba, bb, bc},
+        {ca, cb, cc} }
+    {}
+    
+    const float *operator[](unsigned i) const
+    {
+        return m[i];
+    }
+    float *operator[](unsigned i)
+    {
+        return m[i];
+    }
+};
+
 struct mat4
 {
     float m[4][4];
     
-    mat4() : m { {1.0f, 0.0f, 0.0f, 0.0f},
+    mat4() : m {
+        {1.0f, 0.0f, 0.0f, 0.0f},
         {0.0f, 1.0f, 0.0f, 0.0f},
         {0.0f, 0.0f, 1.0f, 0.0f},
         {0.0f, 0.0f, 0.0f, 1.0f} }
@@ -462,6 +491,36 @@ static v3 hsv_to_rgb(v3 hsv)
 
 
 // This function was made only for the matrix-vector multiplication
+static float dot3v(const float *a, v3 b)
+{
+    return (a[0] * b.x) + (a[1] * b.y) + (a[2] * b.z);
+}
+static v3 operator*(const mat3 &lhs, v3 rhs)
+{
+    v3 result;
+    result.x = dot3v(lhs[0], rhs);
+    result.y = dot3v(lhs[1], rhs);
+    result.z = dot3v(lhs[2], rhs);
+    return result;
+}
+static mat3 operator*(const mat3 &lhs, const mat3 &rhs)
+{
+    mat3 product;
+    for(unsigned row = 0; row < 3; row++)
+    {
+        for(unsigned col = 0; col < 3; col++)
+        {
+            float dot = 0.0f;
+            for(unsigned i = 0; i < 3; i++)
+            {
+                dot += lhs.m[row][i] * rhs.m[i][col];
+            }
+            product[row][col] = dot;
+        }
+    }
+    return product;
+}
+// This function was made only for the matrix-vector multiplication
 static float dot4v(const float *a, v4 b)
 {
     return (a[0] * b.x) + (a[1] * b.y) + (a[2] * b.z) + (a[3] * b.w);
@@ -695,6 +754,19 @@ static mat4 make_z_axis_rotation_matrix(float radians)
         0.0f, 0.0f, 0.0f, 1.0f
     };
 
+    return result;
+}
+
+static mat3 make_axis_rotation_matrix(float rad, v3 u)
+{
+    float c = cosf(rad);
+    float s = sinf(rad);
+    mat3 result =
+    {
+        c + u.x*u.x*(1.0f - c),      u.x*u.y*(1.0f - c) - u.z*s,  u.x*u.z*(1.0f - c) + u.y*s,
+        u.y*u.x*(1.0f - c) + u.z*s,  c + u.y*u.y*(1.0f - c),      u.y*u.z*(1.0f - c) - u.x*s,
+        u.z*u.x*(1.0f - c) - u.y*s,  u.z*u.y*(1.0f - c) + u.x*s,  c + u.z*u.z*(1.0f - c)
+    };
     return result;
 }
 

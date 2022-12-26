@@ -30,27 +30,11 @@ void main()
     float offset_y = py[gl_InstanceID];
     float offset_z = pz[gl_InstanceID];
 
-    // TODO speed
-    mat4 translate = mat4(
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        offset_x, offset_y, offset_z, 1.0f
-    );
-
-    mat4 world_m_object = translate;
-
     model_position = vec4(a_x, a_y, a_z, 1.0f);
-    world_position = world_m_object * vec4(a_x, a_y, a_z, 1.0f);
+    world_position = vec4(a_x + offset_x, a_y + offset_y, a_z + offset_z, 1.0f);
     view_position = m_view * world_position;
 
-
-
-
-
-
     int color_tmp = color[gl_InstanceID];
-
     int r = (color_tmp & 0xFF000000) >> 24;
     int g = (color_tmp & 0x00FF0000) >> 16;
     int b = (color_tmp & 0x0000FF00) >> 8;

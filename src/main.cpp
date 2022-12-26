@@ -49,6 +49,14 @@ struct GraphicsState
     //f32 camera_width;
     f32 camera_fov;
     f32 view_dist;
+    f32 near_plane_dist;
+
+    f32 voxel_vertices[32] =
+    {
+         0.5f,  0.5f, -0.5f, -0.5f,  0.5f,  0.5f, -0.5f, -0.5f, // X
+         0.5f, -0.5f, -0.5f,  0.5f,  0.5f, -0.5f, -0.5f,  0.5f, // Y
+        -0.5f, -0.5f, -0.5f, -0.5f,  0.5f,  0.5f,  0.5f,  0.5f  // Z
+    };
 };
 static GraphicsState *graphics_state = nullptr;
 
@@ -303,16 +311,14 @@ static void reshape(GLFWwindow *window, s32 width, s32 height)
 // TODO speed
 mat4 view_m_world()
 {
-
-    mat4 y_rot = make_y_axis_rotation_matrix(graphics_state->camera_y_rot);
-    mat4 x_rot = make_x_axis_rotation_matrix(graphics_state->camera_x_rot);
-
-    //return make_translation_matrix(-graphics_state->camera_pos) * x_rot * y_rot;
-    return x_rot * y_rot * make_translation_matrix(-graphics_state->camera_pos);
+    mat4 y_rot = make_y_axis_rotation_matrix(-graphics_state->camera_y_rot);
+    mat4 x_rot = make_x_axis_rotation_matrix(-graphics_state->camera_x_rot);
+    mat4 result = x_rot * y_rot * make_translation_matrix(-graphics_state->camera_pos);
+    return result;
 }
 mat4 clip_m_view()
 {
-    static f32 n = 1.0f;
+    static f32 n = graphics_state->near_plane_dist;
     static f32 f = graphics_state->view_dist;
     f32 fov = deg_to_rad(graphics_state->camera_fov);
     f32 r = -(f + n) / (f - n);
@@ -324,18 +330,17 @@ mat4 clip_m_view()
          0.0f, 0.0f, r, s,
          0.0f, 0.0f, -1.0f, 0.0f
     };
-    
     return result;
 }
 
-static void terrain(VoxelData *out, u32 width, u32 depth, float noise_scale_x, float noise_scale_y, float noise_scale_z)
+static void terrain(VoxelData *out, u32 width, u32 depth, f32 noise_scale_x, f32 noise_scale_y, f32 noise_scale_z)
 {
     out->num = 0;
 
     auto noise = [noise_scale_x, noise_scale_y, noise_scale_z](s32 x_, s32 z_)
     {
         //return (perlin_noise(x_*noise_scale_x, z_*noise_scale_z)*0.5f + 0.5f)*noise_scale_y;
-        float n = (perlin_noise(x_*noise_scale_x, z_*noise_scale_z)*0.5f + 0.5f)*noise_scale_y;
+        f32 n = (perlin_noise(x_*noise_scale_x, z_*noise_scale_z)*0.5f + 0.5f)*noise_scale_y;
         n += (perlin_noise(x_*noise_scale_x*0.1f, z_*noise_scale_z*0.1f)*0.5f + 0.5f)*noise_scale_y*10.0f;
 
         const static s32 s_x[] = {128, 512, -8*128,  7*128, 7*128, -8*128};
@@ -459,10 +464,12 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
         glfwGetFramebufferSize(graphics_state->window, &framebuffer_width, &framebuffer_height);
         reshape(graphics_state->window, framebuffer_width, framebuffer_height);
 
-        graphics_state->camera_pos = v3(0.0f, 32.0f, 0.0f);
-        graphics_state->camera_x_rot = 0.5f;
+        graphics_state->camera_pos = v3(0.0f, 0.0f, 0.0f);
+        graphics_state->camera_x_rot = 0.0f;
+        graphics_state->camera_y_rot = M_PI;
         graphics_state->camera_fov = 90.0f;
         graphics_state->view_dist = 5000.0f;
+        graphics_state->near_plane_dist = 1.0f;
 
         glGenVertexArrays(1, &graphics_state->batch_voxel_vao);
         glBindVertexArray(graphics_state->batch_voxel_vao);
@@ -471,12 +478,6 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
         // https://www.khronos.org/opengl/wiki/Shader_Storage_Buffer_Object
         glGenBuffers(1, &graphics_state->batch_voxel_vbo);
         check_gl_errors("vbo");
-        static f32 voxel_vertices[] =
-        {
-             0.5f,  0.5f, -0.5f, -0.5f,  0.5f,  0.5f, -0.5f, -0.5f,
-             0.5f, -0.5f, -0.5f,  0.5f,  0.5f, -0.5f, -0.5f,  0.5f, 
-            -0.5f, -0.5f, -0.5f, -0.5f,  0.5f,  0.5f,  0.5f,  0.5f,
-        };
         static u32 voxel_indices[] = 
         {
             4, 0, 3,
@@ -494,7 +495,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
         };
 
         glBindBuffer(GL_ARRAY_BUFFER, graphics_state->batch_voxel_vbo);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(voxel_vertices), voxel_vertices, GL_STATIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(graphics_state->voxel_vertices), graphics_state->voxel_vertices, GL_STATIC_DRAW);
         check_gl_errors("vbo voxel vertices");
 
         glGenBuffers(1, &graphics_state->batch_voxel_ebo);
@@ -542,11 +543,19 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
     VoxelRenderData * __restrict voxel_render_data = new VoxelRenderData;
 
     static f32 noise_scale_x = 0.008f;
-    static f32 noise_scale_y = 48.0f;
+    static f32 noise_scale_y = 20.0f;
     static f32 noise_scale_z = 0.008f;
     static const u32 WIDTH = 128;
     static const u32 DEPTH = 128;
+#if 1
     terrain(all_voxel_data, WIDTH, DEPTH, noise_scale_x, noise_scale_y, noise_scale_z);
+#else
+    all_voxel_data->x[0] = 0.0f;
+    all_voxel_data->y[0] = 0.0f;
+    all_voxel_data->z[0] = 10.0f;
+    all_voxel_data->color[0] = 0xFFFFFFFF;
+    all_voxel_data->num++;
+#endif
 
     f32 frame_timer = 0.0f;
     f32 last_time = 0.0f;
@@ -577,29 +586,31 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             running = !glfwGetKey(graphics_state->window, GLFW_KEY_ESCAPE) && !glfwWindowShouldClose(graphics_state->window);
 
             {
+                ImGui::Text("camera pos (%f, %f, %f)", graphics_state->camera_pos.x, graphics_state->camera_pos.y, graphics_state->camera_pos.z);
+                ImGui::Text("camera x rot %f", graphics_state->camera_x_rot);
+                ImGui::Text("camera y rot %f", graphics_state->camera_y_rot);
+
                 static f32 last_mouse_x, last_mouse_y;
                 double xpos, ypos;
                 glfwGetCursorPos(graphics_state->window, &xpos, &ypos);
                 if(glfwGetKey(graphics_state->window, GLFW_KEY_SPACE))
                 {
                     v2 mouse_delta = v2((f32)xpos - last_mouse_x, (f32)ypos - last_mouse_y);
-                    graphics_state->camera_y_rot += mouse_delta.x * TIME_STEP * 0.2f;
-                    graphics_state->camera_x_rot += mouse_delta.y * TIME_STEP * 0.2f;
+                    graphics_state->camera_y_rot -= mouse_delta.x * TIME_STEP * 0.2f;
+                    graphics_state->camera_x_rot -= mouse_delta.y * TIME_STEP * 0.2f;
                 }
                 last_mouse_x = (f32)xpos;
                 last_mouse_y = (f32)ypos;
 
-                mat4 y_rot = make_y_axis_rotation_matrix(graphics_state->camera_y_rot);
-                mat4 x_rot = make_x_axis_rotation_matrix(graphics_state->camera_x_rot);
-                mat4 camera_t = x_rot * y_rot;
+                mat4 camera_t = view_m_world();
                 v3 camera_right   = v3(camera_t[0][0], camera_t[0][1], camera_t[0][2]);
-                v3 camera_forward = v3(camera_t[2][0], camera_t[2][1], camera_t[2][2]);
+                v3 camera_z = v3(camera_t[2][0], camera_t[2][1], camera_t[2][2]);
 
                 v3 camera_vel = v3();
                 camera_vel += -camera_right   * glfwGetKey(graphics_state->window, GLFW_KEY_A);
                 camera_vel +=  camera_right   * glfwGetKey(graphics_state->window, GLFW_KEY_D);
-                camera_vel +=  camera_forward * glfwGetKey(graphics_state->window, GLFW_KEY_S);
-                camera_vel += -camera_forward * glfwGetKey(graphics_state->window, GLFW_KEY_W);
+                camera_vel +=  camera_z * glfwGetKey(graphics_state->window, GLFW_KEY_S);
+                camera_vel += -camera_z * glfwGetKey(graphics_state->window, GLFW_KEY_W);
                 static f32 camera_speed = 100.0f;
                 ImGui::DragFloat("camera speed", &camera_speed);
                 graphics_state->camera_pos += normalize(camera_vel) * TIME_STEP * camera_speed;
@@ -610,7 +621,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
 
             // TODO cleanup
             //static v3 ground_color = v3(93.0f, 85.0f, 60.0f);
-            static float view_dist = 5000.0f;
+            static f32 view_dist = 5000.0f;
             {
                 ImGui::DragFloat("noise_scale_x", &noise_scale_x);
                 ImGui::DragFloat("noise_scale_y", &noise_scale_y);
@@ -625,15 +636,14 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             // Prep render data
             {
                 TIME_SCOPE("Prep render data");
-                mat4 y_rot = make_y_axis_rotation_matrix(graphics_state->camera_y_rot);
-                mat4 x_rot = make_x_axis_rotation_matrix(graphics_state->camera_x_rot);
-                mat4 camera_t = x_rot * y_rot;
-                v3 camera_forward = v3(camera_t[2][0], camera_t[2][1], camera_t[2][2]);
 
-                const float view_dist_sq = view_dist*view_dist;
-                __m256 cf_x = _mm256_set1_ps(camera_forward.x);
-                __m256 cf_y = _mm256_set1_ps(camera_forward.y);
-                __m256 cf_z = _mm256_set1_ps(camera_forward.z);
+#if 0
+                const f32 view_dist_sq = view_dist*view_dist;
+                mat4 camera_t = view_m_world();
+                v3 c_f = v3(camera_t[2][0], camera_t[2][1], camera_t[2][2]);
+                __m256 cf_x = _mm256_set1_ps(c_f.x);
+                __m256 cf_y = _mm256_set1_ps(c_f.y);
+                __m256 cf_z = _mm256_set1_ps(c_f.z);
                 voxel_render_data->num = 0;
                 for(u32 i = 0; i < all_voxel_data->num; i += 8)
                 {
@@ -672,6 +682,112 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                     _mm256_storeu_si256((__m256i*)&(voxel_render_data->color[voxel_render_data->num]), packed_color);
                     voxel_render_data->num += _mm_popcnt_u64(mask32);
                 }
+#elif 1
+                v3 p = graphics_state->camera_pos;
+                f32 near_plane_d = graphics_state->near_plane_dist;
+                f32 far_plane_d = graphics_state->view_dist;
+                f32 fov = deg_to_rad(graphics_state->camera_fov);
+                f32 ar = graphics_state->screen_aspect_ratio;
+                mat4 camera_t = view_m_world();
+                v3 c_r = normalize(v3(camera_t[0][0], camera_t[0][1], camera_t[0][2]));
+                v3 c_u = normalize(v3(camera_t[1][0], camera_t[1][1], camera_t[1][2]));
+                v3 c_f = normalize(v3(camera_t[2][0], camera_t[2][1], camera_t[2][2]));
+                v3 n[] = 
+                {
+                    make_axis_rotation_matrix(-fov*ar*0.5f, c_u) *  c_r,
+                    make_axis_rotation_matrix( fov*ar*0.5f, c_u) * -c_r,
+                    make_axis_rotation_matrix( fov*0.5f, c_r) *  c_u,
+                    make_axis_rotation_matrix(-fov*0.5f, c_r) * -c_u,
+                    c_f,
+                    -c_f
+                };
+                float n_x[] = { n[0].x, n[1].x, n[2].x, n[3].x, n[4].x, n[5].x };
+                float n_y[] = { n[0].y, n[1].y, n[2].y, n[3].y, n[4].y, n[5].y };
+                float n_z[] = { n[0].z, n[1].z, n[2].z, n[3].z, n[4].z, n[5].z };
+                f32 p_dot_n[] =
+                {
+                    dot(p, n[0]),
+                    dot(p, n[1]),
+                    dot(p, n[2]),
+                    dot(p, n[3]),
+                    dot(p - c_f * near_plane_d, n[4]),
+                    dot(p - c_f * far_plane_d,  n[5]),
+                };
+
+                f32 * __restrict vv = graphics_state->voxel_vertices;
+
+                voxel_render_data->num = 0;
+                for(u32 i = 0; i < all_voxel_data->num; i++)
+                {
+                    f32 v_x = all_voxel_data->x[i];
+                    f32 v_y = all_voxel_data->y[i];
+                    f32 v_z = all_voxel_data->z[i];
+                    u32 v_color = all_voxel_data->color[i];
+
+                    // TODO don't need to do a mem lookup here, vv should constant
+                    f32 q_x[] = { v_x + vv[0], v_x + vv[1], v_x + vv[2], v_x + vv[3], v_x + vv[4], v_x + vv[5], v_x + vv[6], v_x + vv[7] };
+                    f32 q_y[] = { v_y + vv[0], v_y + vv[1], v_y + vv[2], v_y + vv[3], v_y + vv[4], v_y + vv[5], v_y + vv[6], v_y + vv[7] };
+                    f32 q_z[] = { v_z + vv[0], v_z + vv[1], v_z + vv[2], v_z + vv[3], v_z + vv[4], v_z + vv[5], v_z + vv[6], v_z + vv[7] };
+
+                    bool cull = false;
+                    for(u32 ni = 0; ni < 6; ni++)
+                    {
+                        f32 q_dot_n[] =
+                        {
+                            q_x[0]*n_x[ni] + q_y[0]*n_y[ni] + q_z[0]*n_z[ni],
+                            q_x[1]*n_x[ni] + q_y[1]*n_y[ni] + q_z[1]*n_z[ni],
+                            q_x[2]*n_x[ni] + q_y[2]*n_y[ni] + q_z[2]*n_z[ni],
+                            q_x[3]*n_x[ni] + q_y[3]*n_y[ni] + q_z[3]*n_z[ni],
+                            q_x[4]*n_x[ni] + q_y[4]*n_y[ni] + q_z[4]*n_z[ni],
+                            q_x[5]*n_x[ni] + q_y[5]*n_y[ni] + q_z[5]*n_z[ni],
+                            q_x[6]*n_x[ni] + q_y[6]*n_y[ni] + q_z[6]*n_z[ni],
+                            q_x[7]*n_x[ni] + q_y[7]*n_y[ni] + q_z[7]*n_z[ni]
+                        };
+
+                        float d[] = {
+                            q_dot_n[0] - p_dot_n[ni],
+                            q_dot_n[1] - p_dot_n[ni],
+                            q_dot_n[2] - p_dot_n[ni],
+                            q_dot_n[3] - p_dot_n[ni],
+                            q_dot_n[4] - p_dot_n[ni],
+                            q_dot_n[5] - p_dot_n[ni],
+                            q_dot_n[6] - p_dot_n[ni],
+                            q_dot_n[7] - p_dot_n[ni]
+                        };
+
+                        // TODO Bug: Voxels close to camera get culled too early
+                        bool cull_this =
+                            d[0] > 0.0f &&
+                            d[1] > 0.0f &&
+                            d[2] > 0.0f &&
+                            d[3] > 0.0f &&
+                            d[4] > 0.0f &&
+                            d[5] > 0.0f &&
+                            d[6] > 0.0f &&
+                            d[7] > 0.0f;
+                        if(cull_this) cull = true;
+                    }
+
+                    //if(!cull)
+                    {
+                        voxel_render_data->x[voxel_render_data->num] = v_x;
+                        voxel_render_data->y[voxel_render_data->num] = v_y;
+                        voxel_render_data->z[voxel_render_data->num] = v_z;
+                        voxel_render_data->color[voxel_render_data->num] = v_color;
+                        voxel_render_data->num++;
+                    }
+                }
+#else
+                voxel_render_data->num = 0;
+                for(u32 i = 0; i < all_voxel_data->num; i++)
+                {
+                    voxel_render_data->x[voxel_render_data->num] = all_voxel_data->x[i];
+                    voxel_render_data->y[voxel_render_data->num] = all_voxel_data->y[i];
+                    voxel_render_data->z[voxel_render_data->num] = all_voxel_data->z[i];
+                    voxel_render_data->color[voxel_render_data->num] = all_voxel_data->color[i];
+                    voxel_render_data->num++;
+                }
+#endif
             }
 
             // Draw
@@ -681,9 +797,9 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 u32 num_batches_drawn = 0;
                 for(u32 batch_i = 0; batch_i < voxel_render_data->num; batch_i += VoxelRenderData::BATCH_SIZE)
                 {
-                    float *batch_x = voxel_render_data->x + batch_i;
-                    float *batch_y = voxel_render_data->y + batch_i;
-                    float *batch_z = voxel_render_data->z + batch_i;
+                    f32 *batch_x = voxel_render_data->x + batch_i;
+                    f32 *batch_y = voxel_render_data->y + batch_i;
+                    f32 *batch_z = voxel_render_data->z + batch_i;
                     u32 *batch_color = voxel_render_data->color + batch_i;
                     u32 batch_size = min(voxel_render_data->num - batch_i, VoxelRenderData::BATCH_SIZE);
 
