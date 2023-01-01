@@ -325,7 +325,7 @@ mat4 clip_m_view()
     f32 s = -(2.0f * n * f) / (f - n);
     mat4 result =
     {
-         (f32)(1.0f / tanf(fov / 2.0f)) / graphics_state->screen_aspect_ratio, 0.0f, 0.0f, 0.0f,
+         (f32)(1.0f / (tanf(fov / 2.0f) * graphics_state->screen_aspect_ratio)) , 0.0f, 0.0f, 0.0f,
          0.0f, 1.0f / tanf(fov / 2.0f), 0.0f, 0.0f,
          0.0f, 0.0f, r, s,
          0.0f, 0.0f, -1.0f, 0.0f
@@ -682,7 +682,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                     _mm256_storeu_si256((__m256i*)&(voxel_render_data->color[voxel_render_data->num]), packed_color);
                     voxel_render_data->num += _mm_popcnt_u64(mask32);
                 }
-#elif 1
+#elif 0
                 v3 p = graphics_state->camera_pos;
                 f32 near_plane_d = graphics_state->near_plane_dist;
                 f32 far_plane_d = graphics_state->view_dist;
@@ -694,16 +694,16 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 v3 c_f = normalize(v3(camera_t[2][0], camera_t[2][1], camera_t[2][2]));
                 v3 n[] = 
                 {
-                    make_axis_rotation_matrix(-fov*ar*0.5f, c_u) *  c_r,
-                    make_axis_rotation_matrix( fov*ar*0.5f, c_u) * -c_r,
+                    make_axis_rotation_matrix(-fov*0.5f * ar, c_u) *  c_r,
+                    make_axis_rotation_matrix( fov*0.5f * ar, c_u) * -c_r,
                     make_axis_rotation_matrix( fov*0.5f, c_r) *  c_u,
                     make_axis_rotation_matrix(-fov*0.5f, c_r) * -c_u,
                     c_f,
                     -c_f
                 };
-                float n_x[] = { n[0].x, n[1].x, n[2].x, n[3].x, n[4].x, n[5].x };
-                float n_y[] = { n[0].y, n[1].y, n[2].y, n[3].y, n[4].y, n[5].y };
-                float n_z[] = { n[0].z, n[1].z, n[2].z, n[3].z, n[4].z, n[5].z };
+                f32 n_x[] = { n[0].x, n[1].x, n[2].x, n[3].x, n[4].x, n[5].x };
+                f32 n_y[] = { n[0].y, n[1].y, n[2].y, n[3].y, n[4].y, n[5].y };
+                f32 n_z[] = { n[0].z, n[1].z, n[2].z, n[3].z, n[4].z, n[5].z };
                 f32 p_dot_n[] =
                 {
                     dot(p, n[0]),
@@ -726,8 +726,8 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
 
                     // TODO don't need to do a mem lookup here, vv should constant
                     f32 q_x[] = { v_x + vv[0], v_x + vv[1], v_x + vv[2], v_x + vv[3], v_x + vv[4], v_x + vv[5], v_x + vv[6], v_x + vv[7] };
-                    f32 q_y[] = { v_y + vv[0], v_y + vv[1], v_y + vv[2], v_y + vv[3], v_y + vv[4], v_y + vv[5], v_y + vv[6], v_y + vv[7] };
-                    f32 q_z[] = { v_z + vv[0], v_z + vv[1], v_z + vv[2], v_z + vv[3], v_z + vv[4], v_z + vv[5], v_z + vv[6], v_z + vv[7] };
+                    f32 q_y[] = { v_y + vv[8+0], v_y + vv[8+1], v_y + vv[8+2], v_y + vv[8+3], v_y + vv[8+4], v_y + vv[8+5], v_y + vv[8+6], v_y + vv[8+7] };
+                    f32 q_z[] = { v_z + vv[16+0], v_z + vv[16+1], v_z + vv[16+2], v_z + vv[16+3], v_z + vv[16+4], v_z + vv[16+5], v_z + vv[16+6], v_z + vv[16+7] };
 
                     bool cull = false;
                     for(u32 ni = 0; ni < 6; ni++)
@@ -744,7 +744,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                             q_x[7]*n_x[ni] + q_y[7]*n_y[ni] + q_z[7]*n_z[ni]
                         };
 
-                        float d[] = {
+                        f32 d[] = {
                             q_dot_n[0] - p_dot_n[ni],
                             q_dot_n[1] - p_dot_n[ni],
                             q_dot_n[2] - p_dot_n[ni],
@@ -757,18 +757,18 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
 
                         // TODO Bug: Voxels close to camera get culled too early
                         bool cull_this =
-                            d[0] > 0.0f &&
-                            d[1] > 0.0f &&
-                            d[2] > 0.0f &&
-                            d[3] > 0.0f &&
-                            d[4] > 0.0f &&
-                            d[5] > 0.0f &&
-                            d[6] > 0.0f &&
-                            d[7] > 0.0f;
+                            (d[0] > 0.0f) &&
+                            (d[1] > 0.0f) &&
+                            (d[2] > 0.0f) &&
+                            (d[3] > 0.0f) &&
+                            (d[4] > 0.0f) &&
+                            (d[5] > 0.0f) &&
+                            (d[6] > 0.0f) &&
+                            (d[7] > 0.0f);
                         if(cull_this) cull = true;
                     }
 
-                    //if(!cull)
+                    if(!cull)
                     {
                         voxel_render_data->x[voxel_render_data->num] = v_x;
                         voxel_render_data->y[voxel_render_data->num] = v_y;
@@ -776,6 +776,104 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                         voxel_render_data->color[voxel_render_data->num] = v_color;
                         voxel_render_data->num++;
                     }
+                }
+#elif 0
+                // Reference
+                const mat4 clip_mat = clip_m_view() * view_m_world();
+                f32 * __restrict vv = graphics_state->voxel_vertices;
+                voxel_render_data->num = 0;
+                for(u32 i = 0; i < all_voxel_data->num; i++)
+                {
+                    f32 voxel_x = all_voxel_data->x[i];
+                    f32 voxel_y = all_voxel_data->y[i];
+                    f32 voxel_z = all_voxel_data->z[i];
+                    u32 voxel_color = all_voxel_data->color[i];
+
+                    bool cull = true;
+                    for(u32 vi = 0; vi < 8; vi++)
+                    {
+                        v4 v = v4(voxel_x + vv[vi], voxel_y + vv[8+vi], voxel_z + vv[16+vi], 1.0f);
+                        v4 v_clip = clip_mat * v;
+                        if((v_clip.x > -v_clip.w) && (v_clip.x < v_clip.w) && 
+                           (v_clip.y > -v_clip.w) && (v_clip.y < v_clip.w) && 
+                           (v_clip.z > -v_clip.w) && (v_clip.z < v_clip.w))
+                        {
+                            cull = false;
+                        }
+                    }
+
+                    if(!cull)
+                    {
+                        voxel_render_data->x[voxel_render_data->num] = voxel_x;
+                        voxel_render_data->y[voxel_render_data->num] = voxel_y;
+                        voxel_render_data->z[voxel_render_data->num] = voxel_z;
+                        voxel_render_data->color[voxel_render_data->num] = voxel_color;
+                        voxel_render_data->num++;
+                    }
+                }
+#elif 1
+                const mat4 clip_mat = clip_m_view() * view_m_world();
+                const __m256 _00 = _mm256_broadcast_ss(&(clip_mat[0][0]));
+                const __m256 _01 = _mm256_broadcast_ss(&(clip_mat[0][1]));
+                const __m256 _02 = _mm256_broadcast_ss(&(clip_mat[0][2]));
+                const __m256 _03 = _mm256_broadcast_ss(&(clip_mat[0][3]));
+
+                const __m256 _10 = _mm256_broadcast_ss(&(clip_mat[1][0]));
+                const __m256 _11 = _mm256_broadcast_ss(&(clip_mat[1][1]));
+                const __m256 _12 = _mm256_broadcast_ss(&(clip_mat[1][2]));
+                const __m256 _13 = _mm256_broadcast_ss(&(clip_mat[1][3]));
+
+                const __m256 _20 = _mm256_broadcast_ss(&(clip_mat[2][0]));
+                const __m256 _21 = _mm256_broadcast_ss(&(clip_mat[2][1]));
+                const __m256 _22 = _mm256_broadcast_ss(&(clip_mat[2][2]));
+                const __m256 _23 = _mm256_broadcast_ss(&(clip_mat[2][3]));
+
+                const __m256 _30 = _mm256_broadcast_ss(&(clip_mat[3][0]));
+                const __m256 _31 = _mm256_broadcast_ss(&(clip_mat[3][1]));
+                const __m256 _32 = _mm256_broadcast_ss(&(clip_mat[3][2]));
+                const __m256 _33 = _mm256_broadcast_ss(&(clip_mat[3][3]));
+                __m256 model_vx = _mm256_loadu_ps(graphics_state->voxel_vertices + 0);
+                __m256 model_vy = _mm256_loadu_ps(graphics_state->voxel_vertices + 8);
+                __m256 model_vz = _mm256_loadu_ps(graphics_state->voxel_vertices + 16);
+                voxel_render_data->num = 0;
+                for(u32 voxel_i = 0; voxel_i < all_voxel_data->num; voxel_i++)
+                {
+                    /*
+                    __m256 voxel_x = _mm256_cvtepi32_ps(_mm256_loadu_si256((__m256i*)(all_voxel_data->x + voxel_i)));
+                    __m256 voxel_y = _mm256_cvtepi32_ps(_mm256_loadu_si256((__m256i*)(all_voxel_data->y + voxel_i)));
+                    __m256 voxel_z = _mm256_cvtepi32_ps(_mm256_loadu_si256((__m256i*)(all_voxel_data->z + voxel_i)));
+                    __m256i voxel_color = _mm256_loadu_si256((__m256i*)(all_voxel_data->color + voxel_i));
+                    */
+                    f32 voxel_x = (float)all_voxel_data->x[voxel_i];
+                    f32 voxel_y = (float)all_voxel_data->y[voxel_i];
+                    f32 voxel_z = (float)all_voxel_data->z[voxel_i];
+                    u32 voxel_color = all_voxel_data->color[voxel_i];
+
+                    __m256 vx = _mm256_add_ps(_mm256_set1_ps(voxel_x), model_vx);
+                    __m256 vy = _mm256_add_ps(_mm256_set1_ps(voxel_y), model_vy);
+                    __m256 vz = _mm256_add_ps(_mm256_set1_ps(voxel_z), model_vz);
+                    __m256 vw = _mm256_set1_ps(1.0f);
+
+                    __m256 c_vx = _mm256_fmadd_ps(vx, _00, _mm256_fmadd_ps(vy, _01, _mm256_fmadd_ps(vz, _02, _mm256_mul_ps(vw, _03))));
+                    __m256 c_vy = _mm256_fmadd_ps(vx, _10, _mm256_fmadd_ps(vy, _11, _mm256_fmadd_ps(vz, _12, _mm256_mul_ps(vw, _13))));
+                    __m256 c_vz = _mm256_fmadd_ps(vx, _20, _mm256_fmadd_ps(vy, _21, _mm256_fmadd_ps(vz, _22, _mm256_mul_ps(vw, _23))));
+                    __m256 c_vw = _mm256_fmadd_ps(vx, _30, _mm256_fmadd_ps(vy, _31, _mm256_fmadd_ps(vz, _32, _mm256_mul_ps(vw, _33))));
+
+                    __m256 nc_vw = _mm256_sub_ps(_mm256_set1_ps(0.0f), c_vw);
+
+                    __m256 mask = _mm256_cmp_ps(nc_vw, c_vx, _CMP_LT_OQ);
+                    mask = _mm256_and_ps(mask, _mm256_cmp_ps(c_vx,  c_vw, _CMP_LT_OQ));
+                    mask = _mm256_and_ps(mask, _mm256_cmp_ps(nc_vw, c_vy, _CMP_LT_OQ));
+                    mask = _mm256_and_ps(mask, _mm256_cmp_ps(c_vy,  c_vw, _CMP_LT_OQ));
+                    mask = _mm256_and_ps(mask, _mm256_cmp_ps(nc_vw, c_vz, _CMP_LT_OQ));
+                    mask = _mm256_and_ps(mask, _mm256_cmp_ps(c_vz,  c_vw, _CMP_LT_OQ));
+
+                    bool keep = _mm256_movemask_ps(mask);
+                    voxel_render_data->x[voxel_render_data->num] = voxel_x;
+                    voxel_render_data->y[voxel_render_data->num] = voxel_y;
+                    voxel_render_data->z[voxel_render_data->num] = voxel_z;
+                    voxel_render_data->color[voxel_render_data->num] = voxel_color;
+                    voxel_render_data->num += keep ? 1 : 0;
                 }
 #else
                 voxel_render_data->num = 0;
