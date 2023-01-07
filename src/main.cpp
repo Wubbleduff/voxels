@@ -61,7 +61,6 @@ static GraphicsState *graphics_state = nullptr;
 
 struct InputState
 {
-    //bool keys[256];
     s32 mouse_screen_x;
     s32 mouse_screen_y;
 };
@@ -332,80 +331,55 @@ mat4 clip_m_view()
     return result;
 }
 
-static void terrain(VoxelData *out, u32 width, u32 depth, f32 noise_scale_x, f32 noise_scale_y, f32 noise_scale_z)
+// Right now I'm just defining "chunk" as a MxNxO group of voxels
+static void terrain_chunk(VoxelData *out, u32 chunk_x, u32 chunk_z, u32 width, u32 depth, f32 noise_scale_x, f32 noise_scale_y, f32 noise_scale_z)
 {
-    out->num = 0;
-
     auto noise = [noise_scale_x, noise_scale_y, noise_scale_z](s32 x_, s32 z_)
     {
-        //return (perlin_noise(x_*noise_scale_x, z_*noise_scale_z)*0.5f + 0.5f)*noise_scale_y;
         f32 n = (perlin_noise(x_*noise_scale_x, z_*noise_scale_z)*0.5f + 0.5f)*noise_scale_y;
         n += (perlin_noise(x_*noise_scale_x*0.1f, z_*noise_scale_z*0.1f)*0.5f + 0.5f)*noise_scale_y*10.0f;
-
-        const static s32 s_x[] = {128, 512, -8*128,  7*128, 7*128, -8*128};
-        const static s32 s_z[] = {128, 512, -8*128, -8*128, 7*128,  7*128};
-        const static u32 num_s = sizeof(s_x) / sizeof(s_x[0]);
-        s32 min_d = 1000000000; // TODO
-        for(u32 i = 0; i < num_s; i++)
-        {
-            s32 d_x = x_ - s_x[i];
-            s32 d_z = z_ - s_z[i];
-            s32 d = (s32)sqrtf(d_x*d_x + d_z*d_z);
-            if(d < min_d)
-            {
-                min_d = d;
-            }
-        }
-        n += min_d*0.3f;
-        
         return n;
     };
     auto pick_color = [](s32 y)
     {
-        if(y < 300) return (u32)0x424242FF;
+        if(y < 65) return (u32)0x424242FF;
         else if(y < 480) return (u32)0x519916FF;
         else return (u32)0xCCCCCCFF;
     };
-    for(s32 chunk_z = -8; chunk_z < 8; chunk_z++)
+    for(s32 z = 0; z < depth; z++)
     {
-        for(s32 chunk_x = -8; chunk_x < 8; chunk_x++)
+        for(s32 x = 0; x < width; x++)
         {
-            for(s32 z = 0; z < depth; z++)
+            s32 X = x + chunk_x;
+            s32 Z = z + chunk_z;
+
+            s32 Y = (s32)noise(X, Z);
+
+            // Check for holes in the ground
             {
-                for(s32 x = 0; x < width; x++)
+                s32 y0 = (s32)noise(X - 1, Z);
+                s32 y1 = (s32)noise(X + 1, Z);
+                s32 y2 = (s32)noise(X, Z - 1);
+                s32 y3 = (s32)noise(X, Z + 1);
+                s32 max_d = max(Y - y0, max(Y - y1, max(Y - y2, Y - y3)));
+                for(s32 i = 0; i < max_d - 1; i++)
                 {
-                    s32 X = x + (chunk_x)*width;
-                    s32 Z = z + (chunk_z)*depth;
-
-                    s32 Y = (s32)noise(X, Z);
-
-                    // Check for holes in the ground
-                    {
-                        s32 y0 = (s32)noise(X - 1, Z);
-                        s32 y1 = (s32)noise(X + 1, Z);
-                        s32 y2 = (s32)noise(X, Z - 1);
-                        s32 y3 = (s32)noise(X, Z + 1);
-                        s32 max_d = max(Y - y0, max(Y - y1, max(Y - y2, Y - y3)));
-                        for(s32 i = 0; i < max_d - 1; i++)
-                        {
-                            s32 yi = Y - 1 - i;
-                            out->x[out->num] = X;
-                            out->y[out->num] = yi;
-                            out->z[out->num] = Z;
-                            out->color[out->num] = pick_color(yi);
-                            out->num++;
-                            if(out->num >= VoxelData::MAX_VOXELS) return;
-                        }
-                    }
-
+                    s32 yi = Y - 1 - i;
                     out->x[out->num] = X;
-                    out->y[out->num] = Y;
+                    out->y[out->num] = yi;
                     out->z[out->num] = Z;
-                    out->color[out->num] = pick_color(Y);
+                    out->color[out->num] = pick_color(yi);
                     out->num++;
                     if(out->num >= VoxelData::MAX_VOXELS) return;
                 }
             }
+
+            out->x[out->num] = X;
+            out->y[out->num] = Y;
+            out->z[out->num] = Z;
+            out->color[out->num] = pick_color(Y);
+            out->num++;
+            if(out->num >= VoxelData::MAX_VOXELS) return;
         }
     }
 }
@@ -544,9 +518,21 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
     static f32 noise_scale_x = 0.008f;
     static f32 noise_scale_y = 20.0f;
     static f32 noise_scale_z = 0.008f;
-    static const u32 WIDTH = 128;
-    static const u32 DEPTH = 128;
-    terrain(all_voxel_data, WIDTH, DEPTH, noise_scale_x, noise_scale_y, noise_scale_z);
+    //static const u32 WIDTH = 512;
+    //static const u32 DEPTH = 512;
+    static const u32 WIDTH = 1024;
+    static const u32 DEPTH = 1024;
+    //terrain(all_voxel_data, WIDTH, DEPTH, noise_scale_x, noise_scale_y, noise_scale_z);
+    all_voxel_data->num = 0;
+    for(s32 z = -1; z < 2; z++)
+    {
+        for(s32 x = -1; x < 2; x++)
+        {
+            terrain_chunk(all_voxel_data, x*WIDTH, z*DEPTH, WIDTH, DEPTH, noise_scale_x, noise_scale_y, noise_scale_z);
+            if(all_voxel_data->num >= VoxelData::MAX_VOXELS) break;
+        }
+        if(all_voxel_data->num >= VoxelData::MAX_VOXELS) break;
+    }
 
     f32 frame_timer = 0.0f;
     f32 last_time = 0.0f;
@@ -581,7 +567,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 ImGui::Text("camera y rot %f", graphics_state->camera_y_rot);
 
                 static f32 last_mouse_x, last_mouse_y;
-                double xpos, ypos;
+                f64 xpos, ypos;
                 glfwGetCursorPos(graphics_state->window, &xpos, &ypos);
                 if(glfwGetKey(graphics_state->window, GLFW_KEY_SPACE))
                 {
@@ -613,12 +599,38 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 ImGui::DragFloat("noise_scale_x", &noise_scale_x);
                 ImGui::DragFloat("noise_scale_y", &noise_scale_y);
                 ImGui::DragFloat("noise_scale_z", &noise_scale_z);
-                if(ImGui::Button("gen"))
-                {
-                    terrain(all_voxel_data, WIDTH, DEPTH, noise_scale_x, noise_scale_y, noise_scale_z);
-                }
                 ImGui::DragFloat("view dist", &view_dist);
             }
+
+            s32 camera_x = (s32)graphics_state->camera_pos.x;
+            s32 camera_z = (s32)graphics_state->camera_pos.z;
+            s32 camera_chunk_x = camera_x & ~0b0001'1111'1111;
+            s32 camera_chunk_z = camera_z & ~0b0001'1111'1111;
+            bool should_gen = false;
+            static s32 last_camera_chunk_x = 0xFFFFFFFF;
+            static s32 last_camera_chunk_z = 0xFFFFFFFF;
+            if((camera_chunk_x != last_camera_chunk_x) || (camera_chunk_z != last_camera_chunk_z))
+            {
+                should_gen = true;
+            }
+            if(should_gen)
+            {
+                all_voxel_data->num = 0;
+                for(s32 z = -1; z <= 1; z++)
+                {
+                    for(s32 x = -1; x <= 1; x++)
+                    {
+                        terrain_chunk(all_voxel_data,
+                                camera_chunk_x + x*WIDTH,
+                                camera_chunk_z + z*DEPTH,
+                                WIDTH, DEPTH, noise_scale_x, noise_scale_y, noise_scale_z);
+                        if(all_voxel_data->num >= VoxelData::MAX_VOXELS) break;
+                    }
+                    if(all_voxel_data->num >= VoxelData::MAX_VOXELS) break;
+                }
+            }
+            last_camera_chunk_x = camera_chunk_x;
+            last_camera_chunk_z = camera_chunk_z;
 
             // Prep render data
             {
