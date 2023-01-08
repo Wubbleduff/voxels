@@ -518,11 +518,8 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
     static f32 noise_scale_x = 0.008f;
     static f32 noise_scale_y = 20.0f;
     static f32 noise_scale_z = 0.008f;
-    //static const u32 WIDTH = 512;
-    //static const u32 DEPTH = 512;
     static const u32 WIDTH = 1024;
     static const u32 DEPTH = 1024;
-    //terrain(all_voxel_data, WIDTH, DEPTH, noise_scale_x, noise_scale_y, noise_scale_z);
     all_voxel_data->num = 0;
     for(s32 z = -1; z < 2; z++)
     {
@@ -591,7 +588,6 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 ImGui::DragFloat("camera speed", &camera_speed);
                 graphics_state->camera_pos += normalize(camera_vel) * TIME_STEP * camera_speed;
             }
-
 
             // TODO cleanup
             static f32 view_dist = 5000.0f;
@@ -708,6 +704,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 voxel_render_data->num = 0;
                 for(u32 voxel_i = 0; voxel_i < all_voxel_data->num; voxel_i++)
                 {
+                    // Load single voxel data, transform 8 vertices to clip space, and check if entirely outside the clip area.
                     f32 voxel_x = (float)all_voxel_data->x[voxel_i];
                     f32 voxel_y = (float)all_voxel_data->y[voxel_i];
                     f32 voxel_z = (float)all_voxel_data->z[voxel_i];
@@ -731,12 +728,23 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                     mask = _mm256_and_ps(mask, _mm256_cmp_ps(nc_vw, c_vz, _CMP_LT_OQ));
                     mask = _mm256_and_ps(mask, _mm256_cmp_ps(c_vz,  c_vw, _CMP_LT_OQ));
 
-                    bool keep = _mm256_movemask_ps(mask);
+#if 0
+                    u32 keep = _mm256_movemask_ps(mask);
                     voxel_render_data->x[voxel_render_data->num] = voxel_x;
                     voxel_render_data->y[voxel_render_data->num] = voxel_y;
                     voxel_render_data->z[voxel_render_data->num] = voxel_z;
                     voxel_render_data->color[voxel_render_data->num] = voxel_color;
-                    voxel_render_data->num += keep ? 1 : 0;
+                    voxel_render_data->num += keep > 0 ? 1 : 0;
+#else
+                    if(_mm256_movemask_ps(mask))
+                    {
+                        voxel_render_data->x[voxel_render_data->num] = voxel_x;
+                        voxel_render_data->y[voxel_render_data->num] = voxel_y;
+                        voxel_render_data->z[voxel_render_data->num] = voxel_z;
+                        voxel_render_data->color[voxel_render_data->num] = voxel_color;
+                        voxel_render_data->num++;
+                    }
+#endif
                 }
 #endif
             }
