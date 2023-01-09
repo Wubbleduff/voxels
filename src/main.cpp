@@ -105,6 +105,53 @@ struct ScopeTimer
 #define TIME_SCOPE(name) ScopeTimer _time_scope = ScopeTimer(name)
 
 
+static constexpr u32 left_pack_lut[] = 
+{
+    0x00000000, 0x00000000, 0x00000001, 0x00000010, 0x00000002, 0x00000020, 0x00000021, 0x00000210,
+    0x00000003, 0x00000030, 0x00000031, 0x00000310, 0x00000032, 0x00000320, 0x00000321, 0x00003210,
+    0x00000004, 0x00000040, 0x00000041, 0x00000410, 0x00000042, 0x00000420, 0x00000421, 0x00004210,
+    0x00000043, 0x00000430, 0x00000431, 0x00004310, 0x00000432, 0x00004320, 0x00004321, 0x00043210,
+    0x00000005, 0x00000050, 0x00000051, 0x00000510, 0x00000052, 0x00000520, 0x00000521, 0x00005210,
+    0x00000053, 0x00000530, 0x00000531, 0x00005310, 0x00000532, 0x00005320, 0x00005321, 0x00053210,
+    0x00000054, 0x00000540, 0x00000541, 0x00005410, 0x00000542, 0x00005420, 0x00005421, 0x00054210,
+    0x00000543, 0x00005430, 0x00005431, 0x00054310, 0x00005432, 0x00054320, 0x00054321, 0x00543210,
+    0x00000006, 0x00000060, 0x00000061, 0x00000610, 0x00000062, 0x00000620, 0x00000621, 0x00006210,
+    0x00000063, 0x00000630, 0x00000631, 0x00006310, 0x00000632, 0x00006320, 0x00006321, 0x00063210,
+    0x00000064, 0x00000640, 0x00000641, 0x00006410, 0x00000642, 0x00006420, 0x00006421, 0x00064210,
+    0x00000643, 0x00006430, 0x00006431, 0x00064310, 0x00006432, 0x00064320, 0x00064321, 0x00643210,
+    0x00000065, 0x00000650, 0x00000651, 0x00006510, 0x00000652, 0x00006520, 0x00006521, 0x00065210,
+    0x00000653, 0x00006530, 0x00006531, 0x00065310, 0x00006532, 0x00065320, 0x00065321, 0x00653210,
+    0x00000654, 0x00006540, 0x00006541, 0x00065410, 0x00006542, 0x00065420, 0x00065421, 0x00654210,
+    0x00006543, 0x00065430, 0x00065431, 0x00654310, 0x00065432, 0x00654320, 0x00654321, 0x06543210,
+    0x00000007, 0x00000070, 0x00000071, 0x00000710, 0x00000072, 0x00000720, 0x00000721, 0x00007210,
+    0x00000073, 0x00000730, 0x00000731, 0x00007310, 0x00000732, 0x00007320, 0x00007321, 0x00073210,
+    0x00000074, 0x00000740, 0x00000741, 0x00007410, 0x00000742, 0x00007420, 0x00007421, 0x00074210,
+    0x00000743, 0x00007430, 0x00007431, 0x00074310, 0x00007432, 0x00074320, 0x00074321, 0x00743210,
+    0x00000075, 0x00000750, 0x00000751, 0x00007510, 0x00000752, 0x00007520, 0x00007521, 0x00075210,
+    0x00000753, 0x00007530, 0x00007531, 0x00075310, 0x00007532, 0x00075320, 0x00075321, 0x00753210,
+    0x00000754, 0x00007540, 0x00007541, 0x00075410, 0x00007542, 0x00075420, 0x00075421, 0x00754210,
+    0x00007543, 0x00075430, 0x00075431, 0x00754310, 0x00075432, 0x00754320, 0x00754321, 0x07543210,
+    0x00000076, 0x00000760, 0x00000761, 0x00007610, 0x00000762, 0x00007620, 0x00007621, 0x00076210,
+    0x00000763, 0x00007630, 0x00007631, 0x00076310, 0x00007632, 0x00076320, 0x00076321, 0x00763210,
+    0x00000764, 0x00007640, 0x00007641, 0x00076410, 0x00007642, 0x00076420, 0x00076421, 0x00764210,
+    0x00007643, 0x00076430, 0x00076431, 0x00764310, 0x00076432, 0x00764320, 0x00764321, 0x07643210,
+    0x00000765, 0x00007650, 0x00007651, 0x00076510, 0x00007652, 0x00076520, 0x00076521, 0x00765210,
+    0x00007653, 0x00076530, 0x00076531, 0x00765310, 0x00076532, 0x00765320, 0x00765321, 0x07653210,
+    0x00007654, 0x00076540, 0x00076541, 0x00765410, 0x00076542, 0x00765420, 0x00765421, 0x07654210,
+    0x00076543, 0x00765430, 0x00765431, 0x07654310, 0x00765432, 0x07654320, 0x07654321, 0x76543210 
+};
+static __m256 left_pack(__m256 a, u32 mask)
+{
+    __m256i shufmask = _mm256_srlv_epi32(_mm256_set1_epi32(left_pack_lut[mask]), _mm256_setr_epi32(0, 4, 8, 12, 16, 20, 24, 28));
+    return _mm256_permutevar8x32_ps(a, shufmask);
+}
+static __m256i left_pack(__m256i a, u32 mask)
+{
+    __m256i shufmask = _mm256_srlv_epi32(_mm256_set1_epi32(left_pack_lut[mask]), _mm256_setr_epi32(0, 4, 8, 12, 16, 20, 24, 28));
+    return _mm256_permutevar8x32_epi32(a, shufmask);
+}
+
+
 void glfw_error_fn(s32 error, const char *message)
 {
     //printf("%i: %s\n", error, message);
@@ -702,49 +749,55 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 const __m256 model_vy = _mm256_loadu_ps(graphics_state->voxel_vertices + 8);
                 const __m256 model_vz = _mm256_loadu_ps(graphics_state->voxel_vertices + 16);
                 voxel_render_data->num = 0;
-                for(u32 voxel_i = 0; voxel_i < all_voxel_data->num; voxel_i++)
+                for(u32 voxel_i = 0; voxel_i < all_voxel_data->num; voxel_i += 8)
                 {
-                    // Load single voxel data, transform 8 vertices to clip space, and check if entirely outside the clip area.
-                    f32 voxel_x = (float)all_voxel_data->x[voxel_i];
-                    f32 voxel_y = (float)all_voxel_data->y[voxel_i];
-                    f32 voxel_z = (float)all_voxel_data->z[voxel_i];
-                    u32 voxel_color = all_voxel_data->color[voxel_i];
+                    __m256i voxel8i_x = _mm256_loadu_si256((__m256i*)(all_voxel_data->x + voxel_i));
+                    __m256i voxel8i_y = _mm256_loadu_si256((__m256i*)(all_voxel_data->y + voxel_i));
+                    __m256i voxel8i_z = _mm256_loadu_si256((__m256i*)(all_voxel_data->z + voxel_i));
+                    __m256i voxel8i_c = _mm256_loadu_si256((__m256i*)(all_voxel_data->color + voxel_i));
 
-                    __m256 vx = _mm256_add_ps(_mm256_set1_ps(voxel_x), model_vx);
-                    __m256 vy = _mm256_add_ps(_mm256_set1_ps(voxel_y), model_vy);
-                    __m256 vz = _mm256_add_ps(_mm256_set1_ps(voxel_z), model_vz);
+                    __m256 voxel8_x = _mm256_cvtepi32_ps(voxel8i_x);
+                    __m256 voxel8_y = _mm256_cvtepi32_ps(voxel8i_y);
+                    __m256 voxel8_z = _mm256_cvtepi32_ps(voxel8i_z);
 
-                    __m256 c_vx = _mm256_fmadd_ps(vx, _00, _mm256_fmadd_ps(vy, _01, _mm256_fmadd_ps(vz, _02, _03)));
-                    __m256 c_vy = _mm256_fmadd_ps(vx, _10, _mm256_fmadd_ps(vy, _11, _mm256_fmadd_ps(vz, _12, _13)));
-                    __m256 c_vz = _mm256_fmadd_ps(vx, _20, _mm256_fmadd_ps(vy, _21, _mm256_fmadd_ps(vz, _22, _23)));
-                    __m256 c_vw = _mm256_fmadd_ps(vx, _30, _mm256_fmadd_ps(vy, _31, _mm256_fmadd_ps(vz, _32, _33)));
-
-                    __m256 nc_vw = _mm256_sub_ps(_mm256_set1_ps(0.0f), c_vw);
-
-                    __m256 mask = _mm256_cmp_ps(nc_vw, c_vx, _CMP_LT_OQ);
-                    mask = _mm256_and_ps(mask, _mm256_cmp_ps(c_vx,  c_vw, _CMP_LT_OQ));
-                    mask = _mm256_and_ps(mask, _mm256_cmp_ps(nc_vw, c_vy, _CMP_LT_OQ));
-                    mask = _mm256_and_ps(mask, _mm256_cmp_ps(c_vy,  c_vw, _CMP_LT_OQ));
-                    mask = _mm256_and_ps(mask, _mm256_cmp_ps(nc_vw, c_vz, _CMP_LT_OQ));
-                    mask = _mm256_and_ps(mask, _mm256_cmp_ps(c_vz,  c_vw, _CMP_LT_OQ));
-
-#if 0
-                    u32 keep = _mm256_movemask_ps(mask);
-                    voxel_render_data->x[voxel_render_data->num] = voxel_x;
-                    voxel_render_data->y[voxel_render_data->num] = voxel_y;
-                    voxel_render_data->z[voxel_render_data->num] = voxel_z;
-                    voxel_render_data->color[voxel_render_data->num] = voxel_color;
-                    voxel_render_data->num += keep > 0 ? 1 : 0;
-#else
-                    if(_mm256_movemask_ps(mask))
+                    u32 pack_index = 0;
+                    for(u32 i = 0; i < 8; i++)
                     {
-                        voxel_render_data->x[voxel_render_data->num] = voxel_x;
-                        voxel_render_data->y[voxel_render_data->num] = voxel_y;
-                        voxel_render_data->z[voxel_render_data->num] = voxel_z;
-                        voxel_render_data->color[voxel_render_data->num] = voxel_color;
-                        voxel_render_data->num++;
+                        // Load single voxel data, transform 8 vertices to clip space, and check if entirely outside the clip area.
+                        // TODO Is there something better we can do here?
+                        f32 voxel_x = voxel8_x.m256_f32[i];
+                        f32 voxel_y = voxel8_y.m256_f32[i];
+                        f32 voxel_z = voxel8_z.m256_f32[i];
+
+                        __m256 vx = _mm256_add_ps(_mm256_set1_ps(voxel_x), model_vx);
+                        __m256 vy = _mm256_add_ps(_mm256_set1_ps(voxel_y), model_vy);
+                        __m256 vz = _mm256_add_ps(_mm256_set1_ps(voxel_z), model_vz);
+
+                        __m256 c_vx = _mm256_fmadd_ps(vx, _00, _mm256_fmadd_ps(vy, _01, _mm256_fmadd_ps(vz, _02, _03)));
+                        __m256 c_vy = _mm256_fmadd_ps(vx, _10, _mm256_fmadd_ps(vy, _11, _mm256_fmadd_ps(vz, _12, _13)));
+                        __m256 c_vz = _mm256_fmadd_ps(vx, _20, _mm256_fmadd_ps(vy, _21, _mm256_fmadd_ps(vz, _22, _23)));
+                        __m256 c_vw = _mm256_fmadd_ps(vx, _30, _mm256_fmadd_ps(vy, _31, _mm256_fmadd_ps(vz, _32, _33)));
+
+                        __m256 nc_vw = _mm256_sub_ps(_mm256_set1_ps(0.0f), c_vw);
+
+                        __m256 mask = _mm256_cmp_ps(nc_vw, c_vx, _CMP_LT_OQ);
+                        mask = _mm256_and_ps(mask, _mm256_cmp_ps(c_vx,  c_vw, _CMP_LT_OQ));
+                        mask = _mm256_and_ps(mask, _mm256_cmp_ps(nc_vw, c_vy, _CMP_LT_OQ));
+                        mask = _mm256_and_ps(mask, _mm256_cmp_ps(c_vy,  c_vw, _CMP_LT_OQ));
+                        mask = _mm256_and_ps(mask, _mm256_cmp_ps(nc_vw, c_vz, _CMP_LT_OQ));
+                        mask = _mm256_and_ps(mask, _mm256_cmp_ps(c_vz,  c_vw, _CMP_LT_OQ));
+
+                        // TODO Is there something better we can do here?
+                        u32 keep = _mm256_movemask_ps(mask) > 0 ? 1 : 0;
+                        pack_index |= keep << i;
                     }
-#endif
+
+                    // TODO does shufmask get re-used?
+                    _mm256_storeu_ps(voxel_render_data->x + voxel_render_data->num, left_pack(voxel8_x, pack_index));
+                    _mm256_storeu_ps(voxel_render_data->y + voxel_render_data->num, left_pack(voxel8_y, pack_index));
+                    _mm256_storeu_ps(voxel_render_data->z + voxel_render_data->num, left_pack(voxel8_z, pack_index));
+                    _mm256_storeu_si256((__m256i*)(voxel_render_data->color + voxel_render_data->num), left_pack(voxel8i_c, pack_index));
+                    voxel_render_data->num += _mm_popcnt_u32(pack_index);
                 }
 #endif
             }
