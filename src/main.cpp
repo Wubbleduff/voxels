@@ -151,6 +151,97 @@ static __m256i left_pack(__m256i a, u32 mask)
     return _mm256_permutevar8x32_epi32(a, shufmask);
 }
 
+void camera_cull(
+    u32 * __restrict out_num_voxels,
+    f32 * __restrict out_voxel_x,
+    f32 * __restrict out_voxel_y,
+    f32 * __restrict out_voxel_z,
+    u32 * __restrict out_voxel_color,
+
+    const u32 in_num_voxels,
+    const s32 * __restrict in_voxel_x,
+    const s32 * __restrict in_voxel_y,
+    const s32 * __restrict in_voxel_z,
+    const u32 * __restrict in_voxel_color,
+    const f32 * __restrict clip_mat,
+    const f32 * __restrict voxel_verts
+)
+{
+    const __m256 _00 = _mm256_broadcast_ss(&(clip_mat[0*4 + 0]));
+    const __m256 _01 = _mm256_broadcast_ss(&(clip_mat[0*4 + 1]));
+    const __m256 _02 = _mm256_broadcast_ss(&(clip_mat[0*4 + 2]));
+    const __m256 _03 = _mm256_broadcast_ss(&(clip_mat[0*4 + 3]));
+
+    const __m256 _10 = _mm256_broadcast_ss(&(clip_mat[1*4 + 0]));
+    const __m256 _11 = _mm256_broadcast_ss(&(clip_mat[1*4 + 1]));
+    const __m256 _12 = _mm256_broadcast_ss(&(clip_mat[1*4 + 2]));
+    const __m256 _13 = _mm256_broadcast_ss(&(clip_mat[1*4 + 3]));
+
+    const __m256 _20 = _mm256_broadcast_ss(&(clip_mat[2*4 + 0]));
+    const __m256 _21 = _mm256_broadcast_ss(&(clip_mat[2*4 + 1]));
+    const __m256 _22 = _mm256_broadcast_ss(&(clip_mat[2*4 + 2]));
+    const __m256 _23 = _mm256_broadcast_ss(&(clip_mat[2*4 + 3]));
+
+    const __m256 _30 = _mm256_broadcast_ss(&(clip_mat[3*4 + 0]));
+    const __m256 _31 = _mm256_broadcast_ss(&(clip_mat[3*4 + 1]));
+    const __m256 _32 = _mm256_broadcast_ss(&(clip_mat[3*4 + 2]));
+    const __m256 _33 = _mm256_broadcast_ss(&(clip_mat[3*4 + 3]));
+    const __m256 model_vx = _mm256_loadu_ps(voxel_verts + 0);
+    const __m256 model_vy = _mm256_loadu_ps(voxel_verts + 8);
+    const __m256 model_vz = _mm256_loadu_ps(voxel_verts + 16);
+    u32 num_voxels = 0;
+    for(u32 voxel_i = 0; voxel_i < in_num_voxels; voxel_i += 8)
+    {
+        __m256i voxel8i_x = _mm256_loadu_si256((__m256i*)(in_voxel_x + voxel_i));
+        __m256i voxel8i_y = _mm256_loadu_si256((__m256i*)(in_voxel_y + voxel_i));
+        __m256i voxel8i_z = _mm256_loadu_si256((__m256i*)(in_voxel_z + voxel_i));
+        __m256i voxel8i_c = _mm256_loadu_si256((__m256i*)(in_voxel_color + voxel_i));
+
+        __m256 voxel8_x = _mm256_cvtepi32_ps(voxel8i_x);
+        __m256 voxel8_y = _mm256_cvtepi32_ps(voxel8i_y);
+        __m256 voxel8_z = _mm256_cvtepi32_ps(voxel8i_z);
+
+        u32 pack_index = 0;
+        for(u32 i = 0; i < 8; i++)
+        {
+            // Load single voxel data, transform 8 vertices to clip space, and check if entirely outside the clip area.
+            // TODO Is there something better we can do here?
+            f32 voxel_x = voxel8_x.m256_f32[i];
+            f32 voxel_y = voxel8_y.m256_f32[i];
+            f32 voxel_z = voxel8_z.m256_f32[i];
+
+            __m256 vx = _mm256_add_ps(_mm256_set1_ps(voxel_x), model_vx);
+            __m256 vy = _mm256_add_ps(_mm256_set1_ps(voxel_y), model_vy);
+            __m256 vz = _mm256_add_ps(_mm256_set1_ps(voxel_z), model_vz);
+
+            __m256 c_vx = _mm256_fmadd_ps(vx, _00, _mm256_fmadd_ps(vy, _01, _mm256_fmadd_ps(vz, _02, _03)));
+            __m256 c_vy = _mm256_fmadd_ps(vx, _10, _mm256_fmadd_ps(vy, _11, _mm256_fmadd_ps(vz, _12, _13)));
+            __m256 c_vz = _mm256_fmadd_ps(vx, _20, _mm256_fmadd_ps(vy, _21, _mm256_fmadd_ps(vz, _22, _23)));
+            __m256 c_vw = _mm256_fmadd_ps(vx, _30, _mm256_fmadd_ps(vy, _31, _mm256_fmadd_ps(vz, _32, _33)));
+
+            __m256 nc_vw = _mm256_sub_ps(_mm256_set1_ps(0.0f), c_vw);
+
+            __m256 mask = _mm256_cmp_ps(nc_vw, c_vx, _CMP_LT_OQ);
+            mask = _mm256_and_ps(mask, _mm256_cmp_ps(c_vx,  c_vw, _CMP_LT_OQ));
+            mask = _mm256_and_ps(mask, _mm256_cmp_ps(nc_vw, c_vy, _CMP_LT_OQ));
+            mask = _mm256_and_ps(mask, _mm256_cmp_ps(c_vy,  c_vw, _CMP_LT_OQ));
+            mask = _mm256_and_ps(mask, _mm256_cmp_ps(nc_vw, c_vz, _CMP_LT_OQ));
+            mask = _mm256_and_ps(mask, _mm256_cmp_ps(c_vz,  c_vw, _CMP_LT_OQ));
+
+            // TODO Is there something better we can do here?
+            u32 keep = _mm256_movemask_ps(mask) > 0 ? 1 : 0;
+            pack_index |= keep << i;
+        }
+
+        _mm256_storeu_ps(out_voxel_x + num_voxels, left_pack(voxel8_x, pack_index));
+        _mm256_storeu_ps(out_voxel_y + num_voxels, left_pack(voxel8_y, pack_index));
+        _mm256_storeu_ps(out_voxel_z + num_voxels, left_pack(voxel8_z, pack_index));
+        _mm256_storeu_si256((__m256i*)(out_voxel_color + num_voxels), left_pack(voxel8i_c, pack_index));
+        num_voxels += _mm_popcnt_u32(pack_index);
+    }
+    *out_num_voxels = num_voxels;
+}
+
 
 void glfw_error_fn(s32 error, const char *message)
 {
@@ -726,79 +817,20 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 }
 #else
                 const mat4 clip_mat = clip_m_view() * view_m_world();
-                const __m256 _00 = _mm256_broadcast_ss(&(clip_mat[0][0]));
-                const __m256 _01 = _mm256_broadcast_ss(&(clip_mat[0][1]));
-                const __m256 _02 = _mm256_broadcast_ss(&(clip_mat[0][2]));
-                const __m256 _03 = _mm256_broadcast_ss(&(clip_mat[0][3]));
-
-                const __m256 _10 = _mm256_broadcast_ss(&(clip_mat[1][0]));
-                const __m256 _11 = _mm256_broadcast_ss(&(clip_mat[1][1]));
-                const __m256 _12 = _mm256_broadcast_ss(&(clip_mat[1][2]));
-                const __m256 _13 = _mm256_broadcast_ss(&(clip_mat[1][3]));
-
-                const __m256 _20 = _mm256_broadcast_ss(&(clip_mat[2][0]));
-                const __m256 _21 = _mm256_broadcast_ss(&(clip_mat[2][1]));
-                const __m256 _22 = _mm256_broadcast_ss(&(clip_mat[2][2]));
-                const __m256 _23 = _mm256_broadcast_ss(&(clip_mat[2][3]));
-
-                const __m256 _30 = _mm256_broadcast_ss(&(clip_mat[3][0]));
-                const __m256 _31 = _mm256_broadcast_ss(&(clip_mat[3][1]));
-                const __m256 _32 = _mm256_broadcast_ss(&(clip_mat[3][2]));
-                const __m256 _33 = _mm256_broadcast_ss(&(clip_mat[3][3]));
-                const __m256 model_vx = _mm256_loadu_ps(graphics_state->voxel_vertices + 0);
-                const __m256 model_vy = _mm256_loadu_ps(graphics_state->voxel_vertices + 8);
-                const __m256 model_vz = _mm256_loadu_ps(graphics_state->voxel_vertices + 16);
-                voxel_render_data->num = 0;
-                for(u32 voxel_i = 0; voxel_i < all_voxel_data->num; voxel_i += 8)
-                {
-                    __m256i voxel8i_x = _mm256_loadu_si256((__m256i*)(all_voxel_data->x + voxel_i));
-                    __m256i voxel8i_y = _mm256_loadu_si256((__m256i*)(all_voxel_data->y + voxel_i));
-                    __m256i voxel8i_z = _mm256_loadu_si256((__m256i*)(all_voxel_data->z + voxel_i));
-                    __m256i voxel8i_c = _mm256_loadu_si256((__m256i*)(all_voxel_data->color + voxel_i));
-
-                    __m256 voxel8_x = _mm256_cvtepi32_ps(voxel8i_x);
-                    __m256 voxel8_y = _mm256_cvtepi32_ps(voxel8i_y);
-                    __m256 voxel8_z = _mm256_cvtepi32_ps(voxel8i_z);
-
-                    u32 pack_index = 0;
-                    for(u32 i = 0; i < 8; i++)
-                    {
-                        // Load single voxel data, transform 8 vertices to clip space, and check if entirely outside the clip area.
-                        // TODO Is there something better we can do here?
-                        f32 voxel_x = voxel8_x.m256_f32[i];
-                        f32 voxel_y = voxel8_y.m256_f32[i];
-                        f32 voxel_z = voxel8_z.m256_f32[i];
-
-                        __m256 vx = _mm256_add_ps(_mm256_set1_ps(voxel_x), model_vx);
-                        __m256 vy = _mm256_add_ps(_mm256_set1_ps(voxel_y), model_vy);
-                        __m256 vz = _mm256_add_ps(_mm256_set1_ps(voxel_z), model_vz);
-
-                        __m256 c_vx = _mm256_fmadd_ps(vx, _00, _mm256_fmadd_ps(vy, _01, _mm256_fmadd_ps(vz, _02, _03)));
-                        __m256 c_vy = _mm256_fmadd_ps(vx, _10, _mm256_fmadd_ps(vy, _11, _mm256_fmadd_ps(vz, _12, _13)));
-                        __m256 c_vz = _mm256_fmadd_ps(vx, _20, _mm256_fmadd_ps(vy, _21, _mm256_fmadd_ps(vz, _22, _23)));
-                        __m256 c_vw = _mm256_fmadd_ps(vx, _30, _mm256_fmadd_ps(vy, _31, _mm256_fmadd_ps(vz, _32, _33)));
-
-                        __m256 nc_vw = _mm256_sub_ps(_mm256_set1_ps(0.0f), c_vw);
-
-                        __m256 mask = _mm256_cmp_ps(nc_vw, c_vx, _CMP_LT_OQ);
-                        mask = _mm256_and_ps(mask, _mm256_cmp_ps(c_vx,  c_vw, _CMP_LT_OQ));
-                        mask = _mm256_and_ps(mask, _mm256_cmp_ps(nc_vw, c_vy, _CMP_LT_OQ));
-                        mask = _mm256_and_ps(mask, _mm256_cmp_ps(c_vy,  c_vw, _CMP_LT_OQ));
-                        mask = _mm256_and_ps(mask, _mm256_cmp_ps(nc_vw, c_vz, _CMP_LT_OQ));
-                        mask = _mm256_and_ps(mask, _mm256_cmp_ps(c_vz,  c_vw, _CMP_LT_OQ));
-
-                        // TODO Is there something better we can do here?
-                        u32 keep = _mm256_movemask_ps(mask) > 0 ? 1 : 0;
-                        pack_index |= keep << i;
-                    }
-
-                    // TODO does shufmask get re-used?
-                    _mm256_storeu_ps(voxel_render_data->x + voxel_render_data->num, left_pack(voxel8_x, pack_index));
-                    _mm256_storeu_ps(voxel_render_data->y + voxel_render_data->num, left_pack(voxel8_y, pack_index));
-                    _mm256_storeu_ps(voxel_render_data->z + voxel_render_data->num, left_pack(voxel8_z, pack_index));
-                    _mm256_storeu_si256((__m256i*)(voxel_render_data->color + voxel_render_data->num), left_pack(voxel8i_c, pack_index));
-                    voxel_render_data->num += _mm_popcnt_u32(pack_index);
-                }
+                camera_cull(
+                    &voxel_render_data->num,
+                    voxel_render_data->x,
+                    voxel_render_data->y,
+                    voxel_render_data->z,
+                    voxel_render_data->color,
+                    all_voxel_data->num,
+                    all_voxel_data->x,
+                    all_voxel_data->y,
+                    all_voxel_data->z,
+                    all_voxel_data->color,
+                    &(clip_mat[0][0]),
+                    graphics_state->voxel_vertices
+                );
 #endif
             }
 
