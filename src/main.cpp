@@ -18,16 +18,26 @@
 static const u32 SHADER_BUFFER_WIDTH = 1024*1024;
 static const u32 NUM_VOXEL_DATA_FIELDS = 4;
 
+static const u32 MAX_VOXELS = 10*1024*1024;
 struct VoxelRenderData
 {
-    static const u32 MAX_VOXELS = 10*1024*1024;
     u32 num;
-    f32 x[MAX_VOXELS];
-    f32 y[MAX_VOXELS];
-    f32 z[MAX_VOXELS];
+    // | xxxx yyyy zzz |
+    f32 pos[MAX_VOXELS*3];
     u32 color[MAX_VOXELS];
 
     static const u32 BATCH_SIZE = 10*1024;
+};
+
+struct Camera
+{
+    v3 pos;
+    f32 rot_x;
+    f32 rot_y;
+    f32 vfov;
+    f32 view_dist;
+    f32 near_plane_dist;
+    f32 ar; // w / h
 };
 
 struct GraphicsState
@@ -35,20 +45,19 @@ struct GraphicsState
     GLFWwindow *window;
     char debug_info_log[1024];
     
-    f32 screen_aspect_ratio;
-
     GLuint batch_voxel_shader_program;
     GLuint batch_voxel_vao;
     GLuint batch_voxel_vbo;
     GLuint batch_voxel_ebo;
     GLuint batch_voxel_ssbo;
 
-    v3 camera_pos;
-    f32 camera_x_rot;
-    f32 camera_y_rot;
-    f32 camera_fov;
-    f32 view_dist;
-    f32 near_plane_dist;
+    GLuint debug_line_shader_program;
+    GLuint debug_line_vao;
+    GLuint debug_line_vbo;
+
+    Camera cam;
+    Camera debug_cam;
+    bool use_debug_cam;
 
     f32 voxel_vertices[32] =
     {
@@ -68,12 +77,9 @@ static InputState *input_state = nullptr;
 
 struct VoxelData
 {
-    static const u32 MAX_VOXELS = 10*1024*1024;
     u32 num;
-    s32 x[MAX_VOXELS];
-    s32 y[MAX_VOXELS];
-    s32 z[MAX_VOXELS];
-
+    // | xxxx yyyy zzz |
+    s32 pos[MAX_VOXELS*3];
     u32 color[MAX_VOXELS];
 };
 
@@ -103,6 +109,79 @@ struct ScopeTimer
     LARGE_INTEGER start;
 };
 #define TIME_SCOPE(name) ScopeTimer _time_scope = ScopeTimer(name)
+
+
+
+// TODO speed
+mat4 view_m_world(const Camera* __restrict cam)
+{
+    mat4 y_rot = make_y_axis_rotation_matrix(-cam->rot_y);
+    mat4 x_rot = make_x_axis_rotation_matrix(-cam->rot_x);
+    mat4 result = x_rot * y_rot * make_translation_matrix(-cam->pos);
+    return result;
+}
+mat4 clip_m_view(const Camera* __restrict cam)
+{
+    static f32 n = cam->near_plane_dist;
+    static f32 f = cam->view_dist;
+    f32 fov = deg_to_rad(cam->vfov);
+    f32 r = -(f + n) / (f - n);
+    f32 s = -(2.0f * n * f) / (f - n);
+    mat4 result =
+    {
+         (f32)(1.0f / (tanf(fov / 2.0f) * cam->ar)) , 0.0f, 0.0f, 0.0f,
+         0.0f, 1.0f / tanf(fov / 2.0f), 0.0f, 0.0f,
+         0.0f, 0.0f, r, s,
+         0.0f, 0.0f, -1.0f, 0.0f
+    };
+    return result;
+}
+
+// Outputs plan normals for right, top, left, bottom, near, far in that order.
+static void get_frustum_planes(v3* __restrict out_normals, v3* __restrict out_points, const Camera* __restrict cam)
+{
+    mat4 cam_xform = view_m_world(&graphics_state->cam);
+    v3 cam_p = graphics_state->cam.pos;
+    v3 cam_i = v3(cam_xform[0][0], cam_xform[0][1], cam_xform[0][2]);
+    v3 cam_j = v3(cam_xform[1][0], cam_xform[1][1], cam_xform[1][2]);
+    v3 cam_k = v3(cam_xform[2][0], cam_xform[2][1], cam_xform[2][2]);
+
+    f32 tan_fov = tan(deg_to_rad(graphics_state->cam.vfov)*0.5f);
+    f32 near_hh = tan_fov * graphics_state->cam.near_plane_dist;
+    f32 near_hw = near_hh * graphics_state->cam.ar;
+    f32 far_hh = tan_fov * graphics_state->cam.view_dist;
+    f32 far_hw = far_hh * graphics_state->cam.ar;
+
+    v3 p_near = cam_p + -cam_k * graphics_state->cam.near_plane_dist;
+    v3 p_far = cam_p + -cam_k * graphics_state->cam.view_dist;
+
+    v3 frustum_v[] =
+    {
+        p_near - cam_i*near_hw - cam_j*near_hh, // bl 
+        p_near + cam_i*near_hw - cam_j*near_hh, // br 
+        p_near + cam_i*near_hw + cam_j*near_hh, // tr 
+        p_near - cam_i*near_hw + cam_j*near_hh, // tl 
+
+        p_far - cam_i*far_hw - cam_j*far_hh, // bl 
+        p_far + cam_i*far_hw - cam_j*far_hh, // br 
+        p_far + cam_i*far_hw + cam_j*far_hh, // tr 
+        p_far - cam_i*far_hw + cam_j*far_hh, // tl 
+    };
+    // TODO Think harder about this...
+    out_normals[0] = normalize(cross(frustum_v[6] - frustum_v[5], frustum_v[1] - frustum_v[5]));
+    out_normals[1] = normalize(cross(frustum_v[7] - frustum_v[6], frustum_v[2] - frustum_v[6]));
+    out_normals[2] = normalize(cross(frustum_v[4] - frustum_v[7], frustum_v[3] - frustum_v[7]));
+    out_normals[3] = normalize(cross(frustum_v[5] - frustum_v[4], frustum_v[0] - frustum_v[4]));
+    out_normals[4] =  cam_k;
+    out_normals[5] = -cam_k;
+
+    out_points[0] = cam_p;
+    out_points[1] = cam_p;
+    out_points[2] = cam_p;
+    out_points[3] = cam_p;
+    out_points[4] = p_near;
+    out_points[5] = p_far;
+}
 
 
 static constexpr u32 left_pack_lut[] = 
@@ -152,91 +231,56 @@ static __m256i left_pack(__m256i a, u32 mask)
 }
 
 void camera_cull(
-    u32 * __restrict out_num_voxels,
-    f32 * __restrict out_voxel_x,
-    f32 * __restrict out_voxel_y,
-    f32 * __restrict out_voxel_z,
-    u32 * __restrict out_voxel_color,
+    u32* __restrict out_num_voxels,
+    f32* __restrict out_voxel_pos,
+    u32* __restrict out_voxel_color,
 
     const u32 in_num_voxels,
-    const s32 * __restrict in_voxel_x,
-    const s32 * __restrict in_voxel_y,
-    const s32 * __restrict in_voxel_z,
-    const u32 * __restrict in_voxel_color,
-    const f32 * __restrict clip_mat,
-    const f32 * __restrict voxel_verts
+    const s32* __restrict in_voxel_pos,
+    const u32* __restrict in_voxel_color,
+    const Camera* __restrict cam
 )
 {
-    const __m256 _00 = _mm256_broadcast_ss(&(clip_mat[0*4 + 0]));
-    const __m256 _01 = _mm256_broadcast_ss(&(clip_mat[0*4 + 1]));
-    const __m256 _02 = _mm256_broadcast_ss(&(clip_mat[0*4 + 2]));
-    const __m256 _03 = _mm256_broadcast_ss(&(clip_mat[0*4 + 3]));
+    v3 plane_normals[6];
+    v3 plane_points[6];
+    get_frustum_planes(plane_normals, plane_points, cam);
 
-    const __m256 _10 = _mm256_broadcast_ss(&(clip_mat[1*4 + 0]));
-    const __m256 _11 = _mm256_broadcast_ss(&(clip_mat[1*4 + 1]));
-    const __m256 _12 = _mm256_broadcast_ss(&(clip_mat[1*4 + 2]));
-    const __m256 _13 = _mm256_broadcast_ss(&(clip_mat[1*4 + 3]));
-
-    const __m256 _20 = _mm256_broadcast_ss(&(clip_mat[2*4 + 0]));
-    const __m256 _21 = _mm256_broadcast_ss(&(clip_mat[2*4 + 1]));
-    const __m256 _22 = _mm256_broadcast_ss(&(clip_mat[2*4 + 2]));
-    const __m256 _23 = _mm256_broadcast_ss(&(clip_mat[2*4 + 3]));
-
-    const __m256 _30 = _mm256_broadcast_ss(&(clip_mat[3*4 + 0]));
-    const __m256 _31 = _mm256_broadcast_ss(&(clip_mat[3*4 + 1]));
-    const __m256 _32 = _mm256_broadcast_ss(&(clip_mat[3*4 + 2]));
-    const __m256 _33 = _mm256_broadcast_ss(&(clip_mat[3*4 + 3]));
-    const __m256 model_vx = _mm256_loadu_ps(voxel_verts + 0);
-    const __m256 model_vy = _mm256_loadu_ps(voxel_verts + 8);
-    const __m256 model_vz = _mm256_loadu_ps(voxel_verts + 16);
-    u32 num_voxels = 0;
-    for(u32 voxel_i = 0; voxel_i < in_num_voxels; voxel_i += 8)
+    __m256 p_dot_n[] =
     {
-        __m256i voxel8i_x = _mm256_loadu_si256((__m256i*)(in_voxel_x + voxel_i));
-        __m256i voxel8i_y = _mm256_loadu_si256((__m256i*)(in_voxel_y + voxel_i));
-        __m256i voxel8i_z = _mm256_loadu_si256((__m256i*)(in_voxel_z + voxel_i));
-        __m256i voxel8i_c = _mm256_loadu_si256((__m256i*)(in_voxel_color + voxel_i));
+        _mm256_set1_ps(dot(plane_points[0], plane_normals[0])),
+        _mm256_set1_ps(dot(plane_points[1], plane_normals[1])),
+        _mm256_set1_ps(dot(plane_points[2], plane_normals[2])),
+        _mm256_set1_ps(dot(plane_points[3], plane_normals[3])),
+        _mm256_set1_ps(dot(plane_points[4], plane_normals[4])),
+        _mm256_set1_ps(dot(plane_points[5], plane_normals[5]))
+    };
 
-        __m256 voxel8_x = _mm256_cvtepi32_ps(voxel8i_x);
-        __m256 voxel8_y = _mm256_cvtepi32_ps(voxel8i_y);
-        __m256 voxel8_z = _mm256_cvtepi32_ps(voxel8i_z);
+    u32 num_voxels = 0;
+    for(u32 i = 0; i < in_num_voxels; i += 8)
+    {
+        __m256 vx = _mm256_cvtepi32_ps(_mm256_loadu_si256((__m256i*)(in_voxel_pos + MAX_VOXELS*0 + i)));
+        __m256 vy = _mm256_cvtepi32_ps(_mm256_loadu_si256((__m256i*)(in_voxel_pos + MAX_VOXELS*1 + i)));
+        __m256 vz = _mm256_cvtepi32_ps(_mm256_loadu_si256((__m256i*)(in_voxel_pos + MAX_VOXELS*2 + i)));
+        __m256i vc = _mm256_loadu_si256((__m256i*)(in_voxel_color + i));
 
-        u32 pack_index = 0;
-        for(u32 i = 0; i < 8; i++)
+        __m256 mask = _mm256_cvtepi32_ps(_mm256_set1_epi8(0xFF));
+        for(u32 ni = 0; ni < 6; ni++)
         {
-            // Load single voxel data, transform 8 vertices to clip space, and check if entirely outside the clip area.
-            // TODO Is there something better we can do here?
-            f32 voxel_x = voxel8_x.m256_f32[i];
-            f32 voxel_y = voxel8_y.m256_f32[i];
-            f32 voxel_z = voxel8_z.m256_f32[i];
+            __m256 nx = _mm256_broadcast_ss(&plane_normals[ni].x);
+            __m256 ny = _mm256_broadcast_ss(&plane_normals[ni].y);
+            __m256 nz = _mm256_broadcast_ss(&plane_normals[ni].z);
+            __m256 d = _mm256_fmadd_ps(vx, nx, _mm256_fmadd_ps(vy, ny, _mm256_mul_ps(vz, nz)));
 
-            __m256 vx = _mm256_add_ps(_mm256_set1_ps(voxel_x), model_vx);
-            __m256 vy = _mm256_add_ps(_mm256_set1_ps(voxel_y), model_vy);
-            __m256 vz = _mm256_add_ps(_mm256_set1_ps(voxel_z), model_vz);
-
-            __m256 c_vx = _mm256_fmadd_ps(vx, _00, _mm256_fmadd_ps(vy, _01, _mm256_fmadd_ps(vz, _02, _03)));
-            __m256 c_vy = _mm256_fmadd_ps(vx, _10, _mm256_fmadd_ps(vy, _11, _mm256_fmadd_ps(vz, _12, _13)));
-            __m256 c_vz = _mm256_fmadd_ps(vx, _20, _mm256_fmadd_ps(vy, _21, _mm256_fmadd_ps(vz, _22, _23)));
-            __m256 c_vw = _mm256_fmadd_ps(vx, _30, _mm256_fmadd_ps(vy, _31, _mm256_fmadd_ps(vz, _32, _33)));
-
-            __m256 nc_vw = _mm256_sub_ps(_mm256_set1_ps(0.0f), c_vw);
-
-            __m256 mask = _mm256_cmp_ps(nc_vw, c_vx, _CMP_LT_OQ);
-            mask = _mm256_and_ps(mask, _mm256_cmp_ps(c_vx,  c_vw, _CMP_LT_OQ));
-            mask = _mm256_and_ps(mask, _mm256_cmp_ps(nc_vw, c_vy, _CMP_LT_OQ));
-            mask = _mm256_and_ps(mask, _mm256_cmp_ps(c_vy,  c_vw, _CMP_LT_OQ));
-            mask = _mm256_and_ps(mask, _mm256_cmp_ps(nc_vw, c_vz, _CMP_LT_OQ));
-            mask = _mm256_and_ps(mask, _mm256_cmp_ps(c_vz,  c_vw, _CMP_LT_OQ));
-
-            // TODO Is there something better we can do here?
-            u32 keep = _mm256_movemask_ps(mask) > 0 ? 1 : 0;
-            pack_index |= keep << i;
+            __m256 dist = _mm256_sub_ps(d, p_dot_n[ni]);
+            __m256 cmp = _mm256_cmp_ps(dist, _mm256_set1_ps(1.0f), _CMP_LT_OQ);
+            mask = _mm256_and_ps(mask, cmp);
         }
 
-        _mm256_storeu_ps(out_voxel_x + num_voxels, left_pack(voxel8_x, pack_index));
-        _mm256_storeu_ps(out_voxel_y + num_voxels, left_pack(voxel8_y, pack_index));
-        _mm256_storeu_ps(out_voxel_z + num_voxels, left_pack(voxel8_z, pack_index));
-        _mm256_storeu_si256((__m256i*)(out_voxel_color + num_voxels), left_pack(voxel8i_c, pack_index));
+        u32 pack_index = _mm256_movemask_ps(mask);
+        _mm256_storeu_ps(out_voxel_pos + MAX_VOXELS*0 + num_voxels,   left_pack(vx, pack_index));
+        _mm256_storeu_ps(out_voxel_pos + MAX_VOXELS*1 + num_voxels,   left_pack(vy, pack_index));
+        _mm256_storeu_ps(out_voxel_pos + MAX_VOXELS*2 + num_voxels,   left_pack(vz, pack_index));
+        _mm256_storeu_si256((__m256i*)(out_voxel_color + num_voxels), left_pack(vc, pack_index));
         num_voxels += _mm_popcnt_u32(pack_index);
     }
     *out_num_voxels = num_voxels;
@@ -357,7 +401,58 @@ static bool read_shader_file(const char *path, char **vert_source, char **geom_s
     return true;
 }
 
-GLuint make_shader(const char *shader_path)
+GLuint make_shader_from_string(const char *vert_source, const char *frag_source)
+{
+    s32 success;
+    const u32 info_log_size = sizeof(graphics_state->debug_info_log);
+    
+    u32 vert_shader;
+    vert_shader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vert_shader, 1, &vert_source, NULL);
+    glCompileShader(vert_shader);
+    glGetShaderiv(vert_shader, GL_COMPILE_STATUS, &success);
+    if(!success)
+    {
+        glGetShaderInfoLog(vert_shader, info_log_size, NULL, graphics_state->debug_info_log);
+        return -1;
+    }
+    
+    u32 frag_shader;
+    frag_shader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(frag_shader, 1, &frag_source, NULL);
+    glCompileShader(frag_shader);
+    glGetShaderiv(frag_shader, GL_COMPILE_STATUS, &success);
+    if(!success)
+    {
+        glGetShaderInfoLog(frag_shader, info_log_size, NULL, graphics_state->debug_info_log);
+        return -1;
+    }
+    
+    check_gl_errors("compiling shaders");
+    
+    GLuint program = glCreateProgram();
+    check_gl_errors("making program");
+    
+    glAttachShader(program, vert_shader);
+    glAttachShader(program, frag_shader);
+    glLinkProgram(program);
+    check_gl_errors("linking program");
+    
+    glGetProgramiv(program, GL_LINK_STATUS, &success);
+    if(!success)
+    {
+        glGetProgramInfoLog(program, info_log_size, NULL, graphics_state->debug_info_log);
+        return -1;
+    }
+    
+    glDeleteShader(vert_shader);
+    glDeleteShader(frag_shader); 
+    check_gl_errors("deleting shaders");
+    
+    return program;
+}
+
+GLuint make_shader_from_file(const char *shader_path)
 {
     s32 success;
     const u32 info_log_size = sizeof(graphics_state->debug_info_log);
@@ -371,102 +466,15 @@ GLuint make_shader(const char *shader_path)
         //fprintf(stderr, "Could not open shader file %s\n", shader_path);
         return -1;
     }
-    
-    u32 vert_shader;
-    vert_shader = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(vert_shader, 1, &vert_source, NULL);
-    glCompileShader(vert_shader);
-    glGetShaderiv(vert_shader, GL_COMPILE_STATUS, &success);
-    if(!success)
-    {
-        glGetShaderInfoLog(vert_shader, info_log_size, NULL, graphics_state->debug_info_log);
-        //fprintf(stderr, "VERTEX SHADER ERROR : %s\n%s\n", shader_path, info_log);
-        return -1;
-    }
-    
-    u32 frag_shader;
-    frag_shader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(frag_shader, 1, &frag_source, NULL);
-    glCompileShader(frag_shader);
-    glGetShaderiv(frag_shader, GL_COMPILE_STATUS, &success);
-    if(!success)
-    {
-        glGetShaderInfoLog(frag_shader, info_log_size, NULL, graphics_state->debug_info_log);
-        //fprintf(stderr, "VERTEX SHADER ERROR : %s\n%s\n", shader_path, info_log);
-        return -1;
-    }
-    
-    
-    u32 geom_shader;
-    if(geom_source != nullptr)
-    {
-        geom_shader = glCreateShader(GL_GEOMETRY_SHADER);
-        glShaderSource(geom_shader, 1, &geom_source, NULL);
-        glCompileShader(geom_shader);
-        glGetShaderiv(geom_shader, GL_COMPILE_STATUS, &success);
-        if(!success)
-        {
-            glGetShaderInfoLog(geom_shader, info_log_size, NULL, graphics_state->debug_info_log);
-            //fprintf(stderr, "VERTEX SHADER ERROR : %s\n%s\n", shader_path, info_log);
-            return -1;
-        }
-    }
-    
-    check_gl_errors("compiling shaders");
-    
-    GLuint program = glCreateProgram();
-    check_gl_errors("making program");
-    
-    glAttachShader(program, vert_shader);
-    glAttachShader(program, frag_shader);
-    if(geom_source != nullptr) glAttachShader(program, geom_shader);
-    glLinkProgram(program);
-    check_gl_errors("linking program");
-    
-    glGetProgramiv(program, GL_LINK_STATUS, &success);
-    if(!success)
-    {
-        glGetProgramInfoLog(program, info_log_size, NULL, graphics_state->debug_info_log);
-        //fprintf(stderr, "SHADER LINKING ERROR : %s\n%s\n", shader_path, info_log);
-        return -1;
-    }
-    
-    glDeleteShader(vert_shader);
-    glDeleteShader(frag_shader); 
-    check_gl_errors("deleting shaders");
-    
-    return program;
+
+    return make_shader_from_string(vert_source, frag_source);
 }
 
 static void reshape(GLFWwindow *window, s32 width, s32 height)
 {
     glViewport(0, 0, (GLint)width, (GLint)height);
-    graphics_state->screen_aspect_ratio = (f32)width / height;
-}
-
-// TODO speed
-mat4 view_m_world()
-{
-    mat4 y_rot = make_y_axis_rotation_matrix(-graphics_state->camera_y_rot);
-    mat4 x_rot = make_x_axis_rotation_matrix(-graphics_state->camera_x_rot);
-    mat4 result = x_rot * y_rot * make_translation_matrix(-graphics_state->camera_pos);
-    return result;
-}
-mat4 clip_m_view()
-{
-    static f32 n = graphics_state->near_plane_dist;
-    static f32 f = graphics_state->view_dist;
-    f32 fov = deg_to_rad(graphics_state->camera_fov);
-    f32 r = -(f + n) / (f - n);
-    f32 s = -(2.0f * n * f) / (f - n);
-    mat4 result =
-    {
-         (f32)(1.0f / (tanf(fov / 2.0f) * graphics_state->screen_aspect_ratio)) , 0.0f, 0.0f, 0.0f,
-         0.0f, 1.0f / tanf(fov / 2.0f), 0.0f, 0.0f,
-         0.0f, 0.0f, r, s,
-         0.0f, 0.0f, -1.0f, 0.0f
-    };
-    return result;
+    graphics_state->cam.ar = (f32)width / height;
+    graphics_state->debug_cam.ar = (f32)width / height;
 }
 
 // Right now I'm just defining "chunk" as a MxNxO group of voxels
@@ -503,23 +511,55 @@ static void terrain_chunk(VoxelData *out, u32 chunk_x, u32 chunk_z, u32 width, u
                 for(s32 i = 0; i < max_d - 1; i++)
                 {
                     s32 yi = Y - 1 - i;
-                    out->x[out->num] = X;
-                    out->y[out->num] = yi;
-                    out->z[out->num] = Z;
+                    out->pos[MAX_VOXELS*0 + out->num] = X;
+                    out->pos[MAX_VOXELS*1 + out->num] = yi;
+                    out->pos[MAX_VOXELS*2 + out->num] = Z;
                     out->color[out->num] = pick_color(yi);
                     out->num++;
-                    if(out->num >= VoxelData::MAX_VOXELS) return;
+                    if(out->num >= MAX_VOXELS) return;
                 }
             }
 
-            out->x[out->num] = X;
-            out->y[out->num] = Y;
-            out->z[out->num] = Z;
+            out->pos[MAX_VOXELS*0 + out->num] = X;
+            out->pos[MAX_VOXELS*1 + out->num] = Y;
+            out->pos[MAX_VOXELS*2 + out->num] = Z;
             out->color[out->num] = pick_color(Y);
             out->num++;
-            if(out->num >= VoxelData::MAX_VOXELS) return;
+            if(out->num >= MAX_VOXELS) return;
         }
     }
+}
+
+static void draw_line(v3 a, v3 b, v3 c)
+{
+    glUseProgram(graphics_state->debug_line_shader_program);
+    check_gl_errors("use program");
+
+    Camera *current_cam;
+    if(graphics_state->use_debug_cam) current_cam = &graphics_state->debug_cam;
+    else current_cam = &graphics_state->cam;
+
+    mat4 m = clip_m_view(current_cam) * view_m_world(current_cam);
+    GLint loc = glGetUniformLocation(graphics_state->debug_line_shader_program, "mvp");
+    glUniformMatrix4fv(loc, 1, true, &(m[0][0]));
+    if(loc == -1) assert(false);
+
+    loc = glGetUniformLocation(graphics_state->debug_line_shader_program, "color");
+    glUniform3f(loc, c.r, c.g, c.b);
+    if(loc == -1) assert(false);
+
+    glBindVertexArray(graphics_state->debug_line_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, graphics_state->debug_line_vbo);
+
+    f32 v[] =
+    {
+        a.x, a.y, a.z,
+        b.x, b.y, b.z
+    };
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(v), v);
+
+    glDrawArrays(GL_LINES, 0, 2);
+    check_gl_errors("draw");
 }
 
 INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine, INT nCmdShow)
@@ -575,67 +615,113 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
         glfwGetFramebufferSize(graphics_state->window, &framebuffer_width, &framebuffer_height);
         reshape(graphics_state->window, framebuffer_width, framebuffer_height);
 
-        graphics_state->camera_pos = v3(0.0f, 0.0f, 0.0f);
-        graphics_state->camera_x_rot = 0.0f;
-        graphics_state->camera_y_rot = M_PI;
-        graphics_state->camera_fov = 90.0f;
-        graphics_state->view_dist = 5000.0f;
-        graphics_state->near_plane_dist = 1.0f;
+        graphics_state->cam.pos = v3(0.0f, 0.0f, -5.0f);
+        graphics_state->cam.rot_x = 0.0f;
+        graphics_state->cam.rot_y = M_PI;
+        graphics_state->cam.vfov = 90.0f;
+        graphics_state->cam.view_dist = 5000.0f;
+        graphics_state->cam.near_plane_dist = 1.0f;
+        graphics_state->debug_cam = graphics_state->cam;
 
-        glGenVertexArrays(1, &graphics_state->batch_voxel_vao);
-        glBindVertexArray(graphics_state->batch_voxel_vao);
-        check_gl_errors("vao");
-
-        // https://www.khronos.org/opengl/wiki/Shader_Storage_Buffer_Object
-        glGenBuffers(1, &graphics_state->batch_voxel_vbo);
-        check_gl_errors("vbo");
-        static u32 voxel_indices[] = 
         {
-            4, 0, 3,
-            4, 3, 7,
-            2, 6, 7,
-            2, 7, 3,
-            5, 2, 1,
-            5, 6, 2,
-            4, 1, 0,
-            4, 5, 1,
-            7, 5, 4,
-            7, 6, 5,
-            0, 1, 2,
-            0, 2, 3
-        };
+            glGenVertexArrays(1, &graphics_state->batch_voxel_vao);
+            glBindVertexArray(graphics_state->batch_voxel_vao);
+            check_gl_errors("vao");
+            glGenBuffers(1, &graphics_state->batch_voxel_vbo);
+            check_gl_errors("vbo");
+            static u32 voxel_indices[] = 
+            {
+                4, 0, 3,
+                4, 3, 7,
+                2, 6, 7,
+                2, 7, 3,
+                5, 2, 1,
+                5, 6, 2,
+                4, 1, 0,
+                4, 5, 1,
+                7, 5, 4,
+                7, 6, 5,
+                0, 1, 2,
+                0, 2, 3
+            };
 
-        glBindBuffer(GL_ARRAY_BUFFER, graphics_state->batch_voxel_vbo);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(graphics_state->voxel_vertices), graphics_state->voxel_vertices, GL_STATIC_DRAW);
-        check_gl_errors("vbo voxel vertices");
+            glBindBuffer(GL_ARRAY_BUFFER, graphics_state->batch_voxel_vbo);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(graphics_state->voxel_vertices), graphics_state->voxel_vertices, GL_STATIC_DRAW);
+            check_gl_errors("vbo voxel vertices");
 
-        glGenBuffers(1, &graphics_state->batch_voxel_ebo);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, graphics_state->batch_voxel_ebo);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(voxel_indices), voxel_indices, GL_STATIC_DRAW);
+            glGenBuffers(1, &graphics_state->batch_voxel_ebo);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, graphics_state->batch_voxel_ebo);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(voxel_indices), voxel_indices, GL_STATIC_DRAW);
 
-        glVertexAttribPointer(0, 1, GL_FLOAT, GL_FALSE, 0, (void *)0);
-        glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 0, (void *)(8*sizeof(f32)));
-        glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 0, (void *)(16*sizeof(f32)));
-        glEnableVertexAttribArray(0);
-        glEnableVertexAttribArray(1);
-        glEnableVertexAttribArray(2);
-        check_gl_errors("vertex attrib pointer");
+            glVertexAttribPointer(0, 1, GL_FLOAT, GL_FALSE, 0, (void *)0);
+            glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 0, (void *)(8*sizeof(f32)));
+            glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 0, (void *)(16*sizeof(f32)));
+            glEnableVertexAttribArray(0);
+            glEnableVertexAttribArray(1);
+            glEnableVertexAttribArray(2);
+            check_gl_errors("vertex attrib pointer");
 
-        graphics_state->batch_voxel_shader_program = make_shader("assets/shaders/batch_voxel.shader");
-        {
-            FILE *file = fopen("log.txt", "wt");
-            fprintf(file, graphics_state->debug_info_log);
-            fclose(file);
+            // https://www.khronos.org/opengl/wiki/Shader_Storage_Buffer_Object
+            const u32 voxel_buffer_size = SHADER_BUFFER_WIDTH * NUM_VOXEL_DATA_FIELDS * 4;
+            glGenBuffers(1, &graphics_state->batch_voxel_ssbo);
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, graphics_state->batch_voxel_ssbo);
+            glBufferData(GL_SHADER_STORAGE_BUFFER, voxel_buffer_size, nullptr, GL_DYNAMIC_DRAW);
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, graphics_state->batch_voxel_ssbo);
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+            check_gl_errors("ssbo");
+
+            graphics_state->batch_voxel_shader_program = make_shader_from_file("assets/shaders/batch_voxel.shader");
+            {
+                FILE *file = fopen("log.txt", "wt");
+                fprintf(file, graphics_state->debug_info_log);
+                fclose(file);
+            }
         }
-        //assert(graphics_state->batch_voxel_shader_program != -1);
 
-        const u32 voxel_buffer_size = SHADER_BUFFER_WIDTH * NUM_VOXEL_DATA_FIELDS * 4;
-        glGenBuffers(1, &graphics_state->batch_voxel_ssbo);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, graphics_state->batch_voxel_ssbo);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, voxel_buffer_size, nullptr, GL_DYNAMIC_DRAW);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, graphics_state->batch_voxel_ssbo);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-        check_gl_errors("ssbo");
+        {
+            glGenVertexArrays(1, &graphics_state->debug_line_vao);
+            glBindVertexArray(graphics_state->debug_line_vao);
+            check_gl_errors("vao");
+            glGenBuffers(1, &graphics_state->debug_line_vbo);
+            check_gl_errors("vbo");
+            glBindBuffer(GL_ARRAY_BUFFER, graphics_state->debug_line_vbo);
+            f32 v[6] = {};
+            glBufferData(GL_ARRAY_BUFFER, sizeof(v), v, GL_STATIC_DRAW);
+            check_gl_errors("vbo voxel vertices");
+
+            glVertexAttribPointer(0, 1, GL_FLOAT, GL_FALSE, 3*sizeof(f32), (void *)0);               // x
+            glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 3*sizeof(f32), (void *)(1*sizeof(f32))); // y
+            glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 3*sizeof(f32), (void *)(2*sizeof(f32))); // z
+            glEnableVertexAttribArray(0);
+            glEnableVertexAttribArray(1);
+            glEnableVertexAttribArray(2);
+            check_gl_errors("vertex attrib pointer");
+
+            graphics_state->debug_line_shader_program = make_shader_from_string(
+                "#version 440 core\n"
+                "layout (location = 0) in float a_x;"
+                "layout (location = 1) in float a_y;"
+                "layout (location = 2) in float a_z;"
+                "uniform mat4 mvp;"
+                "void main()"
+                "{"
+                "    gl_Position = mvp * vec4(a_x, a_y, a_z, 1.0f);"
+                "};",
+
+                "#version 440 core\n"
+                "uniform vec3 color;"
+                "out vec4 frag_color;"
+                "void main()"
+                "{"
+                "    frag_color = vec4(color, 1);"
+                "}"
+            );
+            {
+                FILE *file = fopen("log.txt", "wt");
+                fprintf(file, graphics_state->debug_info_log);
+                fclose(file);
+            }
+        }
     }
 
     // ImGui
@@ -664,9 +750,9 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
         for(s32 x = -1; x < 2; x++)
         {
             terrain_chunk(all_voxel_data, x*WIDTH, z*DEPTH, WIDTH, DEPTH, noise_scale_x, noise_scale_y, noise_scale_z);
-            if(all_voxel_data->num >= VoxelData::MAX_VOXELS) break;
+            if(all_voxel_data->num >= MAX_VOXELS) break;
         }
-        if(all_voxel_data->num >= VoxelData::MAX_VOXELS) break;
+        if(all_voxel_data->num >= MAX_VOXELS) break;
     }
 
     f32 frame_timer = 0.0f;
@@ -697,9 +783,16 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             running = !glfwGetKey(graphics_state->window, GLFW_KEY_ESCAPE) && !glfwWindowShouldClose(graphics_state->window);
 
             {
-                ImGui::Text("camera pos (%f, %f, %f)", graphics_state->camera_pos.x, graphics_state->camera_pos.y, graphics_state->camera_pos.z);
-                ImGui::Text("camera x rot %f", graphics_state->camera_x_rot);
-                ImGui::Text("camera y rot %f", graphics_state->camera_y_rot);
+                ImGui::Text("camera pos (%f, %f, %f)", graphics_state->cam.pos.x, graphics_state->cam.pos.y, graphics_state->cam.pos.z);
+                ImGui::Text("camera x rot %f", graphics_state->cam.rot_x);
+                ImGui::Text("camera y rot %f", graphics_state->cam.rot_y);
+                ImGui::DragFloat("camera near_plane_dist", &graphics_state->cam.near_plane_dist);
+                ImGui::DragFloat("camera view_dist", &graphics_state->cam.view_dist);
+                ImGui::Checkbox("debug cam", &graphics_state->use_debug_cam);
+
+                Camera *current_cam;
+                if(graphics_state->use_debug_cam) current_cam = &graphics_state->debug_cam;
+                else current_cam = &graphics_state->cam;
 
                 static f32 last_mouse_x, last_mouse_y;
                 f64 xpos, ypos;
@@ -707,46 +800,39 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 if(glfwGetKey(graphics_state->window, GLFW_KEY_SPACE))
                 {
                     v2 mouse_delta = v2((f32)xpos - last_mouse_x, (f32)ypos - last_mouse_y);
-                    graphics_state->camera_y_rot -= mouse_delta.x * TIME_STEP * 0.2f;
-                    graphics_state->camera_x_rot -= mouse_delta.y * TIME_STEP * 0.2f;
+                    current_cam->rot_y -= mouse_delta.x * TIME_STEP * 0.2f;
+                    current_cam->rot_x -= mouse_delta.y * TIME_STEP * 0.2f;
                 }
                 last_mouse_x = (f32)xpos;
                 last_mouse_y = (f32)ypos;
 
-                mat4 camera_t = view_m_world();
-                v3 camera_right   = v3(camera_t[0][0], camera_t[0][1], camera_t[0][2]);
-                v3 camera_z = v3(camera_t[2][0], camera_t[2][1], camera_t[2][2]);
+                mat4 cam_xform = view_m_world(current_cam);
+                v3 cam_i = v3(cam_xform[0][0], cam_xform[0][1], cam_xform[0][2]);
+                v3 cam_k = v3(cam_xform[2][0], cam_xform[2][1], cam_xform[2][2]);
 
                 v3 camera_vel = v3();
-                camera_vel += -camera_right   * glfwGetKey(graphics_state->window, GLFW_KEY_A);
-                camera_vel +=  camera_right   * glfwGetKey(graphics_state->window, GLFW_KEY_D);
-                camera_vel +=  camera_z * glfwGetKey(graphics_state->window, GLFW_KEY_S);
-                camera_vel += -camera_z * glfwGetKey(graphics_state->window, GLFW_KEY_W);
-                static f32 camera_speed = 100.0f;
+                camera_vel += -cam_i * glfwGetKey(graphics_state->window, GLFW_KEY_A);
+                camera_vel +=  cam_i * glfwGetKey(graphics_state->window, GLFW_KEY_D);
+                camera_vel +=  cam_k * glfwGetKey(graphics_state->window, GLFW_KEY_S);
+                camera_vel += -cam_k * glfwGetKey(graphics_state->window, GLFW_KEY_W);
+                static f32 camera_speed = 10.0f;
                 ImGui::DragFloat("camera speed", &camera_speed);
-                graphics_state->camera_pos += normalize(camera_vel) * TIME_STEP * camera_speed;
+                current_cam->pos += normalize(camera_vel) * TIME_STEP * camera_speed;
             }
 
-            // TODO cleanup
-            static f32 view_dist = 5000.0f;
-            {
-                ImGui::DragFloat("noise_scale_x", &noise_scale_x);
-                ImGui::DragFloat("noise_scale_y", &noise_scale_y);
-                ImGui::DragFloat("noise_scale_z", &noise_scale_z);
-                ImGui::DragFloat("view dist", &view_dist);
-            }
-
-            s32 camera_x = (s32)graphics_state->camera_pos.x;
-            s32 camera_z = (s32)graphics_state->camera_pos.z;
+            s32 camera_x = (s32)graphics_state->cam.pos.x;
+            s32 camera_z = (s32)graphics_state->cam.pos.z;
             s32 camera_chunk_x = camera_x & ~0b0001'1111'1111;
             s32 camera_chunk_z = camera_z & ~0b0001'1111'1111;
             bool should_gen = false;
             static s32 last_camera_chunk_x = 0xFFFFFFFF;
             static s32 last_camera_chunk_z = 0xFFFFFFFF;
+            /*
             if((camera_chunk_x != last_camera_chunk_x) || (camera_chunk_z != last_camera_chunk_z))
             {
                 should_gen = true;
             }
+            */
             if(should_gen)
             {
                 all_voxel_data->num = 0;
@@ -758,9 +844,9 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                                 camera_chunk_x + x*WIDTH,
                                 camera_chunk_z + z*DEPTH,
                                 WIDTH, DEPTH, noise_scale_x, noise_scale_y, noise_scale_z);
-                        if(all_voxel_data->num >= VoxelData::MAX_VOXELS) break;
+                        if(all_voxel_data->num >= MAX_VOXELS) break;
                     }
-                    if(all_voxel_data->num >= VoxelData::MAX_VOXELS) break;
+                    if(all_voxel_data->num >= MAX_VOXELS) break;
                 }
             }
             last_camera_chunk_x = camera_chunk_x;
@@ -769,6 +855,8 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             // Prep render data
             {
                 TIME_SCOPE("Prep render data");
+
+                ImGui::Text("prep num_voxels %i", all_voxel_data->num);
 
 #if 0
                 // Pass through
@@ -783,7 +871,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 }
 #elif 0
                 // Reference
-                const mat4 clip_mat = clip_m_view() * view_m_world();
+                const mat4 clip_mat = clip_m_view(&graphics_state->cam) * view_m_world(&graphics_state->cam);
                 f32 * __restrict vv = graphics_state->voxel_vertices;
                 voxel_render_data->num = 0;
                 for(u32 i = 0; i < all_voxel_data->num; i++)
@@ -816,20 +904,22 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                     }
                 }
 #else
-                const mat4 clip_mat = clip_m_view() * view_m_world();
+                const mat4 view_mat = view_m_world(&graphics_state->cam);
+                float camera_xform[] =
+                {
+                    view_mat[0][0], view_mat[0][1], view_mat[0][2],
+                    view_mat[1][0], view_mat[1][1], view_mat[1][2],
+                    view_mat[2][0], view_mat[2][1], view_mat[2][2],
+                    graphics_state->cam.pos.x, graphics_state->cam.pos.y, graphics_state->cam.pos.z
+                };
                 camera_cull(
                     &voxel_render_data->num,
-                    voxel_render_data->x,
-                    voxel_render_data->y,
-                    voxel_render_data->z,
+                    voxel_render_data->pos,
                     voxel_render_data->color,
                     all_voxel_data->num,
-                    all_voxel_data->x,
-                    all_voxel_data->y,
-                    all_voxel_data->z,
+                    all_voxel_data->pos,
                     all_voxel_data->color,
-                    &(clip_mat[0][0]),
-                    graphics_state->voxel_vertices
+                    &graphics_state->cam
                 );
 #endif
             }
@@ -841,9 +931,9 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 u32 num_batches_drawn = 0;
                 for(u32 batch_i = 0; batch_i < voxel_render_data->num; batch_i += VoxelRenderData::BATCH_SIZE)
                 {
-                    f32 *batch_x = voxel_render_data->x + batch_i;
-                    f32 *batch_y = voxel_render_data->y + batch_i;
-                    f32 *batch_z = voxel_render_data->z + batch_i;
+                    f32 *batch_x = voxel_render_data->pos + MAX_VOXELS*0 + batch_i;
+                    f32 *batch_y = voxel_render_data->pos + MAX_VOXELS*1 + batch_i;
+                    f32 *batch_z = voxel_render_data->pos + MAX_VOXELS*2 + batch_i;
                     u32 *batch_color = voxel_render_data->color + batch_i;
                     u32 batch_size = min(voxel_render_data->num - batch_i, VoxelRenderData::BATCH_SIZE);
 
@@ -851,25 +941,22 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                     glUseProgram(graphics_state->batch_voxel_shader_program);
                     check_gl_errors("use program");
 
+                    Camera *current_cam;
+                    if(graphics_state->use_debug_cam) current_cam = &graphics_state->debug_cam;
+                    else current_cam = &graphics_state->cam;
+
                     {
-                        mat4 m = view_m_world();
+                        mat4 m = view_m_world(current_cam);
                         GLint loc = glGetUniformLocation(graphics_state->batch_voxel_shader_program, "m_view");
                         glUniformMatrix4fv(loc, 1, true, &(m[0][0]));
                         if(loc == -1) assert(false);
                     }
                     {
-                        mat4 m = clip_m_view();
+                        mat4 m = clip_m_view(current_cam);
                         GLint loc = glGetUniformLocation(graphics_state->batch_voxel_shader_program, "m_proj");
                         glUniformMatrix4fv(loc, 1, true, &(m[0][0]));
                         if(loc == -1) assert(false);
                     }
-                    /*
-                    {
-                        GLint loc = glGetUniformLocation(graphics_state->batch_voxel_shader_program, "u_view_dist");
-                        glUniform1f(loc, view_dist);
-                        if(loc == -1) assert(false);
-                    }
-                    */
 
                     glBindVertexArray(graphics_state->batch_voxel_vao);
                     glBindBuffer(GL_ARRAY_BUFFER, graphics_state->batch_voxel_vbo);
@@ -893,6 +980,77 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 ImGui::Text("num_voxels %i", voxel_render_data->num);
                 ImGui::Text("batches %i", num_batches_drawn);
 
+            }
+
+            {
+                draw_line(v3(), v3(1.0f, 0.0f, 0.0f), v3(1.0f, 0.0f, 0.0f));
+                draw_line(v3(), v3(0.0f, 1.0f, 0.0f), v3(0.0f, 1.0f, 0.0f));
+                draw_line(v3(), v3(0.0f, 0.0f, 1.0f), v3(0.0f, 0.0f, 1.0f));
+
+                mat4 cam_xform = view_m_world(&graphics_state->cam);
+                v3 cam_p = graphics_state->cam.pos;
+                v3 cam_i = v3(cam_xform[0][0], cam_xform[0][1], cam_xform[0][2]);
+                v3 cam_j = v3(cam_xform[1][0], cam_xform[1][1], cam_xform[1][2]);
+                v3 cam_k = v3(cam_xform[2][0], cam_xform[2][1], cam_xform[2][2]);
+                draw_line(cam_p, cam_p + cam_i, v3(1.0f, 0.0f, 0.0f));
+                draw_line(cam_p, cam_p + cam_j, v3(0.0f, 1.0f, 0.0f));
+                draw_line(cam_p, cam_p + cam_k, v3(0.0f, 0.0f, 1.0f));
+
+                f32 tan_fov = tan(graphics_state->cam.vfov*0.5f);
+                f32 near_hh = tan_fov * graphics_state->cam.near_plane_dist;
+                f32 near_hw = near_hh * graphics_state->cam.ar;
+                f32 far_hh = tan_fov * graphics_state->cam.view_dist;
+                f32 far_hw = far_hh * graphics_state->cam.ar;
+
+                v3 p_near = cam_p + -cam_k * graphics_state->cam.near_plane_dist;
+                v3 p_far = cam_p + -cam_k * graphics_state->cam.view_dist;
+
+                v3 frustum_v[] =
+                {
+                    p_near - cam_i*near_hw - cam_j*near_hh, // bl 
+                    p_near + cam_i*near_hw - cam_j*near_hh, // br 
+                    p_near + cam_i*near_hw + cam_j*near_hh, // tr 
+                    p_near - cam_i*near_hw + cam_j*near_hh, // tl 
+
+                    p_far - cam_i*far_hw - cam_j*far_hh, // bl 
+                    p_far + cam_i*far_hw - cam_j*far_hh, // br 
+                    p_far + cam_i*far_hw + cam_j*far_hh, // tr 
+                    p_far - cam_i*far_hw + cam_j*far_hh, // tl 
+                };
+
+                draw_line(frustum_v[0], frustum_v[1], v3(1.0f, 0.0f, 0.0f));
+                draw_line(frustum_v[1], frustum_v[2], v3(1.0f, 0.0f, 0.0f));
+                draw_line(frustum_v[2], frustum_v[3], v3(1.0f, 0.0f, 0.0f));
+                draw_line(frustum_v[3], frustum_v[0], v3(1.0f, 0.0f, 0.0f));
+
+                draw_line(frustum_v[4], frustum_v[5], v3(0.0f, 1.0f, 0.0f));
+                draw_line(frustum_v[5], frustum_v[6], v3(0.0f, 1.0f, 0.0f));
+                draw_line(frustum_v[6], frustum_v[7], v3(0.0f, 1.0f, 0.0f));
+                draw_line(frustum_v[7], frustum_v[4], v3(0.0f, 1.0f, 0.0f));
+
+                // Right
+                draw_line(frustum_v[1], frustum_v[5], v3(0.0f, 0.0f, 1.0f));
+                draw_line(frustum_v[5], frustum_v[6], v3(0.0f, 0.0f, 1.0f));
+                draw_line(frustum_v[6], frustum_v[2], v3(0.0f, 0.0f, 1.0f));
+                draw_line(frustum_v[2], frustum_v[1], v3(0.0f, 0.0f, 1.0f));
+
+                // Top
+                draw_line(frustum_v[2], frustum_v[6], v3(1.0f, 0.0f, 1.0f));
+                draw_line(frustum_v[6], frustum_v[7], v3(1.0f, 0.0f, 1.0f));
+                draw_line(frustum_v[7], frustum_v[3], v3(1.0f, 0.0f, 1.0f));
+                draw_line(frustum_v[3], frustum_v[2], v3(1.0f, 0.0f, 1.0f));
+
+                // Left
+                draw_line(frustum_v[3], frustum_v[7], v3(0.0f, 1.0f, 1.0f));
+                draw_line(frustum_v[7], frustum_v[4], v3(0.0f, 1.0f, 1.0f));
+                draw_line(frustum_v[4], frustum_v[0], v3(0.0f, 1.0f, 1.0f));
+                draw_line(frustum_v[0], frustum_v[3], v3(0.0f, 1.0f, 1.0f));
+
+                // Bottom
+                draw_line(frustum_v[0], frustum_v[4], v3(1.0f, 1.0f, 0.0f));
+                draw_line(frustum_v[4], frustum_v[5], v3(1.0f, 1.0f, 0.0f));
+                draw_line(frustum_v[5], frustum_v[1], v3(1.0f, 1.0f, 0.0f));
+                draw_line(frustum_v[1], frustum_v[0], v3(1.0f, 1.0f, 0.0f));
             }
 
             {
