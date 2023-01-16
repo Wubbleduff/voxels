@@ -238,21 +238,31 @@ void camera_cull(
     const u32 in_num_voxels,
     const s32* __restrict in_voxel_pos,
     const u32* __restrict in_voxel_color,
-    const Camera* __restrict cam
-)
+    const Camera* __restrict cam)
 {
+    // Check distance from voxel centroid to each plane and compare against 1.0f.
+    // This is effectively the same as a sphere-plane distance check.
+    // If P is a point on the plane, Q is the voxel centroid, and n is the plane normal, dist check is:
+    // (Q - P) * n < sqrt(0.5^2 + 0.5^2) ->
+    // Q*n - P*n - sqrt(0.5^2 + 0.5^2)
+    // We can precomupte p_dot_n = P*n + sqrt(0.5^2 + 0.5^2) outside the per-voxel loop.
+    // Inside the loop, we just need to compute Q*n - p_dot_n. The resulting dist will
+    // have the sign bit set if < 0. Then we can use movemask without needing an extra
+    // cmp.
+
     v3 plane_normals[6];
     v3 plane_points[6];
     get_frustum_planes(plane_normals, plane_points, cam);
 
     __m256 p_dot_n[] =
     {
-        _mm256_set1_ps(dot(plane_points[0], plane_normals[0])),
-        _mm256_set1_ps(dot(plane_points[1], plane_normals[1])),
-        _mm256_set1_ps(dot(plane_points[2], plane_normals[2])),
-        _mm256_set1_ps(dot(plane_points[3], plane_normals[3])),
-        _mm256_set1_ps(dot(plane_points[4], plane_normals[4])),
-        _mm256_set1_ps(dot(plane_points[5], plane_normals[5]))
+        // Add 0.1f for padding. Otherwise we see overly optimistic culling.
+        _mm256_set1_ps(dot(plane_points[0], plane_normals[0]) + 0.707107f+0.1f),
+        _mm256_set1_ps(dot(plane_points[1], plane_normals[1]) + 0.707107f+0.1f),
+        _mm256_set1_ps(dot(plane_points[2], plane_normals[2]) + 0.707107f+0.1f),
+        _mm256_set1_ps(dot(plane_points[3], plane_normals[3]) + 0.707107f+0.1f),
+        _mm256_set1_ps(dot(plane_points[4], plane_normals[4]) + 0.707107f+0.1f),
+        _mm256_set1_ps(dot(plane_points[5], plane_normals[5]) + 0.707107f+0.1f)
     };
 
     u32 num_voxels = 0;
@@ -266,14 +276,12 @@ void camera_cull(
         __m256 mask = _mm256_cvtepi32_ps(_mm256_set1_epi8(0xFF));
         for(u32 ni = 0; ni < 6; ni++)
         {
-            __m256 nx = _mm256_broadcast_ss(&plane_normals[ni].x);
-            __m256 ny = _mm256_broadcast_ss(&plane_normals[ni].y);
-            __m256 nz = _mm256_broadcast_ss(&plane_normals[ni].z);
-            __m256 d = _mm256_fmadd_ps(vx, nx, _mm256_fmadd_ps(vy, ny, _mm256_mul_ps(vz, nz)));
+            __m256 d = _mm256_fmadd_ps(vx, _mm256_broadcast_ss(&plane_normals[ni].x),
+                       _mm256_fmadd_ps(vy, _mm256_broadcast_ss(&plane_normals[ni].y),
+                       _mm256_mul_ps(vz, _mm256_broadcast_ss(&plane_normals[ni].z))));
 
             __m256 dist = _mm256_sub_ps(d, p_dot_n[ni]);
-            __m256 cmp = _mm256_cmp_ps(dist, _mm256_set1_ps(1.0f), _CMP_LT_OQ);
-            mask = _mm256_and_ps(mask, cmp);
+            mask = _mm256_and_ps(mask, dist);
         }
 
         u32 pack_index = _mm256_movemask_ps(mask);
