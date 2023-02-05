@@ -132,6 +132,8 @@ float squared(float a) { return a * a; }
 float lerp(float a, float b, float t) { return ((1.0f - t) * a) + (t * b); }
 float deg_to_rad(float a) { return a * (M_PI / 180.0f); }
 float rad_to_deg(float a) { return a * (180.0f / M_PI); }
+float floor(float a) { return float(int(a)); }
+float ceil(float a) { return float(int(a)+1); }
 /*
 float cos(float a) { return cosf(a); }
 float sin(float a) { return sinf(a); }
@@ -848,4 +850,90 @@ static float perlin_noise(float x, float y)
     float i2 = smoothstep(i0, i1, y - y0);
     return i2;
 }
+
+
+#if 1
+
+float pnoise(float x, float y, float z)
+{
+    auto& get_gradient = [](s32 px, s32 py, s32 pz)
+    {
+        int kNumPoints = 100000;
+        //f32 v = fract(sinf(dot(intPos, v3(12.9898, 78.233, 1234.5678))));
+        f32 v = sinf( f32(px)*12.9898 + f32(py)*78.233 + f32(pz)*1234.5678);
+        float i = (v - floor(v)) * 43758.5453;
+
+        float kGoldenFactor = 10.166640738;
+        float u = (2.0f / float(kNumPoints-1)) * float(i) - 1.0f;
+        float t = kGoldenFactor * float(i);
+        float up = sqrt(max(0.0f, 1.0f - u*u));
+        return v3(up*cos(t), up*sin(t), u);
+    };
+
+    s32 x0 = s32(floor(x));
+    s32 y0 = s32(floor(y));
+    s32 z0 = s32(floor(z));
+    s32 x1 = s32(ceil(x));
+    s32 y1 = s32(ceil(y));
+    s32 z1 = s32(ceil(z));
+    
+    v3 p = v3(x,y,z);
+    
+    v3 v[8];
+    v[0] = v3(x0, y0, z0);
+    v[1] = v3(x1, y0, z0);
+    v[2] = v3(x0, y1, z0);
+    v[3] = v3(x1, y1, z0);
+    v[4] = v3(x0, y0, z1);
+    v[5] = v3(x1, y0, z1);
+    v[6] = v3(x0, y1, z1);
+    v[7] = v3(x1, y1, z1);
+    
+    v3 d[8];
+    d[0] = p - v[0];
+    d[1] = p - v[1];
+    d[2] = p - v[2];
+    d[3] = p - v[3];
+    d[4] = p - v[4];
+    d[5] = p - v[5];
+    d[6] = p - v[6];
+    d[7] = p - v[7];
+    
+    f32 dx = x-f32(x0);
+    f32 dy = y-f32(y0);
+    f32 dz = z-f32(z0);
+
+    f32 tx = dx * dx * (3.0 - 2.0 * dx);
+    f32 ty = dy * dy * (3.0 - 2.0 * dy);
+    f32 tz = dz * dz * (3.0 - 2.0 * dz);
+    
+    f32 noiseVal = 
+        lerp(
+            lerp(
+                lerp(
+                    dot(get_gradient(v[0].x, v[0].y, v[0].z), d[0]),
+                    dot(get_gradient(v[1].x, v[1].y, v[1].z), d[1]),
+                    tx),
+                lerp(
+                    dot(get_gradient(v[2].x, v[2].y, v[2].z), d[2]),
+                    dot(get_gradient(v[3].x, v[3].y, v[3].z), d[3]),
+                    tx),
+                ty
+            ),
+            lerp(
+                lerp(
+                    dot(get_gradient(v[4].x, v[4].y, v[4].z), d[4]),
+                    dot(get_gradient(v[5].x, v[5].y, v[5].z), d[5]),
+                    tx),
+                lerp(
+                    dot(get_gradient(v[6].x, v[6].y, v[6].z), d[6]),
+                    dot(get_gradient(v[7].x, v[7].y, v[7].z), d[7]),
+                    tx),
+                ty
+            ),
+            tz
+        );
+    return noiseVal / 0.7; // normalize to about [-1..1];
+}
+#endif
 

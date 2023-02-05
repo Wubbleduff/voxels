@@ -75,6 +75,27 @@ struct InputState
 };
 static InputState *input_state = nullptr;
 
+//
+// *
+//
+// * *
+// * *
+//
+// * * * *
+// * * * *
+// * * * *
+// * * * *
+//
+// 8x8x8
+// * * * * * * * *
+// * * * * * * * *
+// * * * * * * * *
+// * * * * * * * *
+// * * * * * * * *
+// * * * * * * * *
+// * * * * * * * *
+// * * * * * * * *
+//
 struct VoxelData
 {
     u32 num;
@@ -82,7 +103,6 @@ struct VoxelData
     s32 pos[MAX_VOXELS*3];
     u32 color[MAX_VOXELS];
 };
-
 
 struct ScopeTimer
 {
@@ -102,8 +122,7 @@ struct ScopeTimer
         LARGE_INTEGER ms;
         ms.QuadPart = (end.QuadPart - start.QuadPart) * 1000;
         ms.QuadPart /= freq.QuadPart;
-
-        ImGui::Text("TIME - %s: %ims", m_name, ms.QuadPart);
+ImGui::Text("TIME - %s: %ims", m_name, ms.QuadPart);
     }
     const char *m_name;
     LARGE_INTEGER start;
@@ -486,7 +505,10 @@ static void reshape(GLFWwindow *window, s32 width, s32 height)
 }
 
 // Right now I'm just defining "chunk" as a MxNxO group of voxels
-static void terrain_chunk(VoxelData *out, u32 chunk_x, u32 chunk_z, u32 width, u32 depth, f32 noise_scale_x, f32 noise_scale_y, f32 noise_scale_z)
+static void terrain_chunk(VoxelData *out,
+        s32 offset_x, s32 offset_z,
+        s32 width, s32 depth,
+        f32 noise_scale_x, f32 noise_scale_y, f32 noise_scale_z)
 {
     auto noise = [noise_scale_x, noise_scale_y, noise_scale_z](s32 x_, s32 z_)
     {
@@ -500,40 +522,37 @@ static void terrain_chunk(VoxelData *out, u32 chunk_x, u32 chunk_z, u32 width, u
         else if(y < 480) return (u32)0x519916FF;
         else return (u32)0xCCCCCCFF;
     };
-    for(s32 z = 0; z < depth; z++)
-    {
-        for(s32 x = 0; x < width; x++)
-        {
-            s32 X = x + chunk_x;
-            s32 Z = z + chunk_z;
 
-            s32 Y = (s32)noise(X, Z);
+    u32 num = 0;
+    for(s32 z = offset_z; z < depth + offset_z; z++)
+    {
+        for(s32 x = offset_x; x < width + offset_x; x++)
+        {
+            s32 y = (s32)noise(x, z);
 
             // Check for holes in the ground
             {
-                s32 y0 = (s32)noise(X - 1, Z);
-                s32 y1 = (s32)noise(X + 1, Z);
-                s32 y2 = (s32)noise(X, Z - 1);
-                s32 y3 = (s32)noise(X, Z + 1);
-                s32 max_d = max(Y - y0, max(Y - y1, max(Y - y2, Y - y3)));
+                s32 y0 = (s32)noise(x - 1, z);
+                s32 y1 = (s32)noise(x + 1, z);
+                s32 y2 = (s32)noise(x, z - 1);
+                s32 y3 = (s32)noise(x, z + 1);
+                s32 max_d = max(y - y0, max(y - y1, max(y - y2, y - y3)));
                 for(s32 i = 0; i < max_d - 1; i++)
                 {
-                    s32 yi = Y - 1 - i;
-                    out->pos[MAX_VOXELS*0 + out->num] = X;
-                    out->pos[MAX_VOXELS*1 + out->num] = yi;
-                    out->pos[MAX_VOXELS*2 + out->num] = Z;
-                    out->color[out->num] = pick_color(yi);
-                    out->num++;
-                    if(out->num >= MAX_VOXELS) return;
+                    s32 yi = y - 1 - i;
+                    out->pos[MAX_VOXELS*0 + num] = x;
+                    out->pos[MAX_VOXELS*1 + num] = yi;
+                    out->pos[MAX_VOXELS*2 + num] = z;
+                    out->color[num] = pick_color(yi);
+                    num++;
                 }
             }
 
-            out->pos[MAX_VOXELS*0 + out->num] = X;
-            out->pos[MAX_VOXELS*1 + out->num] = Y;
-            out->pos[MAX_VOXELS*2 + out->num] = Z;
-            out->color[out->num] = pick_color(Y);
-            out->num++;
-            if(out->num >= MAX_VOXELS) return;
+            out->pos[MAX_VOXELS*0 + num] = x;
+            out->pos[MAX_VOXELS*1 + num] = y;
+            out->pos[MAX_VOXELS*2 + num] = z;
+            out->color[num] = pick_color(y);
+            num++;
         }
     }
 }
@@ -747,21 +766,6 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
     VoxelData * __restrict all_voxel_data = new VoxelData;
     VoxelRenderData * __restrict voxel_render_data = new VoxelRenderData;
 
-    static f32 noise_scale_x = 0.008f;
-    static f32 noise_scale_y = 20.0f;
-    static f32 noise_scale_z = 0.008f;
-    static const u32 WIDTH = 1024;
-    static const u32 DEPTH = 1024;
-    all_voxel_data->num = 0;
-    for(s32 z = -1; z < 2; z++)
-    {
-        for(s32 x = -1; x < 2; x++)
-        {
-            terrain_chunk(all_voxel_data, x*WIDTH, z*DEPTH, WIDTH, DEPTH, noise_scale_x, noise_scale_y, noise_scale_z);
-            if(all_voxel_data->num >= MAX_VOXELS) break;
-        }
-        if(all_voxel_data->num >= MAX_VOXELS) break;
-    }
 
     f32 frame_timer = 0.0f;
     f32 last_time = 0.0f;
@@ -828,36 +832,70 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 current_cam->pos += normalize(camera_vel) * TIME_STEP * camera_speed;
             }
 
+            static constexpr s32 CHUNK_DIM = 32;
+            static constexpr s32 CHUNK_POW = 5; // CHUNK_DIM = 2**CHUNK_POW
+
+            //static constexpr s32 VIEW_DIST = 1024;
+            static constexpr s32 VIEW_DIST = 64;
+            static constexpr s32 LOADED_REGION_CHUNKS_DIM = (VIEW_DIST/CHUNK_DIM)*2;
+
             s32 camera_x = (s32)graphics_state->cam.pos.x;
+            s32 camera_y = (s32)graphics_state->cam.pos.y;
             s32 camera_z = (s32)graphics_state->cam.pos.z;
-            s32 camera_chunk_x = camera_x & ~0b0001'1111'1111;
-            s32 camera_chunk_z = camera_z & ~0b0001'1111'1111;
-            bool should_gen = false;
+            s32 camera_chunk_x = camera_x >> CHUNK_POW;
+            s32 camera_chunk_y = camera_y >> CHUNK_POW;
+            s32 camera_chunk_z = camera_z >> CHUNK_POW;
+
+            s32 chunk_bl_x = camera_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
+            s32 chunk_bl_y = camera_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
+            s32 chunk_bl_z = camera_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
+            s32 chunk_tr_x = camera_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
+            s32 chunk_tr_y = camera_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
+            s32 chunk_tr_z = camera_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
+
             static s32 last_camera_chunk_x = 0xFFFFFFFF;
+            static s32 last_camera_chunk_y = 0xFFFFFFFF;
             static s32 last_camera_chunk_z = 0xFFFFFFFF;
-            /*
-            if((camera_chunk_x != last_camera_chunk_x) || (camera_chunk_z != last_camera_chunk_z))
-            {
-                should_gen = true;
-            }
-            */
-            if(should_gen)
+
+            if((camera_chunk_x != last_camera_chunk_x) ||
+               (camera_chunk_y != last_camera_chunk_y) || 
+               (camera_chunk_z != last_camera_chunk_z))
             {
                 all_voxel_data->num = 0;
-                for(s32 z = -1; z <= 1; z++)
+                u32 num = 0;
+
+                for(s32 x = chunk_bl_x*CHUNK_DIM; x < chunk_tr_x*CHUNK_DIM; x += 1)
                 {
-                    for(s32 x = -1; x <= 1; x++)
+                    for(s32 y = chunk_bl_y*CHUNK_DIM; y < chunk_tr_y*CHUNK_DIM; y += 1)
                     {
-                        terrain_chunk(all_voxel_data,
-                                camera_chunk_x + x*WIDTH,
-                                camera_chunk_z + z*DEPTH,
-                                WIDTH, DEPTH, noise_scale_x, noise_scale_y, noise_scale_z);
-                        if(all_voxel_data->num >= MAX_VOXELS) break;
+                        for(s32 z = chunk_bl_z*CHUNK_DIM; z < chunk_tr_z*CHUNK_DIM; z += 1)
+                        {
+                            if(num >= MAX_VOXELS) break;
+                            float n = pnoise(x * 0.005f, y * 0.01f, z * 0.005f);
+
+                            n += y * (2.0f / 128.0f);
+
+                            bool fill = false;
+                            if(n < 0.0f) fill = true;
+
+                            //if(y < 0) fill = true;
+                            //if(y >= 256) fill = false;
+
+                            if(fill)
+                            {
+                                all_voxel_data->pos[num + MAX_VOXELS*0] = x;
+                                all_voxel_data->pos[num + MAX_VOXELS*1] = y;
+                                all_voxel_data->pos[num + MAX_VOXELS*2] = z;
+                                all_voxel_data->color[num] = 0x00AA00FF;
+                                ++num;
+                            }
+                        }
                     }
-                    if(all_voxel_data->num >= MAX_VOXELS) break;
                 }
+                all_voxel_data->num = num;
             }
             last_camera_chunk_x = camera_chunk_x;
+            last_camera_chunk_y = camera_chunk_y;
             last_camera_chunk_z = camera_chunk_z;
 
             // Prep render data
