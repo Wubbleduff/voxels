@@ -13,6 +13,11 @@
 #include "common.h"
 #include "game_math.h"
 
+/*
+* Terrain scrolling in all directions
+* Improve runtime of generating chunks
+*/
+
 
 // NOTE: This value must match the shader.
 static const u32 SHADER_BUFFER_WIDTH = 1024*1024;
@@ -21,7 +26,7 @@ static const u32 NUM_VOXEL_DATA_FIELDS = 4;
 static const u32 MAX_VOXELS = 10*1024*1024;
 struct VoxelRenderData
 {
-    u32 num;
+    u32 num = 0;
     // | xxxx yyyy zzz |
     f32 pos[MAX_VOXELS*3];
     u32 color[MAX_VOXELS];
@@ -75,33 +80,41 @@ struct InputState
 };
 static InputState *input_state = nullptr;
 
-//
-// *
-//
-// * *
-// * *
-//
-// * * * *
-// * * * *
-// * * * *
-// * * * *
-//
-// 8x8x8
-// * * * * * * * *
-// * * * * * * * *
-// * * * * * * * *
-// * * * * * * * *
-// * * * * * * * *
-// * * * * * * * *
-// * * * * * * * *
-// * * * * * * * *
-//
+static constexpr s32 CHUNK_DIM = 32;
+static constexpr s32 CHUNK_POW = 5; // CHUNK_DIM = 2**CHUNK_POW
+static constexpr s32 VIEW_DIST = 128;
+static constexpr s32 LOADED_REGION_CHUNKS_DIM = (VIEW_DIST/CHUNK_DIM)*2;
+struct ChunkBookmarkData
+{
+    static constexpr u32 MAX_CHUNKS = LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM;
+    u32 num = 0;
+    // | xxxx yyyy zzz |
+    s32 pos[MAX_CHUNKS*3];
+    u32 bookmark[MAX_CHUNKS+1];
+};
 struct VoxelData
 {
-    u32 num;
+    u32 num = 0;
     // | xxxx yyyy zzz |
     s32 pos[MAX_VOXELS*3];
     u32 color[MAX_VOXELS];
+};
+
+struct Timer
+{
+    Timer() { QueryPerformanceCounter(&start); }
+    s64 time()
+    {
+        LARGE_INTEGER end;
+        QueryPerformanceCounter(&end);
+        LARGE_INTEGER freq;
+        QueryPerformanceFrequency(&freq);
+        LARGE_INTEGER ms;
+        ms.QuadPart = (end.QuadPart - start.QuadPart) * 1000;
+        ms.QuadPart /= freq.QuadPart;
+        return ms.QuadPart;
+    }
+    LARGE_INTEGER start;
 };
 
 struct ScopeTimer
@@ -122,7 +135,7 @@ struct ScopeTimer
         LARGE_INTEGER ms;
         ms.QuadPart = (end.QuadPart - start.QuadPart) * 1000;
         ms.QuadPart /= freq.QuadPart;
-ImGui::Text("TIME - %s: %ims", m_name, ms.QuadPart);
+        ImGui::Text("TIME - %s: %ims", m_name, ms.QuadPart);
     }
     const char *m_name;
     LARGE_INTEGER start;
@@ -259,6 +272,52 @@ void camera_cull(
     const u32* __restrict in_voxel_color,
     const Camera* __restrict cam)
 {
+#if 0
+    // Pass through
+    voxel_render_data->num = 0;
+    for(u32 i = 0; i < all_voxel_data->num; i++)
+    {
+        voxel_render_data->x[voxel_render_data->num] = all_voxel_data->x[i];
+        voxel_render_data->y[voxel_render_data->num] = all_voxel_data->y[i];
+        voxel_render_data->z[voxel_render_data->num] = all_voxel_data->z[i];
+        voxel_render_data->color[voxel_render_data->num] = all_voxel_data->color[i];
+        voxel_render_data->num++;
+    }
+#elif 0
+    // Reference
+    const mat4 clip_mat = clip_m_view(&graphics_state->cam) * view_m_world(&graphics_state->cam);
+    f32 * __restrict vv = graphics_state->voxel_vertices;
+    voxel_render_data->num = 0;
+    for(u32 i = 0; i < all_voxel_data->num; i++)
+    {
+        f32 voxel_x = all_voxel_data->x[i];
+        f32 voxel_y = all_voxel_data->y[i];
+        f32 voxel_z = all_voxel_data->z[i];
+        u32 voxel_color = all_voxel_data->color[i];
+
+        bool cull = true;
+        for(u32 vi = 0; vi < 8; vi++)
+        {
+            v4 v = v4(voxel_x + vv[vi], voxel_y + vv[8+vi], voxel_z + vv[16+vi], 1.0f);
+            v4 v_clip = clip_mat * v;
+            if((v_clip.x > -v_clip.w) && (v_clip.x < v_clip.w) && 
+               (v_clip.y > -v_clip.w) && (v_clip.y < v_clip.w) && 
+               (v_clip.z > -v_clip.w) && (v_clip.z < v_clip.w))
+            {
+                cull = false;
+            }
+        }
+
+        if(!cull)
+        {
+            voxel_render_data->x[voxel_render_data->num] = voxel_x;
+            voxel_render_data->y[voxel_render_data->num] = voxel_y;
+            voxel_render_data->z[voxel_render_data->num] = voxel_z;
+            voxel_render_data->color[voxel_render_data->num] = voxel_color;
+            voxel_render_data->num++;
+        }
+    }
+#else
     // Check distance from voxel centroid to each plane and compare against 1.0f.
     // This is effectively the same as a sphere-plane distance check.
     // If P is a point on the plane, Q is the voxel centroid, and n is the plane normal, dist check is:
@@ -311,6 +370,7 @@ void camera_cull(
         num_voxels += _mm_popcnt_u32(pack_index);
     }
     *out_num_voxels = num_voxels;
+#endif
 }
 
 
@@ -504,6 +564,7 @@ static void reshape(GLFWwindow *window, s32 width, s32 height)
     graphics_state->debug_cam.ar = (f32)width / height;
 }
 
+#if 0
 // Right now I'm just defining "chunk" as a MxNxO group of voxels
 static void terrain_chunk(VoxelData *out,
         s32 offset_x, s32 offset_z,
@@ -556,6 +617,7 @@ static void terrain_chunk(VoxelData *out,
         }
     }
 }
+#endif
 
 static void draw_line(v3 a, v3 b, v3 c)
 {
@@ -588,6 +650,164 @@ static void draw_line(v3 a, v3 b, v3 c)
     glDrawArrays(GL_LINES, 0, 2);
     check_gl_errors("draw");
 }
+
+
+// Chunks
+// X
+// Y
+// Z
+// # voxels
+// voxels bookmark
+
+f32 terrain_noise_3d(s32 x, s32 y, s32 z)
+{
+    return pnoise(x * 0.01f, y * 0.1f, z * 0.01f);
+}
+
+void gen_chunk(
+    ChunkBookmarkData* __restrict out_chunk_data,
+    VoxelData* __restrict out_voxel_data,
+    const s32 chunk_x,
+    const s32 chunk_y,
+    const s32 chunk_z
+)
+{
+    const f32 y_bias = -0.1f;
+    u32* __restrict bookmark = out_chunk_data->bookmark;
+    s32* __restrict voxels_x = &(out_voxel_data->pos[MAX_VOXELS*0]);
+    s32* __restrict voxels_y = &(out_voxel_data->pos[MAX_VOXELS*1]);
+    s32* __restrict voxels_z = &(out_voxel_data->pos[MAX_VOXELS*2]);
+    u32* __restrict voxels_color = out_voxel_data->color;
+
+    const u32 n_c = out_chunk_data->num;
+    out_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*0 + n_c] = chunk_x;
+    out_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*1 + n_c] = chunk_y;
+    out_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*2 + n_c] = chunk_z;
+
+    if(n_c == 0)
+    {
+        bookmark[0] = 0;
+    }
+
+    u32 base_voxels = bookmark[n_c];
+    u32 num_voxels = 0;
+    for(s32 x = chunk_x * CHUNK_DIM; x < chunk_x * CHUNK_DIM + CHUNK_DIM; x++)
+    {
+        for(s32 y = chunk_y * CHUNK_DIM; y < chunk_y * CHUNK_DIM + CHUNK_DIM; y++)
+        {
+            for(s32 z = chunk_z * CHUNK_DIM; z < chunk_z * CHUNK_DIM + CHUNK_DIM; z++)
+            {
+                f32 n = terrain_noise_3d(x, y, z) - y*y_bias;
+                if(n < 0.0f)
+                {
+                    voxels_x[base_voxels + num_voxels] = x;
+                    voxels_y[base_voxels + num_voxels] = y;
+                    voxels_z[base_voxels + num_voxels] = z;
+                    voxels_color[base_voxels + num_voxels] = 0x00AA00FF;
+                    ++num_voxels;
+                }
+            }
+        }
+    }
+    bookmark[n_c + 1] = base_voxels + num_voxels;
+    out_chunk_data->num = n_c + 1;
+}
+
+bool maybe_gen_new_terrain(
+    ChunkBookmarkData* __restrict dst_chunk_data,
+    VoxelData* __restrict dst_voxel_data,
+
+    const ChunkBookmarkData* __restrict src_chunk_data,
+    const VoxelData* __restrict src_voxel_data,
+
+    const s32 old_chunk_x,
+    const s32 old_chunk_y,
+    const s32 old_chunk_z,
+    const s32 new_chunk_x,
+    const s32 new_chunk_y,
+    const s32 new_chunk_z
+)
+{
+    bool did_generation = false;
+
+    s32* __restrict dst_chunks_x = &dst_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*0];
+    s32* __restrict dst_chunks_y = &dst_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*1];
+    s32* __restrict dst_chunks_z = &dst_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*2];
+    s32* __restrict dst_voxels_x = &dst_voxel_data->pos[MAX_VOXELS*0];
+    s32* __restrict dst_voxels_y = &dst_voxel_data->pos[MAX_VOXELS*1];
+    s32* __restrict dst_voxels_z = &dst_voxel_data->pos[MAX_VOXELS*2];
+    u32* __restrict dst_voxels_color = dst_voxel_data->color;
+
+    const s32* __restrict src_chunks_x = &src_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*0];
+    const s32* __restrict src_chunks_y = &src_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*1];
+    const s32* __restrict src_chunks_z = &src_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*2];
+    const s32* __restrict src_voxels_x = &src_voxel_data->pos[MAX_VOXELS*0];
+    const s32* __restrict src_voxels_y = &src_voxel_data->pos[MAX_VOXELS*1];
+    const s32* __restrict src_voxels_z = &src_voxel_data->pos[MAX_VOXELS*2];
+    const u32* __restrict src_voxels_color = src_voxel_data->color;
+
+    if(old_chunk_x != new_chunk_x)
+    {
+        // Chunks are inclusive on the left (towards negative inf), exclusive on the right (towards inf)
+        // TODO assuming only moving right for now
+        // TODO assuming even # chunks
+        s32 delete_chunk_coord = old_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
+        s32 new_chunk_coord    = old_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
+
+        u32 dst_chunks_idx = 0;
+        u32 dst_voxels_idx = 0;
+        dst_chunk_data->bookmark[0] = 0;
+        for(u32 src_chunk_idx = 0; src_chunk_idx < src_chunk_data->num; src_chunk_idx++)
+        {
+            if(src_chunks_x[src_chunk_idx] != delete_chunk_coord)
+            {
+                dst_chunks_x[dst_chunks_idx] = src_chunks_x[src_chunk_idx];
+                dst_chunks_y[dst_chunks_idx] = src_chunks_y[src_chunk_idx];
+                dst_chunks_z[dst_chunks_idx] = src_chunks_z[src_chunk_idx];
+
+                // Left pack voxels
+                const u32 src_num_voxels = src_chunk_data->bookmark[src_chunk_idx + 1] - src_chunk_data->bookmark[src_chunk_idx];
+                const u32 src_voxels_idx = src_chunk_data->bookmark[src_chunk_idx];
+                memcpy(dst_voxels_x + dst_voxels_idx, src_voxels_x + src_voxels_idx, src_num_voxels * sizeof(f32));
+                memcpy(dst_voxels_y + dst_voxels_idx, src_voxels_y + src_voxels_idx, src_num_voxels * sizeof(f32));
+                memcpy(dst_voxels_z + dst_voxels_idx, src_voxels_z + src_voxels_idx, src_num_voxels * sizeof(f32));
+                memcpy(dst_voxels_color + dst_voxels_idx, src_voxels_color + src_voxels_idx, src_num_voxels * sizeof(u32));
+
+                dst_chunk_data->bookmark[dst_chunks_idx+1] = dst_voxels_idx + src_num_voxels;
+                dst_voxels_idx += src_num_voxels;
+                dst_chunks_idx++;
+            }
+        }
+        dst_chunk_data->num = dst_chunks_idx;
+        dst_chunk_data->bookmark[dst_chunk_data->num] = dst_voxels_idx;
+
+        // Gen new terrain
+        //s32 region_chunks_bl_x = new_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
+        s32 region_chunks_bl_y = new_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
+        s32 region_chunks_bl_z = new_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
+        //s32 region_chunks_tr_x = new_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
+        s32 region_chunks_tr_y = new_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
+        s32 region_chunks_tr_z = new_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
+        for(s32 chunk_y = region_chunks_bl_y; chunk_y < region_chunks_tr_y; chunk_y++)
+        {
+            for(s32 chunk_z = region_chunks_bl_z; chunk_z < region_chunks_tr_z; chunk_z++)
+            {
+                gen_chunk(
+                    dst_chunk_data,
+                    dst_voxel_data,
+                    new_chunk_coord, chunk_y, chunk_z
+                );
+            }
+        }
+        dst_voxel_data->num = dst_chunk_data->bookmark[dst_chunk_data->num];
+
+        did_generation = true;
+    }
+
+    return did_generation;
+}
+
+
 
 INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine, INT nCmdShow)
 {
@@ -763,9 +983,15 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
 
     input_state = new InputState();
 
-    VoxelData * __restrict all_voxel_data = new VoxelData;
-    VoxelRenderData * __restrict voxel_render_data = new VoxelRenderData;
+    ChunkBookmarkData * __restrict chunk_data0 = new ChunkBookmarkData;
+    ChunkBookmarkData * __restrict chunk_data1 = new ChunkBookmarkData;
+    VoxelData * __restrict voxel_data0 = new VoxelData;
+    VoxelData * __restrict voxel_data1 = new VoxelData;
 
+    ChunkBookmarkData * __restrict all_chunk_data = chunk_data0;
+    VoxelData * __restrict all_voxel_data = voxel_data0;
+
+    VoxelRenderData * __restrict voxel_render_data = new VoxelRenderData;
 
     f32 frame_timer = 0.0f;
     f32 last_time = 0.0f;
@@ -827,17 +1053,11 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 camera_vel +=  cam_i * glfwGetKey(graphics_state->window, GLFW_KEY_D);
                 camera_vel +=  cam_k * glfwGetKey(graphics_state->window, GLFW_KEY_S);
                 camera_vel += -cam_k * glfwGetKey(graphics_state->window, GLFW_KEY_W);
-                static f32 camera_speed = 10.0f;
+                static f32 camera_speed = 100.0f;
                 ImGui::DragFloat("camera speed", &camera_speed);
                 current_cam->pos += normalize(camera_vel) * TIME_STEP * camera_speed;
             }
 
-            static constexpr s32 CHUNK_DIM = 32;
-            static constexpr s32 CHUNK_POW = 5; // CHUNK_DIM = 2**CHUNK_POW
-
-            //static constexpr s32 VIEW_DIST = 1024;
-            static constexpr s32 VIEW_DIST = 64;
-            static constexpr s32 LOADED_REGION_CHUNKS_DIM = (VIEW_DIST/CHUNK_DIM)*2;
 
             s32 camera_x = (s32)graphics_state->cam.pos.x;
             s32 camera_y = (s32)graphics_state->cam.pos.y;
@@ -846,57 +1066,96 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             s32 camera_chunk_y = camera_y >> CHUNK_POW;
             s32 camera_chunk_z = camera_z >> CHUNK_POW;
 
-            s32 chunk_bl_x = camera_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
-            s32 chunk_bl_y = camera_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
-            s32 chunk_bl_z = camera_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
-            s32 chunk_tr_x = camera_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
-            s32 chunk_tr_y = camera_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
-            s32 chunk_tr_z = camera_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
+            s32 region_chunks_bl_x = camera_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
+            s32 region_chunks_bl_y = camera_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
+            s32 region_chunks_bl_z = camera_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
+            s32 region_chunks_tr_x = camera_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
+            s32 region_chunks_tr_y = camera_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
+            s32 region_chunks_tr_z = camera_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
 
-            static s32 last_camera_chunk_x = 0xFFFFFFFF;
-            static s32 last_camera_chunk_y = 0xFFFFFFFF;
-            static s32 last_camera_chunk_z = 0xFFFFFFFF;
+            //static s32 last_camera_chunk_x = 0xFFFFFFFF;
+            //static s32 last_camera_chunk_y = 0xFFFFFFFF;
+            //static s32 last_camera_chunk_z = 0xFFFFFFFF;
+            static s32 last_camera_chunk_x = 0;
+            static s32 last_camera_chunk_y = 0;
+            static s32 last_camera_chunk_z = 0;
 
-            if((camera_chunk_x != last_camera_chunk_x) ||
-               (camera_chunk_y != last_camera_chunk_y) || 
-               (camera_chunk_z != last_camera_chunk_z))
+            static s64 last_gen_time = 0;
+
+            // Initial terrain generation around player
+            static bool do_gen = true;
+            if(do_gen)
             {
-                all_voxel_data->num = 0;
-                u32 num = 0;
-
-                for(s32 x = chunk_bl_x*CHUNK_DIM; x < chunk_tr_x*CHUNK_DIM; x += 1)
+                all_chunk_data->num = 0;
+                for(s32 x = region_chunks_bl_x; x < region_chunks_tr_x; x++)
                 {
-                    for(s32 y = chunk_bl_y*CHUNK_DIM; y < chunk_tr_y*CHUNK_DIM; y += 1)
+                    for(s32 y = region_chunks_bl_y; y < region_chunks_tr_y; y++)
                     {
-                        for(s32 z = chunk_bl_z*CHUNK_DIM; z < chunk_tr_z*CHUNK_DIM; z += 1)
+                        for(s32 z = region_chunks_bl_z; z < region_chunks_tr_z; z++)
                         {
-                            if(num >= MAX_VOXELS) break;
-                            float n = pnoise(x * 0.005f, y * 0.01f, z * 0.005f);
-
-                            n += y * (2.0f / 128.0f);
-
-                            bool fill = false;
-                            if(n < 0.0f) fill = true;
-
-                            //if(y < 0) fill = true;
-                            //if(y >= 256) fill = false;
-
-                            if(fill)
-                            {
-                                all_voxel_data->pos[num + MAX_VOXELS*0] = x;
-                                all_voxel_data->pos[num + MAX_VOXELS*1] = y;
-                                all_voxel_data->pos[num + MAX_VOXELS*2] = z;
-                                all_voxel_data->color[num] = 0x00AA00FF;
-                                ++num;
-                            }
+                            gen_chunk(
+                                all_chunk_data,
+                                all_voxel_data,
+                                x, y, z
+                            );
                         }
                     }
                 }
-                all_voxel_data->num = num;
+                // HACK
+                all_voxel_data->num = all_chunk_data->bookmark[all_chunk_data->num];
+                do_gen = false;
             }
+
+            ChunkBookmarkData* src_chunk_data = nullptr;
+            VoxelData* src_voxel_data = nullptr;
+            ChunkBookmarkData* dst_chunk_data = nullptr;
+            VoxelData* dst_voxel_data = nullptr;
+            if(all_chunk_data == chunk_data0)
+            {
+                src_chunk_data = chunk_data0;
+                src_voxel_data = voxel_data0;
+                dst_chunk_data = chunk_data1;
+                dst_voxel_data = voxel_data1;
+            }
+            else
+            {
+                src_chunk_data = chunk_data1;
+                src_voxel_data = voxel_data1;
+                dst_chunk_data = chunk_data0;
+                dst_voxel_data = voxel_data0;
+            }
+            bool did_generation = maybe_gen_new_terrain(
+                dst_chunk_data,
+                dst_voxel_data,
+                src_chunk_data,
+                src_voxel_data,
+
+                last_camera_chunk_x,
+                last_camera_chunk_y,
+                last_camera_chunk_z,
+                camera_chunk_x,
+                camera_chunk_y,
+                camera_chunk_z
+            );
+            if(did_generation)
+            {
+                if(all_chunk_data == chunk_data0)
+                {
+                    all_chunk_data = chunk_data1;
+                    all_voxel_data = voxel_data1;
+                }
+                else
+                {
+                    all_chunk_data = chunk_data0;
+                    all_voxel_data = voxel_data0;
+                }
+            }
+
             last_camera_chunk_x = camera_chunk_x;
             last_camera_chunk_y = camera_chunk_y;
             last_camera_chunk_z = camera_chunk_z;
+            ImGui::Text("Last gen time: %ims", last_gen_time);
+
 
             // Prep render data
             {
@@ -904,60 +1163,6 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
 
                 ImGui::Text("prep num_voxels %i", all_voxel_data->num);
 
-#if 0
-                // Pass through
-                voxel_render_data->num = 0;
-                for(u32 i = 0; i < all_voxel_data->num; i++)
-                {
-                    voxel_render_data->x[voxel_render_data->num] = all_voxel_data->x[i];
-                    voxel_render_data->y[voxel_render_data->num] = all_voxel_data->y[i];
-                    voxel_render_data->z[voxel_render_data->num] = all_voxel_data->z[i];
-                    voxel_render_data->color[voxel_render_data->num] = all_voxel_data->color[i];
-                    voxel_render_data->num++;
-                }
-#elif 0
-                // Reference
-                const mat4 clip_mat = clip_m_view(&graphics_state->cam) * view_m_world(&graphics_state->cam);
-                f32 * __restrict vv = graphics_state->voxel_vertices;
-                voxel_render_data->num = 0;
-                for(u32 i = 0; i < all_voxel_data->num; i++)
-                {
-                    f32 voxel_x = all_voxel_data->x[i];
-                    f32 voxel_y = all_voxel_data->y[i];
-                    f32 voxel_z = all_voxel_data->z[i];
-                    u32 voxel_color = all_voxel_data->color[i];
-
-                    bool cull = true;
-                    for(u32 vi = 0; vi < 8; vi++)
-                    {
-                        v4 v = v4(voxel_x + vv[vi], voxel_y + vv[8+vi], voxel_z + vv[16+vi], 1.0f);
-                        v4 v_clip = clip_mat * v;
-                        if((v_clip.x > -v_clip.w) && (v_clip.x < v_clip.w) && 
-                           (v_clip.y > -v_clip.w) && (v_clip.y < v_clip.w) && 
-                           (v_clip.z > -v_clip.w) && (v_clip.z < v_clip.w))
-                        {
-                            cull = false;
-                        }
-                    }
-
-                    if(!cull)
-                    {
-                        voxel_render_data->x[voxel_render_data->num] = voxel_x;
-                        voxel_render_data->y[voxel_render_data->num] = voxel_y;
-                        voxel_render_data->z[voxel_render_data->num] = voxel_z;
-                        voxel_render_data->color[voxel_render_data->num] = voxel_color;
-                        voxel_render_data->num++;
-                    }
-                }
-#else
-                const mat4 view_mat = view_m_world(&graphics_state->cam);
-                float camera_xform[] =
-                {
-                    view_mat[0][0], view_mat[0][1], view_mat[0][2],
-                    view_mat[1][0], view_mat[1][1], view_mat[1][2],
-                    view_mat[2][0], view_mat[2][1], view_mat[2][2],
-                    graphics_state->cam.pos.x, graphics_state->cam.pos.y, graphics_state->cam.pos.z
-                };
                 camera_cull(
                     &voxel_render_data->num,
                     voxel_render_data->pos,
@@ -967,7 +1172,6 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                     all_voxel_data->color,
                     &graphics_state->cam
                 );
-#endif
             }
 
             // Draw
