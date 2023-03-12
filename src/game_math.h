@@ -134,6 +134,24 @@ float deg_to_rad(float a) { return a * (M_PI / 180.0f); }
 float rad_to_deg(float a) { return a * (180.0f / M_PI); }
 float floor(float a) { return float(int(a)); }
 float ceil(float a) { return float(int(a)+1); }
+inline void swap(s32& a, s32& b)
+{
+    s32 tmp = a;
+    a = b;
+    b = tmp;
+}
+inline void swap(u32& a, u32& b)
+{
+    u32 tmp = a;
+    a = b;
+    b = tmp;
+}
+inline void swap(f32& a, f32& b)
+{
+    u32 tmp = a;
+    a = b;
+    b = tmp;
+}
 /*
 float cos(float a) { return cosf(a); }
 float sin(float a) { return sinf(a); }

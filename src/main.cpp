@@ -23,7 +23,7 @@
 static const u32 SHADER_BUFFER_WIDTH = 1024*1024;
 static const u32 NUM_VOXEL_DATA_FIELDS = 4;
 
-static const u32 MAX_VOXELS = 10*1024*1024;
+static const u32 MAX_VOXELS = 50*1024*1024;
 struct VoxelRenderData
 {
     u32 num = 0;
@@ -672,7 +672,47 @@ void gen_chunk(
     const s32 chunk_z
 )
 {
-    const f32 y_bias = -0.1f;
+    constexpr f32 y_bias = -0.1f;
+
+//#define DO_CHUNK_SAMPLE_OPT
+#ifdef DO_CHUNK_SAMPLE_OPT
+    {
+        s32 x0 = chunk_x * CHUNK_DIM;
+        s32 x1 = chunk_x * CHUNK_DIM + CHUNK_DIM;
+        s32 y0 = chunk_y * CHUNK_DIM;
+        s32 y1 = chunk_y * CHUNK_DIM + CHUNK_DIM;
+        s32 z0 = chunk_z * CHUNK_DIM;
+        s32 z1 = chunk_z * CHUNK_DIM + CHUNK_DIM;
+        s32 samples[] =
+        {
+            x0, y0, z0,
+            x0, y0, z1,
+            x0, y1, z0,
+            x0, y1, z1,
+            x1, y0, z0,
+            x1, y0, z1,
+            x1, y1, z0,
+            x1, y1, z1,
+        };
+
+        bool all_in  = true;
+        bool all_out = true;
+        for(u32 i = 0; i < 8; i++)
+        {
+            s32 x = samples[i*3 + 0];
+            s32 y = samples[i*3 + 1];
+            s32 z = samples[i*3 + 2];
+            f32 n = terrain_noise_3d(x, y, z) - y*y_bias;
+            if(n <  0.0f) all_out = false;
+            if(n >= 0.0f) all_in  = false;
+        }
+        if(all_in || all_out)
+        {
+            return;
+        }
+    }
+#endif
+
     u32* __restrict bookmark = out_chunk_data->bookmark;
     s32* __restrict voxels_x = &(out_voxel_data->pos[MAX_VOXELS*0]);
     s32* __restrict voxels_y = &(out_voxel_data->pos[MAX_VOXELS*1]);
@@ -713,6 +753,7 @@ void gen_chunk(
     out_chunk_data->num = n_c + 1;
 }
 
+// TODO Fix issue where we can jump multiple chunks at a time.... Right now we only assume 1 chunk can be jumped at a time.
 bool maybe_gen_new_terrain(
     ChunkBookmarkData* __restrict dst_chunk_data,
     VoxelData* __restrict dst_voxel_data,
@@ -748,11 +789,19 @@ bool maybe_gen_new_terrain(
 
     if(old_chunk_x != new_chunk_x)
     {
-        // Chunks are inclusive on the left (towards negative inf), exclusive on the right (towards inf)
-        // TODO assuming only moving right for now
-        // TODO assuming even # chunks
-        s32 delete_chunk_coord = old_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
-        s32 new_chunk_coord    = old_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
+        // NOTE: LOADED_REGION_CHUNKS_DIM is assumed even.
+        s32 delete_chunk_coord;
+        s32 new_chunk_coord;
+        if(old_chunk_x < new_chunk_x)
+        {
+            delete_chunk_coord = old_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
+            new_chunk_coord    = old_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
+        }
+        else
+        {
+            delete_chunk_coord = new_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
+            new_chunk_coord    = new_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
+        }
 
         u32 dst_chunks_idx = 0;
         u32 dst_voxels_idx = 0;
@@ -778,14 +827,14 @@ bool maybe_gen_new_terrain(
                 dst_chunks_idx++;
             }
         }
+        assert(dst_chunks_idx <= ChunkBookmarkData::MAX_CHUNKS); // TODO
         dst_chunk_data->num = dst_chunks_idx;
         dst_chunk_data->bookmark[dst_chunk_data->num] = dst_voxels_idx;
 
+
         // Gen new terrain
-        //s32 region_chunks_bl_x = new_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
         s32 region_chunks_bl_y = new_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
         s32 region_chunks_bl_z = new_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
-        //s32 region_chunks_tr_x = new_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
         s32 region_chunks_tr_y = new_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
         s32 region_chunks_tr_z = new_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
         for(s32 chunk_y = region_chunks_bl_y; chunk_y < region_chunks_tr_y; chunk_y++)
@@ -800,7 +849,134 @@ bool maybe_gen_new_terrain(
             }
         }
         dst_voxel_data->num = dst_chunk_data->bookmark[dst_chunk_data->num];
+        did_generation = true;
+    }
 
+    if(old_chunk_y != new_chunk_y)
+    {
+        // NOTE: LOADED_REGION_CHUNKS_DIM is assumed even.
+        s32 delete_chunk_coord;
+        s32 new_chunk_coord;
+        if(old_chunk_y < new_chunk_y)
+        {
+            delete_chunk_coord = old_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
+            new_chunk_coord    = old_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
+        }
+        else
+        {
+            delete_chunk_coord = new_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
+            new_chunk_coord    = new_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
+        }
+
+        u32 dst_chunks_idx = 0;
+        u32 dst_voxels_idx = 0;
+        dst_chunk_data->bookmark[0] = 0;
+        for(u32 src_chunk_idx = 0; src_chunk_idx < src_chunk_data->num; src_chunk_idx++)
+        {
+            if(src_chunks_y[src_chunk_idx] != delete_chunk_coord)
+            {
+                dst_chunks_x[dst_chunks_idx] = src_chunks_x[src_chunk_idx];
+                dst_chunks_y[dst_chunks_idx] = src_chunks_y[src_chunk_idx];
+                dst_chunks_z[dst_chunks_idx] = src_chunks_z[src_chunk_idx];
+
+                // Left pack voxels
+                const u32 src_num_voxels = src_chunk_data->bookmark[src_chunk_idx + 1] - src_chunk_data->bookmark[src_chunk_idx];
+                const u32 src_voxels_idx = src_chunk_data->bookmark[src_chunk_idx];
+                memcpy(dst_voxels_x + dst_voxels_idx, src_voxels_x + src_voxels_idx, src_num_voxels * sizeof(f32));
+                memcpy(dst_voxels_y + dst_voxels_idx, src_voxels_y + src_voxels_idx, src_num_voxels * sizeof(f32));
+                memcpy(dst_voxels_z + dst_voxels_idx, src_voxels_z + src_voxels_idx, src_num_voxels * sizeof(f32));
+                memcpy(dst_voxels_color + dst_voxels_idx, src_voxels_color + src_voxels_idx, src_num_voxels * sizeof(u32));
+
+                dst_chunk_data->bookmark[dst_chunks_idx+1] = dst_voxels_idx + src_num_voxels;
+                dst_voxels_idx += src_num_voxels;
+                dst_chunks_idx++;
+            }
+        }
+        assert(dst_chunks_idx <= ChunkBookmarkData::MAX_CHUNKS); // TODO
+        dst_chunk_data->num = dst_chunks_idx;
+        dst_chunk_data->bookmark[dst_chunk_data->num] = dst_voxels_idx;
+
+        // Gen new terrain
+        s32 region_chunks_bl_x = new_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
+        s32 region_chunks_bl_z = new_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
+        s32 region_chunks_tr_x = new_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
+        s32 region_chunks_tr_z = new_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
+        for(s32 chunk_x = region_chunks_bl_x; chunk_x < region_chunks_tr_x; chunk_x++)
+        {
+            for(s32 chunk_z = region_chunks_bl_z; chunk_z < region_chunks_tr_z; chunk_z++)
+            {
+                gen_chunk(
+                    dst_chunk_data,
+                    dst_voxel_data,
+                    chunk_x, new_chunk_coord, chunk_z
+                );
+            }
+        }
+        dst_voxel_data->num = dst_chunk_data->bookmark[dst_chunk_data->num];
+        did_generation = true;
+    }
+
+    if(old_chunk_z != new_chunk_z)
+    {
+        // NOTE: LOADED_REGION_CHUNKS_DIM is assumed even.
+        s32 delete_chunk_coord;
+        s32 new_chunk_coord;
+        if(old_chunk_z < new_chunk_z)
+        {
+            delete_chunk_coord = old_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
+            new_chunk_coord    = old_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
+        }
+        else
+        {
+            delete_chunk_coord = new_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
+            new_chunk_coord    = new_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
+        }
+
+        u32 dst_chunks_idx = 0;
+        u32 dst_voxels_idx = 0;
+        dst_chunk_data->bookmark[0] = 0;
+        for(u32 src_chunk_idx = 0; src_chunk_idx < src_chunk_data->num; src_chunk_idx++)
+        {
+            if(src_chunks_z[src_chunk_idx] != delete_chunk_coord)
+            {
+                dst_chunks_x[dst_chunks_idx] = src_chunks_x[src_chunk_idx];
+                dst_chunks_y[dst_chunks_idx] = src_chunks_y[src_chunk_idx];
+                dst_chunks_z[dst_chunks_idx] = src_chunks_z[src_chunk_idx];
+
+                // Left pack voxels
+                const u32 src_num_voxels = src_chunk_data->bookmark[src_chunk_idx + 1] - src_chunk_data->bookmark[src_chunk_idx];
+                const u32 src_voxels_idx = src_chunk_data->bookmark[src_chunk_idx];
+                memcpy(dst_voxels_x + dst_voxels_idx, src_voxels_x + src_voxels_idx, src_num_voxels * sizeof(f32));
+                memcpy(dst_voxels_y + dst_voxels_idx, src_voxels_y + src_voxels_idx, src_num_voxels * sizeof(f32));
+                memcpy(dst_voxels_z + dst_voxels_idx, src_voxels_z + src_voxels_idx, src_num_voxels * sizeof(f32));
+                memcpy(dst_voxels_color + dst_voxels_idx, src_voxels_color + src_voxels_idx, src_num_voxels * sizeof(u32));
+
+                dst_chunk_data->bookmark[dst_chunks_idx+1] = dst_voxels_idx + src_num_voxels;
+                dst_voxels_idx += src_num_voxels;
+                dst_chunks_idx++;
+            }
+        }
+        assert(dst_chunks_idx <= ChunkBookmarkData::MAX_CHUNKS); // TODO
+        dst_chunk_data->num = dst_chunks_idx;
+        dst_chunk_data->bookmark[dst_chunk_data->num] = dst_voxels_idx;
+
+        // Gen new terrain
+        s32 region_chunks_bl_x = new_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
+        s32 region_chunks_bl_y = new_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
+        s32 region_chunks_tr_x = new_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
+        s32 region_chunks_tr_y = new_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
+        for(s32 chunk_x = region_chunks_bl_x; chunk_x < region_chunks_tr_x; chunk_x++)
+        {
+            for(s32 chunk_y = region_chunks_bl_y; chunk_y < region_chunks_tr_y; chunk_y++)
+            {
+                gen_chunk(
+                    dst_chunk_data,
+                    dst_voxel_data,
+                    chunk_x, chunk_y, new_chunk_coord
+                );
+            }
+        }
+        dst_voxel_data->num = dst_chunk_data->bookmark[dst_chunk_data->num];
         did_generation = true;
     }
 
@@ -1076,9 +1252,9 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             //static s32 last_camera_chunk_x = 0xFFFFFFFF;
             //static s32 last_camera_chunk_y = 0xFFFFFFFF;
             //static s32 last_camera_chunk_z = 0xFFFFFFFF;
-            static s32 last_camera_chunk_x = 0;
-            static s32 last_camera_chunk_y = 0;
-            static s32 last_camera_chunk_z = 0;
+            static s32 last_camera_chunk_x = camera_chunk_x;
+            static s32 last_camera_chunk_y = camera_chunk_y;
+            static s32 last_camera_chunk_z = camera_chunk_z;
 
             static s64 last_gen_time = 0;
 
@@ -1301,6 +1477,30 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 draw_line(frustum_v[4], frustum_v[5], v3(1.0f, 1.0f, 0.0f));
                 draw_line(frustum_v[5], frustum_v[1], v3(1.0f, 1.0f, 0.0f));
                 draw_line(frustum_v[1], frustum_v[0], v3(1.0f, 1.0f, 0.0f));
+            }
+
+            static bool show_chunk_lines = true;
+            ImGui::Checkbox("show_chunk_lines", &show_chunk_lines);
+            if(show_chunk_lines)
+            {
+                for(s32 x = region_chunks_bl_x; x < region_chunks_tr_x; ++x)
+                {
+                    for(s32 y = region_chunks_bl_y; y < region_chunks_tr_y; ++y)
+                    {
+                        for(s32 z = region_chunks_bl_z; z < region_chunks_tr_z; ++z)
+                        {
+                            draw_line(v3(f32(x*CHUNK_DIM),       f32(y*CHUNK_DIM), f32(z*CHUNK_DIM)),
+                                      v3(f32((x + 1)*CHUNK_DIM), f32(y*CHUNK_DIM), f32(z*CHUNK_DIM)),
+                                      v3(1.0f, 0.0f, 0.0f));
+                            draw_line(v3(f32(x*CHUNK_DIM), f32(y*CHUNK_DIM),       f32(z*CHUNK_DIM)),
+                                      v3(f32(x*CHUNK_DIM), f32((y + 1)*CHUNK_DIM), f32(z*CHUNK_DIM)),
+                                      v3(0.0f, 1.0f, 0.0f));
+                            draw_line(v3(f32(x*CHUNK_DIM), f32(y*CHUNK_DIM), f32(z*CHUNK_DIM)),
+                                      v3(f32(x*CHUNK_DIM), f32(y*CHUNK_DIM), f32((z + 1)*CHUNK_DIM)),
+                                      v3(0.0f, 0.0f, 1.0f));
+                        }
+                    }
+                }
             }
 
             {
