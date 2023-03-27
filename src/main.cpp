@@ -13,12 +13,6 @@
 #include "common.h"
 #include "game_math.h"
 
-/*
-* Terrain scrolling in all directions
-* Improve runtime of generating chunks
-*/
-
-
 // NOTE: This value must match the shader.
 static const u32 SHADER_BUFFER_WIDTH = 1024*1024;
 static const u32 NUM_VOXEL_DATA_FIELDS = 4;
@@ -751,9 +745,9 @@ void gen_chunk(
     }
     bookmark[n_c + 1] = base_voxels + num_voxels;
     out_chunk_data->num = n_c + 1;
+    out_voxel_data->num += num_voxels;
 }
 
-// TODO Fix issue where we can jump multiple chunks at a time.... Right now we only assume 1 chunk can be jumped at a time.
 bool maybe_gen_new_terrain(
     ChunkBookmarkData* __restrict dst_chunk_data,
     VoxelData* __restrict dst_voxel_data,
@@ -769,7 +763,12 @@ bool maybe_gen_new_terrain(
     const s32 new_chunk_z
 )
 {
-    bool did_generation = false;
+    if(old_chunk_x == new_chunk_x &&
+       old_chunk_y == new_chunk_y &&
+       old_chunk_z == new_chunk_z)
+    {
+        return false;
+    }
 
     s32* __restrict dst_chunks_x = &dst_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*0];
     s32* __restrict dst_chunks_y = &dst_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*1];
@@ -787,200 +786,113 @@ bool maybe_gen_new_terrain(
     const s32* __restrict src_voxels_z = &src_voxel_data->pos[MAX_VOXELS*2];
     const u32* __restrict src_voxels_color = src_voxel_data->color;
 
+    dst_chunk_data->num = 0;
+    dst_voxel_data->num = 0;
+
+    u32 target_chunk_idx = 0;
+    u32 target_voxel_idx = 0;
+
+    s32 new_chunks_range_x_min = new_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
+    s32 new_chunks_range_x_max = new_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
+    s32 new_chunks_range_y_min = new_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
+    s32 new_chunks_range_y_max = new_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
+    s32 new_chunks_range_z_min = new_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
+    s32 new_chunks_range_z_max = new_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
+
+    // Go through old chunks and see what needs to be carried over
+    for(u32 chunk_idx = 0; chunk_idx < src_chunk_data->num; chunk_idx++)
+    {
+        s32 chunk_x = src_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*0 + chunk_idx];
+        s32 chunk_y = src_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*1 + chunk_idx];
+        s32 chunk_z = src_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*2 + chunk_idx];
+
+        if(chunk_x >= new_chunks_range_x_min && chunk_x < new_chunks_range_x_max &&
+           chunk_y >= new_chunks_range_y_min && chunk_y < new_chunks_range_y_max &&
+           chunk_z >= new_chunks_range_z_min && chunk_z < new_chunks_range_z_max)
+        {
+            dst_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*0 + target_chunk_idx] = src_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*0 + chunk_idx];
+            dst_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*1 + target_chunk_idx] = src_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*1 + chunk_idx];
+            dst_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*2 + target_chunk_idx] = src_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*2 + chunk_idx];
+            dst_chunk_data->bookmark[target_chunk_idx] = target_voxel_idx;
+
+            u32 voxels_bookmark = src_chunk_data->bookmark[chunk_idx];
+            u32 num_voxels_to_copy = src_chunk_data->bookmark[chunk_idx + 1] - voxels_bookmark;
+            assert(num_voxels_to_copy <= CHUNK_DIM*CHUNK_DIM*CHUNK_DIM);
+            memcpy(dst_voxel_data->pos + MAX_VOXELS*0 + target_voxel_idx, src_voxel_data->pos + MAX_VOXELS*0 + voxels_bookmark, num_voxels_to_copy * sizeof(*src_voxel_data->pos));
+            memcpy(dst_voxel_data->pos + MAX_VOXELS*1 + target_voxel_idx, src_voxel_data->pos + MAX_VOXELS*1 + voxels_bookmark, num_voxels_to_copy * sizeof(*src_voxel_data->pos));
+            memcpy(dst_voxel_data->pos + MAX_VOXELS*2 + target_voxel_idx, src_voxel_data->pos + MAX_VOXELS*2 + voxels_bookmark, num_voxels_to_copy * sizeof(*src_voxel_data->pos));
+            memcpy(dst_voxel_data->color + target_voxel_idx, src_voxel_data->color + voxels_bookmark, num_voxels_to_copy * sizeof(*src_voxel_data->color));
+
+            target_chunk_idx += 1;
+            target_voxel_idx += num_voxels_to_copy;
+        }
+    }
+
+    dst_chunk_data->bookmark[target_chunk_idx] = target_voxel_idx;
+    dst_chunk_data->num = target_chunk_idx;
+    dst_voxel_data->num = target_voxel_idx;
+
+    s32 dx_start = new_chunks_range_x_min;
+    s32 dx_end   = new_chunks_range_x_max;
+    s32 dy_start = new_chunks_range_y_min;
+    s32 dy_end   = new_chunks_range_y_max;
+    s32 dz_start = new_chunks_range_z_min;
+    s32 dz_end   = new_chunks_range_z_max;
+
+    // TODO(mfritz) Look at simplifying
     if(old_chunk_x != new_chunk_x)
     {
-        // NOTE: LOADED_REGION_CHUNKS_DIM is assumed even.
-        s32 delete_chunk_coord;
-        s32 new_chunk_coord;
         if(old_chunk_x < new_chunk_x)
         {
-            delete_chunk_coord = old_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
-            new_chunk_coord    = old_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
+            dx_start = max(old_chunk_x + LOADED_REGION_CHUNKS_DIM/2, new_chunks_range_x_min);
+            dx_end   = new_chunks_range_x_max;
         }
         else
         {
-            delete_chunk_coord = new_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
-            new_chunk_coord    = new_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
+            dx_start = new_chunks_range_x_min;
+            dx_end   = min(old_chunk_x - LOADED_REGION_CHUNKS_DIM/2, new_chunks_range_x_max);
         }
-
-        u32 dst_chunks_idx = 0;
-        u32 dst_voxels_idx = 0;
-        dst_chunk_data->bookmark[0] = 0;
-        for(u32 src_chunk_idx = 0; src_chunk_idx < src_chunk_data->num; src_chunk_idx++)
-        {
-            if(src_chunks_x[src_chunk_idx] != delete_chunk_coord)
-            {
-                dst_chunks_x[dst_chunks_idx] = src_chunks_x[src_chunk_idx];
-                dst_chunks_y[dst_chunks_idx] = src_chunks_y[src_chunk_idx];
-                dst_chunks_z[dst_chunks_idx] = src_chunks_z[src_chunk_idx];
-
-                // Left pack voxels
-                const u32 src_num_voxels = src_chunk_data->bookmark[src_chunk_idx + 1] - src_chunk_data->bookmark[src_chunk_idx];
-                const u32 src_voxels_idx = src_chunk_data->bookmark[src_chunk_idx];
-                memcpy(dst_voxels_x + dst_voxels_idx, src_voxels_x + src_voxels_idx, src_num_voxels * sizeof(f32));
-                memcpy(dst_voxels_y + dst_voxels_idx, src_voxels_y + src_voxels_idx, src_num_voxels * sizeof(f32));
-                memcpy(dst_voxels_z + dst_voxels_idx, src_voxels_z + src_voxels_idx, src_num_voxels * sizeof(f32));
-                memcpy(dst_voxels_color + dst_voxels_idx, src_voxels_color + src_voxels_idx, src_num_voxels * sizeof(u32));
-
-                dst_chunk_data->bookmark[dst_chunks_idx+1] = dst_voxels_idx + src_num_voxels;
-                dst_voxels_idx += src_num_voxels;
-                dst_chunks_idx++;
-            }
-        }
-        assert(dst_chunks_idx <= ChunkBookmarkData::MAX_CHUNKS); // TODO
-        dst_chunk_data->num = dst_chunks_idx;
-        dst_chunk_data->bookmark[dst_chunk_data->num] = dst_voxels_idx;
-
-
-        // Gen new terrain
-        s32 region_chunks_bl_y = new_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
-        s32 region_chunks_bl_z = new_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
-        s32 region_chunks_tr_y = new_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
-        s32 region_chunks_tr_z = new_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
-        for(s32 chunk_y = region_chunks_bl_y; chunk_y < region_chunks_tr_y; chunk_y++)
-        {
-            for(s32 chunk_z = region_chunks_bl_z; chunk_z < region_chunks_tr_z; chunk_z++)
-            {
-                gen_chunk(
-                    dst_chunk_data,
-                    dst_voxel_data,
-                    new_chunk_coord, chunk_y, chunk_z
-                );
-            }
-        }
-        dst_voxel_data->num = dst_chunk_data->bookmark[dst_chunk_data->num];
-        did_generation = true;
     }
-
     if(old_chunk_y != new_chunk_y)
     {
-        // NOTE: LOADED_REGION_CHUNKS_DIM is assumed even.
-        s32 delete_chunk_coord;
-        s32 new_chunk_coord;
         if(old_chunk_y < new_chunk_y)
         {
-            delete_chunk_coord = old_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
-            new_chunk_coord    = old_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
+            dy_start = max(old_chunk_y + LOADED_REGION_CHUNKS_DIM/2, new_chunks_range_y_min);
+            dy_end   = new_chunks_range_y_max;
         }
         else
         {
-            delete_chunk_coord = new_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
-            new_chunk_coord    = new_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
+            dy_start = new_chunks_range_y_min;
+            dy_end   = min(old_chunk_y - LOADED_REGION_CHUNKS_DIM/2, new_chunks_range_y_max);
         }
-
-        u32 dst_chunks_idx = 0;
-        u32 dst_voxels_idx = 0;
-        dst_chunk_data->bookmark[0] = 0;
-        for(u32 src_chunk_idx = 0; src_chunk_idx < src_chunk_data->num; src_chunk_idx++)
-        {
-            if(src_chunks_y[src_chunk_idx] != delete_chunk_coord)
-            {
-                dst_chunks_x[dst_chunks_idx] = src_chunks_x[src_chunk_idx];
-                dst_chunks_y[dst_chunks_idx] = src_chunks_y[src_chunk_idx];
-                dst_chunks_z[dst_chunks_idx] = src_chunks_z[src_chunk_idx];
-
-                // Left pack voxels
-                const u32 src_num_voxels = src_chunk_data->bookmark[src_chunk_idx + 1] - src_chunk_data->bookmark[src_chunk_idx];
-                const u32 src_voxels_idx = src_chunk_data->bookmark[src_chunk_idx];
-                memcpy(dst_voxels_x + dst_voxels_idx, src_voxels_x + src_voxels_idx, src_num_voxels * sizeof(f32));
-                memcpy(dst_voxels_y + dst_voxels_idx, src_voxels_y + src_voxels_idx, src_num_voxels * sizeof(f32));
-                memcpy(dst_voxels_z + dst_voxels_idx, src_voxels_z + src_voxels_idx, src_num_voxels * sizeof(f32));
-                memcpy(dst_voxels_color + dst_voxels_idx, src_voxels_color + src_voxels_idx, src_num_voxels * sizeof(u32));
-
-                dst_chunk_data->bookmark[dst_chunks_idx+1] = dst_voxels_idx + src_num_voxels;
-                dst_voxels_idx += src_num_voxels;
-                dst_chunks_idx++;
-            }
-        }
-        assert(dst_chunks_idx <= ChunkBookmarkData::MAX_CHUNKS); // TODO
-        dst_chunk_data->num = dst_chunks_idx;
-        dst_chunk_data->bookmark[dst_chunk_data->num] = dst_voxels_idx;
-
-        // Gen new terrain
-        s32 region_chunks_bl_x = new_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
-        s32 region_chunks_bl_z = new_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
-        s32 region_chunks_tr_x = new_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
-        s32 region_chunks_tr_z = new_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
-        for(s32 chunk_x = region_chunks_bl_x; chunk_x < region_chunks_tr_x; chunk_x++)
-        {
-            for(s32 chunk_z = region_chunks_bl_z; chunk_z < region_chunks_tr_z; chunk_z++)
-            {
-                gen_chunk(
-                    dst_chunk_data,
-                    dst_voxel_data,
-                    chunk_x, new_chunk_coord, chunk_z
-                );
-            }
-        }
-        dst_voxel_data->num = dst_chunk_data->bookmark[dst_chunk_data->num];
-        did_generation = true;
     }
-
     if(old_chunk_z != new_chunk_z)
     {
-        // NOTE: LOADED_REGION_CHUNKS_DIM is assumed even.
-        s32 delete_chunk_coord;
-        s32 new_chunk_coord;
         if(old_chunk_z < new_chunk_z)
         {
-            delete_chunk_coord = old_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
-            new_chunk_coord    = old_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
+            dz_start = max(old_chunk_z + LOADED_REGION_CHUNKS_DIM/2, new_chunks_range_z_min);
+            dz_end   = new_chunks_range_z_max;
         }
         else
         {
-            delete_chunk_coord = new_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
-            new_chunk_coord    = new_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
+            dz_start = new_chunks_range_z_min;
+            dz_end   = min(old_chunk_z - LOADED_REGION_CHUNKS_DIM/2, new_chunks_range_z_max);
         }
-
-        u32 dst_chunks_idx = 0;
-        u32 dst_voxels_idx = 0;
-        dst_chunk_data->bookmark[0] = 0;
-        for(u32 src_chunk_idx = 0; src_chunk_idx < src_chunk_data->num; src_chunk_idx++)
+    }
+    for(s32 chunk_x = dx_start; chunk_x < dx_end; chunk_x++)
+    {
+        for(s32 chunk_y = dy_start; chunk_y < dy_end; chunk_y++)
         {
-            if(src_chunks_z[src_chunk_idx] != delete_chunk_coord)
+            for(s32 chunk_z = dz_start; chunk_z < dz_end; chunk_z++)
             {
-                dst_chunks_x[dst_chunks_idx] = src_chunks_x[src_chunk_idx];
-                dst_chunks_y[dst_chunks_idx] = src_chunks_y[src_chunk_idx];
-                dst_chunks_z[dst_chunks_idx] = src_chunks_z[src_chunk_idx];
-
-                // Left pack voxels
-                const u32 src_num_voxels = src_chunk_data->bookmark[src_chunk_idx + 1] - src_chunk_data->bookmark[src_chunk_idx];
-                const u32 src_voxels_idx = src_chunk_data->bookmark[src_chunk_idx];
-                memcpy(dst_voxels_x + dst_voxels_idx, src_voxels_x + src_voxels_idx, src_num_voxels * sizeof(f32));
-                memcpy(dst_voxels_y + dst_voxels_idx, src_voxels_y + src_voxels_idx, src_num_voxels * sizeof(f32));
-                memcpy(dst_voxels_z + dst_voxels_idx, src_voxels_z + src_voxels_idx, src_num_voxels * sizeof(f32));
-                memcpy(dst_voxels_color + dst_voxels_idx, src_voxels_color + src_voxels_idx, src_num_voxels * sizeof(u32));
-
-                dst_chunk_data->bookmark[dst_chunks_idx+1] = dst_voxels_idx + src_num_voxels;
-                dst_voxels_idx += src_num_voxels;
-                dst_chunks_idx++;
+                gen_chunk(dst_chunk_data, dst_voxel_data, chunk_x, chunk_y, chunk_z);
             }
         }
-        assert(dst_chunks_idx <= ChunkBookmarkData::MAX_CHUNKS); // TODO
-        dst_chunk_data->num = dst_chunks_idx;
-        dst_chunk_data->bookmark[dst_chunk_data->num] = dst_voxels_idx;
-
-        // Gen new terrain
-        s32 region_chunks_bl_x = new_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
-        s32 region_chunks_bl_y = new_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
-        s32 region_chunks_tr_x = new_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
-        s32 region_chunks_tr_y = new_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
-        for(s32 chunk_x = region_chunks_bl_x; chunk_x < region_chunks_tr_x; chunk_x++)
-        {
-            for(s32 chunk_y = region_chunks_bl_y; chunk_y < region_chunks_tr_y; chunk_y++)
-            {
-                gen_chunk(
-                    dst_chunk_data,
-                    dst_voxel_data,
-                    chunk_x, chunk_y, new_chunk_coord
-                );
-            }
-        }
-        dst_voxel_data->num = dst_chunk_data->bookmark[dst_chunk_data->num];
-        did_generation = true;
     }
 
-    return did_generation;
+    assert(dst_chunk_data->num == LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM);
+
+    return true;
 }
 
 
@@ -1197,7 +1109,10 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             running = !glfwGetKey(graphics_state->window, GLFW_KEY_ESCAPE) && !glfwWindowShouldClose(graphics_state->window);
 
             {
-                ImGui::Text("camera pos (%f, %f, %f)", graphics_state->cam.pos.x, graphics_state->cam.pos.y, graphics_state->cam.pos.z);
+                //ImGui::Text("camera pos (%f, %f, %f)", graphics_state->cam.pos.x, graphics_state->cam.pos.y, graphics_state->cam.pos.z);
+                ImGui::InputFloat("camera x", &graphics_state->cam.pos.x, 1.0f, 10.0f, 3, ImGuiInputTextFlags_EnterReturnsTrue);
+                ImGui::InputFloat("camera y", &graphics_state->cam.pos.y, 1.0f, 10.0f, 3, ImGuiInputTextFlags_EnterReturnsTrue);
+                ImGui::InputFloat("camera z", &graphics_state->cam.pos.z, 1.0f, 10.0f, 3, ImGuiInputTextFlags_EnterReturnsTrue);
                 ImGui::Text("camera x rot %f", graphics_state->cam.rot_x);
                 ImGui::Text("camera y rot %f", graphics_state->cam.rot_y);
                 ImGui::DragFloat("camera near_plane_dist", &graphics_state->cam.near_plane_dist);
