@@ -1,0 +1,35 @@
+
+How to partition voxel data.
+Goals:
+* 1024 voxels view distance
+** Able to view 1024 voxels in any direction without frame drop
+* < 1GB voxel data
+* Efficient spatial query for voxels
+* Infinite terrain scrolling
+
+
+Ideas:
+
+X
+Naive: Store all possible loaded voxels in contiguous memory.
+(1024*2)^3 * 16 bytes per voxel = 137 GB
+Grouping by chunks is still the same - need to be at fixed locations.
+
+?
+Store all loaded filled voxels in a bookmarked array. Chunks (32x32x32) bookmark voxels.
+* Voxels are stored contiguously
+* Whenever terrain scrolls, need to copy already generated chunks and/or regenerate to keep contiguous
+** Likely need to copy or generate ~500MB - ~1GB of memory
+** Terrain data doesn't change but we still need to move memory
+** I don't think you can do this async?
+
+?
+Store fixed array of chunks 32x32x32. Chunks represent a (64x64x64) region of space but point to varying size memory blocks of voxels.
+* All chunk data takes 256KB to represent. 1024*2 view dist voxels / 64 chunk size = 32, 32*32*32 * (4 offset + 4 size) = 256KB
+* Space efficient for voxel data. Can do bucket allocations
+* Groups nearby voxels together
+* Can just repoint a chunk to scroll terrain
+* More condusive to async generation
+* Voxels are NOT contiguous (need to be packed)
+
+
