@@ -128,6 +128,37 @@ struct mat4
     }
 };
 
+template<u64 N>
+struct BitArray
+{
+    static_assert(N % 8 == 0);
+    u8 v[N/8] = {};
+
+    void set_bit(u64 n)
+    {
+        u64 chunk = n >> 3;
+        u64 pos = n & 7;
+        v[chunk] |= (1 << pos);
+    }
+
+    bool is_bit_set(u64 n)
+    {
+        u64 chunk = n >> 3;
+        u64 pos = n & 7;
+        return v[chunk] & (1 << pos);
+    }
+
+    bool all_bits_set()
+    {
+        // Assuming divisible by 8
+        for(u32 i = 0; i < N/8; i++)
+        {
+            if(v[i] != 0xFF) return false;
+        }
+        return true;
+    }
+};
+
 float squared(float a) { return a * a; }
 float lerp(float a, float b, float t) { return ((1.0f - t) * a) + (t * b); }
 float deg_to_rad(float a) { return a * (M_PI / 180.0f); }

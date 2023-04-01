@@ -725,11 +725,11 @@ void gen_chunk(
 
     u32 base_voxels = bookmark[n_c];
     u32 num_voxels = 0;
-    for(s32 x = chunk_x * CHUNK_DIM; x < chunk_x * CHUNK_DIM + CHUNK_DIM; x++)
+    for(s32 z = chunk_z * CHUNK_DIM; z < chunk_z * CHUNK_DIM + CHUNK_DIM; z++)
     {
         for(s32 y = chunk_y * CHUNK_DIM; y < chunk_y * CHUNK_DIM + CHUNK_DIM; y++)
         {
-            for(s32 z = chunk_z * CHUNK_DIM; z < chunk_z * CHUNK_DIM + CHUNK_DIM; z++)
+            for(s32 x = chunk_x * CHUNK_DIM; x < chunk_x * CHUNK_DIM + CHUNK_DIM; x++)
             {
                 f32 n = terrain_noise_3d(x, y, z) - y*y_bias;
                 if(n < 0.0f)
@@ -799,6 +799,8 @@ bool maybe_gen_new_terrain(
     s32 new_chunks_range_z_min = new_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
     s32 new_chunks_range_z_max = new_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
 
+    BitArray<ChunkBookmarkData::MAX_CHUNKS> to_gen;
+
     // Go through old chunks and see what needs to be carried over
     for(u32 chunk_idx = 0; chunk_idx < src_chunk_data->num; chunk_idx++)
     {
@@ -825,6 +827,15 @@ bool maybe_gen_new_terrain(
 
             target_chunk_idx += 1;
             target_voxel_idx += num_voxels_to_copy;
+
+            s32 local_chunk_x = chunk_x - new_chunks_range_x_min;
+            s32 local_chunk_y = chunk_y - new_chunks_range_y_min;
+            s32 local_chunk_z = chunk_z - new_chunks_range_z_min;
+            s32 local_chunk_idx =
+                local_chunk_z*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM +
+                local_chunk_y*LOADED_REGION_CHUNKS_DIM +
+                local_chunk_x;
+            to_gen.set_bit(local_chunk_idx);
         }
     }
 
@@ -832,65 +843,29 @@ bool maybe_gen_new_terrain(
     dst_chunk_data->num = target_chunk_idx;
     dst_voxel_data->num = target_voxel_idx;
 
-    s32 dx_start = new_chunks_range_x_min;
-    s32 dx_end   = new_chunks_range_x_max;
-    s32 dy_start = new_chunks_range_y_min;
-    s32 dy_end   = new_chunks_range_y_max;
-    s32 dz_start = new_chunks_range_z_min;
-    s32 dz_end   = new_chunks_range_z_max;
-
-    // TODO(mfritz) Look at simplifying
-    if(old_chunk_x != new_chunk_x)
+    for(s32 chunk_zi = 0; chunk_zi < LOADED_REGION_CHUNKS_DIM; chunk_zi++)
     {
-        if(old_chunk_x < new_chunk_x)
+        for(s32 chunk_yi = 0; chunk_yi < LOADED_REGION_CHUNKS_DIM; chunk_yi++)
         {
-            dx_start = max(old_chunk_x + LOADED_REGION_CHUNKS_DIM/2, new_chunks_range_x_min);
-            dx_end   = new_chunks_range_x_max;
-        }
-        else
-        {
-            dx_start = new_chunks_range_x_min;
-            dx_end   = min(old_chunk_x - LOADED_REGION_CHUNKS_DIM/2, new_chunks_range_x_max);
-        }
-    }
-    if(old_chunk_y != new_chunk_y)
-    {
-        if(old_chunk_y < new_chunk_y)
-        {
-            dy_start = max(old_chunk_y + LOADED_REGION_CHUNKS_DIM/2, new_chunks_range_y_min);
-            dy_end   = new_chunks_range_y_max;
-        }
-        else
-        {
-            dy_start = new_chunks_range_y_min;
-            dy_end   = min(old_chunk_y - LOADED_REGION_CHUNKS_DIM/2, new_chunks_range_y_max);
-        }
-    }
-    if(old_chunk_z != new_chunk_z)
-    {
-        if(old_chunk_z < new_chunk_z)
-        {
-            dz_start = max(old_chunk_z + LOADED_REGION_CHUNKS_DIM/2, new_chunks_range_z_min);
-            dz_end   = new_chunks_range_z_max;
-        }
-        else
-        {
-            dz_start = new_chunks_range_z_min;
-            dz_end   = min(old_chunk_z - LOADED_REGION_CHUNKS_DIM/2, new_chunks_range_z_max);
-        }
-    }
-    for(s32 chunk_x = dx_start; chunk_x < dx_end; chunk_x++)
-    {
-        for(s32 chunk_y = dy_start; chunk_y < dy_end; chunk_y++)
-        {
-            for(s32 chunk_z = dz_start; chunk_z < dz_end; chunk_z++)
+            for(s32 chunk_xi = 0; chunk_xi < LOADED_REGION_CHUNKS_DIM; chunk_xi++)
             {
-                gen_chunk(dst_chunk_data, dst_voxel_data, chunk_x, chunk_y, chunk_z);
+                s32 chunk_x = chunk_xi + new_chunks_range_x_min;
+                s32 chunk_y = chunk_yi + new_chunks_range_y_min;
+                s32 chunk_z = chunk_zi + new_chunks_range_z_min;
+                s32 local_chunk_idx =
+                    chunk_zi*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM +
+                    chunk_yi*LOADED_REGION_CHUNKS_DIM +
+                    chunk_xi;
+                if(!to_gen.is_bit_set(u32(local_chunk_idx)))
+                {
+                    gen_chunk(dst_chunk_data, dst_voxel_data, chunk_x, chunk_y, chunk_z);
+                    to_gen.set_bit(local_chunk_idx);
+                }
             }
         }
     }
 
-    assert(dst_chunk_data->num == LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM);
+    assert(to_gen.all_bits_set());
 
     return true;
 }
@@ -1119,6 +1094,12 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 ImGui::DragFloat("camera view_dist", &graphics_state->cam.view_dist);
                 ImGui::Checkbox("debug cam", &graphics_state->use_debug_cam);
 
+                if(ImGui::Button("asdf"))
+                {
+                    graphics_state->cam.pos.x -= 32.0f;
+                    graphics_state->cam.pos.z -= 32.0f;
+                }
+
                 Camera *current_cam;
                 if(graphics_state->use_debug_cam) current_cam = &graphics_state->debug_cam;
                 else current_cam = &graphics_state->cam;
@@ -1178,11 +1159,11 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             if(do_gen)
             {
                 all_chunk_data->num = 0;
-                for(s32 x = region_chunks_bl_x; x < region_chunks_tr_x; x++)
+                for(s32 z = region_chunks_bl_z; z < region_chunks_tr_z; z++)
                 {
                     for(s32 y = region_chunks_bl_y; y < region_chunks_tr_y; y++)
                     {
-                        for(s32 z = region_chunks_bl_z; z < region_chunks_tr_z; z++)
+                        for(s32 x = region_chunks_bl_x; x < region_chunks_tr_x; x++)
                         {
                             gen_chunk(
                                 all_chunk_data,
@@ -1398,11 +1379,11 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             ImGui::Checkbox("show_chunk_lines", &show_chunk_lines);
             if(show_chunk_lines)
             {
-                for(s32 x = region_chunks_bl_x; x < region_chunks_tr_x; ++x)
+                for(s32 z = region_chunks_bl_z; z < region_chunks_tr_z; ++z)
                 {
                     for(s32 y = region_chunks_bl_y; y < region_chunks_tr_y; ++y)
                     {
-                        for(s32 z = region_chunks_bl_z; z < region_chunks_tr_z; ++z)
+                        for(s32 x = region_chunks_bl_x; x < region_chunks_tr_x; ++x)
                         {
                             draw_line(v3(f32(x*CHUNK_DIM),       f32(y*CHUNK_DIM), f32(z*CHUNK_DIM)),
                                       v3(f32((x + 1)*CHUNK_DIM), f32(y*CHUNK_DIM), f32(z*CHUNK_DIM)),

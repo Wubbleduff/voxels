@@ -12,15 +12,17 @@ set LIBRARY_SOURCE=
 set INCLUDE_DIRS=/I"src" /I"lib\glad\include" /I"lib\glfw\include" /I"lib\imgui" /I"lib\imgui\examples" /I"lib\stb"
 set LIBS=user32.lib gdi32.lib shell32.lib opengl32.lib lib\glfw\glfw.lib
 
+set COMMON_COMPILE_FLAGS=/c /EHsc /std:c++17 /Fo%INTERMEDIATE%\
+
 set DEBUG_MACROS=/DDEBUG
-set DEBUG_COMPILE_FLAGS=/c /O2 /Zi /EHsc /Fo%INTERMEDIATE%\
+set DEBUG_COMPILE_FLAGS=/Zi /O2
 
 
 mkdir %INTERMEDIATE%
 mkdir %DEBUG_RUN_TREE%
 
 
-cl %DEBUG_COMPILE_FLAGS% %DEBUG_MACROS% %INCLUDE_DIRS% %SOURCE% %LIBRARY_SOURCE%
+cl %COMMON_COMPILE_FLAGS% %DEBUG_COMPILE_FLAGS% %DEBUG_MACROS% %INCLUDE_DIRS% %SOURCE% %LIBRARY_SOURCE%
 if %errorlevel% neq 0 exit /b %errorlevel%
 
 
@@ -38,5 +40,5 @@ xcopy /Y /E assets %DEBUG_RUN_TREE%\assets\
 
 
 
-%DEBUG_RUN_TREE%\%EXE%
+REM %DEBUG_RUN_TREE%\%EXE%
 
