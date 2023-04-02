@@ -10,6 +10,10 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 
+
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 #include "common.h"
 #include "game_math.h"
 
@@ -17,7 +21,14 @@
 static const u32 SHADER_BUFFER_WIDTH = 1024*1024;
 static const u32 NUM_VOXEL_DATA_FIELDS = 4;
 
+static constexpr s32 CHUNK_DIM = 32;
+static constexpr s32 CHUNK_POW = 5; // CHUNK_DIM = 2**CHUNK_POW
+static constexpr s32 CHUNK_MAX_VOXELS = CHUNK_DIM*CHUNK_DIM*CHUNK_DIM;
+static constexpr s32 VIEW_DIST = 512;
+static constexpr s32 LOADED_REGION_CHUNKS_DIM = (VIEW_DIST/CHUNK_DIM)*2;
+static constexpr u32 MAX_CHUNKS = LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM;
 static const u32 MAX_VOXELS = 50*1024*1024;
+
 struct VoxelRenderData
 {
     u32 num = 0;
@@ -65,31 +76,23 @@ struct GraphicsState
         -0.5f, -0.5f, -0.5f, -0.5f,  0.5f,  0.5f,  0.5f,  0.5f  // Z
     };
 };
-static GraphicsState *graphics_state = nullptr;
 
 struct InputState
 {
     s32 mouse_screen_x;
     s32 mouse_screen_y;
 };
-static InputState *input_state = nullptr;
 
-static constexpr s32 CHUNK_DIM = 32;
-static constexpr s32 CHUNK_POW = 5; // CHUNK_DIM = 2**CHUNK_POW
-static constexpr s32 VIEW_DIST = 128;
-static constexpr s32 LOADED_REGION_CHUNKS_DIM = (VIEW_DIST/CHUNK_DIM)*2;
-struct ChunkBookmarkData
+struct Chunk
 {
-    static constexpr u32 MAX_CHUNKS = LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM;
-    u32 num = 0;
-    // | xxxx yyyy zzz |
-    s32 pos[MAX_CHUNKS*3];
-    u32 bookmark[MAX_CHUNKS+1];
+    u32 num;
+    // VLA | xxxx yyyy zzzz cccc |
+    s32 voxels[1];
 };
-struct VoxelData
+
+struct PackedVoxels
 {
-    u32 num = 0;
-    // | xxxx yyyy zzz |
+    u32 num;
     s32 pos[MAX_VOXELS*3];
     u32 color[MAX_VOXELS];
 };
@@ -136,17 +139,42 @@ struct ScopeTimer
 };
 #define TIME_SCOPE(name) ScopeTimer _time_scope = ScopeTimer(name)
 
+// EXPERIMENTAL
+struct CubeIterator
+{
+    s32 idx = 0;
+    s32 x = 0;
+    s32 y = 0;
+    s32 z = 0;
+};
+#define ITER_CUBE(N)                                             \
+    for(CubeIterator it;                                         \
+        it.idx < (N)*(N)*(N);                                    \
+        it.idx++,                                                \
+        it.z = it.idx / ((N)*(N)),                               \
+        it.y = (it.idx / (N)) % (N),                             \
+        it.x = it.idx % (N) )                                    
+    
+// Globals
+static GraphicsState *G_graphics_state = nullptr;
+static InputState *G_input_state = nullptr;
+static Chunk* G_gen_chunk_scratch;
+static s32 noise_data_width;
+static s32 noise_data_height;
+static s32 noise_data_depth;
+static u8* noise_data;
+
 
 
 // TODO speed
-mat4 view_m_world(const Camera* __restrict cam)
+mat4 view_m_world(const Camera* cam)
 {
     mat4 y_rot = make_y_axis_rotation_matrix(-cam->rot_y);
     mat4 x_rot = make_x_axis_rotation_matrix(-cam->rot_x);
     mat4 result = x_rot * y_rot * make_translation_matrix(-cam->pos);
     return result;
 }
-mat4 clip_m_view(const Camera* __restrict cam)
+mat4 clip_m_view(const Camera* cam)
 {
     static f32 n = cam->near_plane_dist;
     static f32 f = cam->view_dist;
@@ -164,22 +192,22 @@ mat4 clip_m_view(const Camera* __restrict cam)
 }
 
 // Outputs plan normals for right, top, left, bottom, near, far in that order.
-static void get_frustum_planes(v3* __restrict out_normals, v3* __restrict out_points, const Camera* __restrict cam)
+static void get_frustum_planes(v3* out_normals, v3* out_points, const Camera* cam)
 {
-    mat4 cam_xform = view_m_world(&graphics_state->cam);
-    v3 cam_p = graphics_state->cam.pos;
+    mat4 cam_xform = view_m_world(&G_graphics_state->cam);
+    v3 cam_p = G_graphics_state->cam.pos;
     v3 cam_i = v3(cam_xform[0][0], cam_xform[0][1], cam_xform[0][2]);
     v3 cam_j = v3(cam_xform[1][0], cam_xform[1][1], cam_xform[1][2]);
     v3 cam_k = v3(cam_xform[2][0], cam_xform[2][1], cam_xform[2][2]);
 
-    f32 tan_fov = tan(deg_to_rad(graphics_state->cam.vfov)*0.5f);
-    f32 near_hh = tan_fov * graphics_state->cam.near_plane_dist;
-    f32 near_hw = near_hh * graphics_state->cam.ar;
-    f32 far_hh = tan_fov * graphics_state->cam.view_dist;
-    f32 far_hw = far_hh * graphics_state->cam.ar;
+    f32 tan_fov = tan(deg_to_rad(G_graphics_state->cam.vfov)*0.5f);
+    f32 near_hh = tan_fov * G_graphics_state->cam.near_plane_dist;
+    f32 near_hw = near_hh * G_graphics_state->cam.ar;
+    f32 far_hh = tan_fov * G_graphics_state->cam.view_dist;
+    f32 far_hw = far_hh * G_graphics_state->cam.ar;
 
-    v3 p_near = cam_p + -cam_k * graphics_state->cam.near_plane_dist;
-    v3 p_far = cam_p + -cam_k * graphics_state->cam.view_dist;
+    v3 p_near = cam_p + -cam_k * G_graphics_state->cam.near_plane_dist;
+    v3 p_far = cam_p + -cam_k * G_graphics_state->cam.view_dist;
 
     v3 frustum_v[] =
     {
@@ -257,61 +285,15 @@ static __m256i left_pack(__m256i a, u32 mask)
 }
 
 void camera_cull(
-    u32* __restrict out_num_voxels,
-    f32* __restrict out_voxel_pos,
-    u32* __restrict out_voxel_color,
+    u32* out_num_voxels,
+    f32* out_voxel_pos,
+    u32* out_voxel_color,
 
     const u32 in_num_voxels,
-    const s32* __restrict in_voxel_pos,
-    const u32* __restrict in_voxel_color,
-    const Camera* __restrict cam)
+    const s32* in_voxel_pos,
+    const u32* in_voxel_color,
+    const Camera* cam)
 {
-#if 0
-    // Pass through
-    voxel_render_data->num = 0;
-    for(u32 i = 0; i < all_voxel_data->num; i++)
-    {
-        voxel_render_data->x[voxel_render_data->num] = all_voxel_data->x[i];
-        voxel_render_data->y[voxel_render_data->num] = all_voxel_data->y[i];
-        voxel_render_data->z[voxel_render_data->num] = all_voxel_data->z[i];
-        voxel_render_data->color[voxel_render_data->num] = all_voxel_data->color[i];
-        voxel_render_data->num++;
-    }
-#elif 0
-    // Reference
-    const mat4 clip_mat = clip_m_view(&graphics_state->cam) * view_m_world(&graphics_state->cam);
-    f32 * __restrict vv = graphics_state->voxel_vertices;
-    voxel_render_data->num = 0;
-    for(u32 i = 0; i < all_voxel_data->num; i++)
-    {
-        f32 voxel_x = all_voxel_data->x[i];
-        f32 voxel_y = all_voxel_data->y[i];
-        f32 voxel_z = all_voxel_data->z[i];
-        u32 voxel_color = all_voxel_data->color[i];
-
-        bool cull = true;
-        for(u32 vi = 0; vi < 8; vi++)
-        {
-            v4 v = v4(voxel_x + vv[vi], voxel_y + vv[8+vi], voxel_z + vv[16+vi], 1.0f);
-            v4 v_clip = clip_mat * v;
-            if((v_clip.x > -v_clip.w) && (v_clip.x < v_clip.w) && 
-               (v_clip.y > -v_clip.w) && (v_clip.y < v_clip.w) && 
-               (v_clip.z > -v_clip.w) && (v_clip.z < v_clip.w))
-            {
-                cull = false;
-            }
-        }
-
-        if(!cull)
-        {
-            voxel_render_data->x[voxel_render_data->num] = voxel_x;
-            voxel_render_data->y[voxel_render_data->num] = voxel_y;
-            voxel_render_data->z[voxel_render_data->num] = voxel_z;
-            voxel_render_data->color[voxel_render_data->num] = voxel_color;
-            voxel_render_data->num++;
-        }
-    }
-#else
     // Check distance from voxel centroid to each plane and compare against 1.0f.
     // This is effectively the same as a sphere-plane distance check.
     // If P is a point on the plane, Q is the voxel centroid, and n is the plane normal, dist check is:
@@ -364,9 +346,7 @@ void camera_cull(
         num_voxels += _mm_popcnt_u32(pack_index);
     }
     *out_num_voxels = num_voxels;
-#endif
 }
-
 
 void glfw_error_fn(s32 error, const char *message)
 {
@@ -485,7 +465,7 @@ static bool read_shader_file(const char *path, char **vert_source, char **geom_s
 GLuint make_shader_from_string(const char *vert_source, const char *frag_source)
 {
     s32 success;
-    const u32 info_log_size = sizeof(graphics_state->debug_info_log);
+    const u32 info_log_size = sizeof(G_graphics_state->debug_info_log);
     
     u32 vert_shader;
     vert_shader = glCreateShader(GL_VERTEX_SHADER);
@@ -494,7 +474,7 @@ GLuint make_shader_from_string(const char *vert_source, const char *frag_source)
     glGetShaderiv(vert_shader, GL_COMPILE_STATUS, &success);
     if(!success)
     {
-        glGetShaderInfoLog(vert_shader, info_log_size, NULL, graphics_state->debug_info_log);
+        glGetShaderInfoLog(vert_shader, info_log_size, NULL, G_graphics_state->debug_info_log);
         return -1;
     }
     
@@ -505,7 +485,7 @@ GLuint make_shader_from_string(const char *vert_source, const char *frag_source)
     glGetShaderiv(frag_shader, GL_COMPILE_STATUS, &success);
     if(!success)
     {
-        glGetShaderInfoLog(frag_shader, info_log_size, NULL, graphics_state->debug_info_log);
+        glGetShaderInfoLog(frag_shader, info_log_size, NULL, G_graphics_state->debug_info_log);
         return -1;
     }
     
@@ -522,7 +502,7 @@ GLuint make_shader_from_string(const char *vert_source, const char *frag_source)
     glGetProgramiv(program, GL_LINK_STATUS, &success);
     if(!success)
     {
-        glGetProgramInfoLog(program, info_log_size, NULL, graphics_state->debug_info_log);
+        glGetProgramInfoLog(program, info_log_size, NULL, G_graphics_state->debug_info_log);
         return -1;
     }
     
@@ -536,7 +516,7 @@ GLuint make_shader_from_string(const char *vert_source, const char *frag_source)
 GLuint make_shader_from_file(const char *shader_path)
 {
     s32 success;
-    const u32 info_log_size = sizeof(graphics_state->debug_info_log);
+    const u32 info_log_size = sizeof(G_graphics_state->debug_info_log);
     
     char *vert_source = nullptr;
     char *geom_source = nullptr;
@@ -554,85 +534,30 @@ GLuint make_shader_from_file(const char *shader_path)
 static void reshape(GLFWwindow *window, s32 width, s32 height)
 {
     glViewport(0, 0, (GLint)width, (GLint)height);
-    graphics_state->cam.ar = (f32)width / height;
-    graphics_state->debug_cam.ar = (f32)width / height;
+    G_graphics_state->cam.ar = (f32)width / height;
+    G_graphics_state->debug_cam.ar = (f32)width / height;
 }
-
-#if 0
-// Right now I'm just defining "chunk" as a MxNxO group of voxels
-static void terrain_chunk(VoxelData *out,
-        s32 offset_x, s32 offset_z,
-        s32 width, s32 depth,
-        f32 noise_scale_x, f32 noise_scale_y, f32 noise_scale_z)
-{
-    auto noise = [noise_scale_x, noise_scale_y, noise_scale_z](s32 x_, s32 z_)
-    {
-        f32 n = (perlin_noise(x_*noise_scale_x, z_*noise_scale_z)*0.5f + 0.5f)*noise_scale_y;
-        n += (perlin_noise(x_*noise_scale_x*0.1f, z_*noise_scale_z*0.1f)*0.5f + 0.5f)*noise_scale_y*10.0f;
-        return n;
-    };
-    auto pick_color = [](s32 y)
-    {
-        if(y < 65) return (u32)0x424242FF;
-        else if(y < 480) return (u32)0x519916FF;
-        else return (u32)0xCCCCCCFF;
-    };
-
-    u32 num = 0;
-    for(s32 z = offset_z; z < depth + offset_z; z++)
-    {
-        for(s32 x = offset_x; x < width + offset_x; x++)
-        {
-            s32 y = (s32)noise(x, z);
-
-            // Check for holes in the ground
-            {
-                s32 y0 = (s32)noise(x - 1, z);
-                s32 y1 = (s32)noise(x + 1, z);
-                s32 y2 = (s32)noise(x, z - 1);
-                s32 y3 = (s32)noise(x, z + 1);
-                s32 max_d = max(y - y0, max(y - y1, max(y - y2, y - y3)));
-                for(s32 i = 0; i < max_d - 1; i++)
-                {
-                    s32 yi = y - 1 - i;
-                    out->pos[MAX_VOXELS*0 + num] = x;
-                    out->pos[MAX_VOXELS*1 + num] = yi;
-                    out->pos[MAX_VOXELS*2 + num] = z;
-                    out->color[num] = pick_color(yi);
-                    num++;
-                }
-            }
-
-            out->pos[MAX_VOXELS*0 + num] = x;
-            out->pos[MAX_VOXELS*1 + num] = y;
-            out->pos[MAX_VOXELS*2 + num] = z;
-            out->color[num] = pick_color(y);
-            num++;
-        }
-    }
-}
-#endif
 
 static void draw_line(v3 a, v3 b, v3 c)
 {
-    glUseProgram(graphics_state->debug_line_shader_program);
+    glUseProgram(G_graphics_state->debug_line_shader_program);
     check_gl_errors("use program");
 
     Camera *current_cam;
-    if(graphics_state->use_debug_cam) current_cam = &graphics_state->debug_cam;
-    else current_cam = &graphics_state->cam;
+    if(G_graphics_state->use_debug_cam) current_cam = &G_graphics_state->debug_cam;
+    else current_cam = &G_graphics_state->cam;
 
     mat4 m = clip_m_view(current_cam) * view_m_world(current_cam);
-    GLint loc = glGetUniformLocation(graphics_state->debug_line_shader_program, "mvp");
+    GLint loc = glGetUniformLocation(G_graphics_state->debug_line_shader_program, "mvp");
     glUniformMatrix4fv(loc, 1, true, &(m[0][0]));
     if(loc == -1) assert(false);
 
-    loc = glGetUniformLocation(graphics_state->debug_line_shader_program, "color");
+    loc = glGetUniformLocation(G_graphics_state->debug_line_shader_program, "color");
     glUniform3f(loc, c.r, c.g, c.b);
     if(loc == -1) assert(false);
 
-    glBindVertexArray(graphics_state->debug_line_vao);
-    glBindBuffer(GL_ARRAY_BUFFER, graphics_state->debug_line_vbo);
+    glBindVertexArray(G_graphics_state->debug_line_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, G_graphics_state->debug_line_vbo);
 
     f32 v[] =
     {
@@ -645,85 +570,45 @@ static void draw_line(v3 a, v3 b, v3 c)
     check_gl_errors("draw");
 }
 
-
-// Chunks
-// X
-// Y
-// Z
-// # voxels
-// voxels bookmark
-
 f32 terrain_noise_3d(s32 x, s32 y, s32 z)
 {
-    return pnoise(x * 0.01f, y * 0.1f, z * 0.01f);
+#if 1
+    auto sample = [](f32 xx, f32 yy, f32 zz)
+    {
+        u32 xi = u32(xx) % noise_data_width;
+        u32 yi = u32(yy) % noise_data_height;
+        u32 zi = u32(zz) % noise_data_depth;
+        u32 idx = yi*noise_data_width*noise_data_depth + zi*noise_data_width + xi;
+        f32 n = (f32(noise_data[idx]) / 255.0f) * 2.0f - 1.0f;
+        return n;
+    };
+    f32 n = sample(x, y, z);
+#else
+    f32 n = pnoise(x*0.01f,y*0.1f,z*0.01f);
+#endif
+    constexpr f32 y_bias = 0.04f;
+    n += y*y_bias;
+    return n;
 }
 
-void gen_chunk(
-    ChunkBookmarkData* __restrict out_chunk_data,
-    VoxelData* __restrict out_voxel_data,
+Chunk* allocate_chunk(u32 cap_voxels)
+{
+    u32* m = new u32[1 + cap_voxels*4];
+    Chunk* result = reinterpret_cast<Chunk*>(m);
+    return result;
+}
+
+void deallocate_chunk(Chunk* chunk)
+{
+    delete chunk;
+}
+
+Chunk* allocate_and_gen_chunk(
     const s32 chunk_x,
     const s32 chunk_y,
     const s32 chunk_z
 )
 {
-    constexpr f32 y_bias = -0.1f;
-
-//#define DO_CHUNK_SAMPLE_OPT
-#ifdef DO_CHUNK_SAMPLE_OPT
-    {
-        s32 x0 = chunk_x * CHUNK_DIM;
-        s32 x1 = chunk_x * CHUNK_DIM + CHUNK_DIM;
-        s32 y0 = chunk_y * CHUNK_DIM;
-        s32 y1 = chunk_y * CHUNK_DIM + CHUNK_DIM;
-        s32 z0 = chunk_z * CHUNK_DIM;
-        s32 z1 = chunk_z * CHUNK_DIM + CHUNK_DIM;
-        s32 samples[] =
-        {
-            x0, y0, z0,
-            x0, y0, z1,
-            x0, y1, z0,
-            x0, y1, z1,
-            x1, y0, z0,
-            x1, y0, z1,
-            x1, y1, z0,
-            x1, y1, z1,
-        };
-
-        bool all_in  = true;
-        bool all_out = true;
-        for(u32 i = 0; i < 8; i++)
-        {
-            s32 x = samples[i*3 + 0];
-            s32 y = samples[i*3 + 1];
-            s32 z = samples[i*3 + 2];
-            f32 n = terrain_noise_3d(x, y, z) - y*y_bias;
-            if(n <  0.0f) all_out = false;
-            if(n >= 0.0f) all_in  = false;
-        }
-        if(all_in || all_out)
-        {
-            return;
-        }
-    }
-#endif
-
-    u32* __restrict bookmark = out_chunk_data->bookmark;
-    s32* __restrict voxels_x = &(out_voxel_data->pos[MAX_VOXELS*0]);
-    s32* __restrict voxels_y = &(out_voxel_data->pos[MAX_VOXELS*1]);
-    s32* __restrict voxels_z = &(out_voxel_data->pos[MAX_VOXELS*2]);
-    u32* __restrict voxels_color = out_voxel_data->color;
-
-    const u32 n_c = out_chunk_data->num;
-    out_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*0 + n_c] = chunk_x;
-    out_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*1 + n_c] = chunk_y;
-    out_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*2 + n_c] = chunk_z;
-
-    if(n_c == 0)
-    {
-        bookmark[0] = 0;
-    }
-
-    u32 base_voxels = bookmark[n_c];
     u32 num_voxels = 0;
     for(s32 z = chunk_z * CHUNK_DIM; z < chunk_z * CHUNK_DIM + CHUNK_DIM; z++)
     {
@@ -731,30 +616,57 @@ void gen_chunk(
         {
             for(s32 x = chunk_x * CHUNK_DIM; x < chunk_x * CHUNK_DIM + CHUNK_DIM; x++)
             {
-                f32 n = terrain_noise_3d(x, y, z) - y*y_bias;
-                if(n < 0.0f)
+                f32 n = terrain_noise_3d(x, y, z);
+#if 1
+                f32 ns[] = {
+                    terrain_noise_3d(x+1, y+0, z+0),
+                    terrain_noise_3d(x-1, y+0, z+0),
+                    terrain_noise_3d(x+0, y+1, z+0),
+                    terrain_noise_3d(x+0, y-1, z+0),
+                    terrain_noise_3d(x+0, y+0, z+1),
+                    terrain_noise_3d(x+0, y+0, z-1) 
+                };
+                bool all_empty =
+                    ns[0] > 0.0f &&
+                    ns[1] > 0.0f &&
+                    ns[2] > 0.0f &&
+                    ns[3] > 0.0f &&
+                    ns[4] > 0.0f &&
+                    ns[5] > 0.0f;
+                bool all_filled =
+                    ns[0] < 0.0f &&
+                    ns[1] < 0.0f &&
+                    ns[2] < 0.0f &&
+                    ns[3] < 0.0f &&
+                    ns[4] < 0.0f &&
+                    ns[5] < 0.0f;
+                bool surrounded = all_empty || all_filled;
+#else
+                bool surrounded = false;
+#endif
+                if(n < 0.0f && !surrounded)
                 {
-                    voxels_x[base_voxels + num_voxels] = x;
-                    voxels_y[base_voxels + num_voxels] = y;
-                    voxels_z[base_voxels + num_voxels] = z;
-                    voxels_color[base_voxels + num_voxels] = 0x00AA00FF;
+                    G_gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*0 + num_voxels] = x;
+                    G_gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*1 + num_voxels] = y;
+                    G_gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*2 + num_voxels] = z;
+                    G_gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*3 + num_voxels] = 0x00AA00FF;
                     ++num_voxels;
                 }
             }
         }
     }
-    bookmark[n_c + 1] = base_voxels + num_voxels;
-    out_chunk_data->num = n_c + 1;
-    out_voxel_data->num += num_voxels;
+
+    Chunk* result = allocate_chunk(num_voxels);
+    result->num = num_voxels;
+    memcpy(result->voxels + num_voxels*0, G_gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*0, num_voxels * sizeof(result->voxels[0]));
+    memcpy(result->voxels + num_voxels*1, G_gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*1, num_voxels * sizeof(result->voxels[0]));
+    memcpy(result->voxels + num_voxels*2, G_gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*2, num_voxels * sizeof(result->voxels[0]));
+    memcpy(result->voxels + num_voxels*3, G_gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*3, num_voxels * sizeof(result->voxels[0]));
+    return result;
 }
 
 bool maybe_gen_new_terrain(
-    ChunkBookmarkData* __restrict dst_chunk_data,
-    VoxelData* __restrict dst_voxel_data,
-
-    const ChunkBookmarkData* __restrict src_chunk_data,
-    const VoxelData* __restrict src_voxel_data,
-
+    Chunk** new_chunks, // Of size LOADED_REGION_CHUNKS_DIM^3
     const s32 old_chunk_x,
     const s32 old_chunk_y,
     const s32 old_chunk_z,
@@ -763,6 +675,7 @@ bool maybe_gen_new_terrain(
     const s32 new_chunk_z
 )
 {
+    /*
     if(old_chunk_x == new_chunk_x &&
        old_chunk_y == new_chunk_y &&
        old_chunk_z == new_chunk_z)
@@ -770,27 +683,18 @@ bool maybe_gen_new_terrain(
         return false;
     }
 
-    s32* __restrict dst_chunks_x = &dst_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*0];
-    s32* __restrict dst_chunks_y = &dst_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*1];
-    s32* __restrict dst_chunks_z = &dst_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*2];
-    s32* __restrict dst_voxels_x = &dst_voxel_data->pos[MAX_VOXELS*0];
-    s32* __restrict dst_voxels_y = &dst_voxel_data->pos[MAX_VOXELS*1];
-    s32* __restrict dst_voxels_z = &dst_voxel_data->pos[MAX_VOXELS*2];
-    u32* __restrict dst_voxels_color = dst_voxel_data->color;
+    Chunk** old_chunks = new Chunk*[LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM];
+    ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
+    {
+        old_chunks[it.idx] = chunks[it.idx];
+    }
 
-    const s32* __restrict src_chunks_x = &src_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*0];
-    const s32* __restrict src_chunks_y = &src_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*1];
-    const s32* __restrict src_chunks_z = &src_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*2];
-    const s32* __restrict src_voxels_x = &src_voxel_data->pos[MAX_VOXELS*0];
-    const s32* __restrict src_voxels_y = &src_voxel_data->pos[MAX_VOXELS*1];
-    const s32* __restrict src_voxels_z = &src_voxel_data->pos[MAX_VOXELS*2];
-    const u32* __restrict src_voxels_color = src_voxel_data->color;
-
-    dst_chunk_data->num = 0;
-    dst_voxel_data->num = 0;
-
-    u32 target_chunk_idx = 0;
-    u32 target_voxel_idx = 0;
+    s32 old_chunks_range_x_min = old_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
+    s32 old_chunks_range_x_max = old_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
+    s32 old_chunks_range_y_min = old_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
+    s32 old_chunks_range_y_max = old_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
+    s32 old_chunks_range_z_min = old_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
+    s32 old_chunks_range_z_max = old_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
 
     s32 new_chunks_range_x_min = new_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
     s32 new_chunks_range_x_max = new_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
@@ -799,73 +703,142 @@ bool maybe_gen_new_terrain(
     s32 new_chunks_range_z_min = new_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
     s32 new_chunks_range_z_max = new_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
 
-    BitArray<ChunkBookmarkData::MAX_CHUNKS> to_gen;
+    s32 chunk_dx = new_chunk_x - old_chunk_x;
+    s32 chunk_dy = new_chunk_y - old_chunk_y;
+    s32 chunk_dz = new_chunk_z - old_chunk_z;
 
-    // Go through old chunks and see what needs to be carried over
-    for(u32 chunk_idx = 0; chunk_idx < src_chunk_data->num; chunk_idx++)
+    u32 D_num_de = 0;
+    ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
     {
-        s32 chunk_x = src_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*0 + chunk_idx];
-        s32 chunk_y = src_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*1 + chunk_idx];
-        s32 chunk_z = src_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*2 + chunk_idx];
+        s32 new_chunk_x = new_chunks_range_x_min + it.x;
+        s32 new_chunk_y = new_chunks_range_y_min + it.y;
+        s32 new_chunk_z = new_chunks_range_z_min + it.z;
+        s32 old_chunk_x = new_chunk_x - chunk_dx;
+        s32 old_chunk_y = new_chunk_y - chunk_dy;
+        s32 old_chunk_z = new_chunk_z - chunk_dz;
 
-        if(chunk_x >= new_chunks_range_x_min && chunk_x < new_chunks_range_x_max &&
-           chunk_y >= new_chunks_range_y_min && chunk_y < new_chunks_range_y_max &&
-           chunk_z >= new_chunks_range_z_min && chunk_z < new_chunks_range_z_max)
+        bool old_inside =
+            old_chunk_x >= new_chunks_range_x_min && old_chunk_x < new_chunks_range_x_max &&
+            old_chunk_y >= new_chunks_range_y_min && old_chunk_y < new_chunks_range_y_max &&
+            old_chunk_z >= new_chunks_range_z_min && old_chunk_z < new_chunks_range_z_max;
+        bool new_inside =
+            new_chunk_x >= old_chunks_range_x_min && new_chunk_x < old_chunks_range_x_max &&
+            new_chunk_y >= old_chunks_range_y_min && new_chunk_y < old_chunks_range_y_max &&
+            new_chunk_z >= old_chunks_range_z_min && new_chunk_z < old_chunks_range_z_max;
+
+        if(old_inside && new_inside)
         {
-            dst_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*0 + target_chunk_idx] = src_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*0 + chunk_idx];
-            dst_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*1 + target_chunk_idx] = src_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*1 + chunk_idx];
-            dst_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*2 + target_chunk_idx] = src_chunk_data->pos[ChunkBookmarkData::MAX_CHUNKS*2 + chunk_idx];
-            dst_chunk_data->bookmark[target_chunk_idx] = target_voxel_idx;
-
-            u32 voxels_bookmark = src_chunk_data->bookmark[chunk_idx];
-            u32 num_voxels_to_copy = src_chunk_data->bookmark[chunk_idx + 1] - voxels_bookmark;
-            assert(num_voxels_to_copy <= CHUNK_DIM*CHUNK_DIM*CHUNK_DIM);
-            memcpy(dst_voxel_data->pos + MAX_VOXELS*0 + target_voxel_idx, src_voxel_data->pos + MAX_VOXELS*0 + voxels_bookmark, num_voxels_to_copy * sizeof(*src_voxel_data->pos));
-            memcpy(dst_voxel_data->pos + MAX_VOXELS*1 + target_voxel_idx, src_voxel_data->pos + MAX_VOXELS*1 + voxels_bookmark, num_voxels_to_copy * sizeof(*src_voxel_data->pos));
-            memcpy(dst_voxel_data->pos + MAX_VOXELS*2 + target_voxel_idx, src_voxel_data->pos + MAX_VOXELS*2 + voxels_bookmark, num_voxels_to_copy * sizeof(*src_voxel_data->pos));
-            memcpy(dst_voxel_data->color + target_voxel_idx, src_voxel_data->color + voxels_bookmark, num_voxels_to_copy * sizeof(*src_voxel_data->color));
-
-            target_chunk_idx += 1;
-            target_voxel_idx += num_voxels_to_copy;
-
-            s32 local_chunk_x = chunk_x - new_chunks_range_x_min;
-            s32 local_chunk_y = chunk_y - new_chunks_range_y_min;
-            s32 local_chunk_z = chunk_z - new_chunks_range_z_min;
-            s32 local_chunk_idx =
-                local_chunk_z*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM +
-                local_chunk_y*LOADED_REGION_CHUNKS_DIM +
-                local_chunk_x;
-            to_gen.set_bit(local_chunk_idx);
+            s32 old_chunk_xi = it.x - chunk_dx;
+            s32 old_chunk_yi = it.y - chunk_dy;
+            s32 old_chunk_zi = it.z - chunk_dz;
+            s32 old_chunk_idx =
+                old_chunk_zi*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM +
+                old_chunk_yi*LOADED_REGION_CHUNKS_DIM +
+                old_chunk_xi;
+            chunks[it.idx] = old_chunks[old_chunk_idx];
         }
-    }
-
-    dst_chunk_data->bookmark[target_chunk_idx] = target_voxel_idx;
-    dst_chunk_data->num = target_chunk_idx;
-    dst_voxel_data->num = target_voxel_idx;
-
-    for(s32 chunk_zi = 0; chunk_zi < LOADED_REGION_CHUNKS_DIM; chunk_zi++)
-    {
-        for(s32 chunk_yi = 0; chunk_yi < LOADED_REGION_CHUNKS_DIM; chunk_yi++)
+        else
         {
-            for(s32 chunk_xi = 0; chunk_xi < LOADED_REGION_CHUNKS_DIM; chunk_xi++)
+            if(!old_inside)
             {
-                s32 chunk_x = chunk_xi + new_chunks_range_x_min;
-                s32 chunk_y = chunk_yi + new_chunks_range_y_min;
-                s32 chunk_z = chunk_zi + new_chunks_range_z_min;
-                s32 local_chunk_idx =
-                    chunk_zi*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM +
-                    chunk_yi*LOADED_REGION_CHUNKS_DIM +
-                    chunk_xi;
-                if(!to_gen.is_bit_set(u32(local_chunk_idx)))
-                {
-                    gen_chunk(dst_chunk_data, dst_voxel_data, chunk_x, chunk_y, chunk_z);
-                    to_gen.set_bit(local_chunk_idx);
-                }
+                deallocate_chunk(chunks[it.idx]);
+                D_num_de++;
             }
+            chunks[it.idx] = nullptr;
         }
     }
 
-    assert(to_gen.all_bits_set());
+    u32 D_num_a = 0;
+    ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
+    {
+        if(chunks[it.idx] == nullptr)
+        {
+            s32 x = new_chunks_range_x_min + it.x;
+            s32 y = new_chunks_range_y_min + it.y;
+            s32 z = new_chunks_range_z_min + it.z;
+            chunks[it.idx] = allocate_and_gen_chunk(x, y, z);
+            D_num_a++;
+        }
+    }
+
+    delete[] old_chunks;
+
+    return true;
+    */
+
+
+    if(old_chunk_x == new_chunk_x &&
+       old_chunk_y == new_chunk_y &&
+       old_chunk_z == new_chunk_z)
+    {
+        return false;
+    }
+
+    Chunk** old_chunks = new Chunk*[LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM];
+    ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
+    {
+        old_chunks[it.idx] = new_chunks[it.idx];
+        new_chunks[it.idx] = nullptr;
+    }
+
+    s32 chunk_dx = new_chunk_x - old_chunk_x;
+    s32 chunk_dy = new_chunk_y - old_chunk_y;
+    s32 chunk_dz = new_chunk_z - old_chunk_z;
+    s32 old_chunks_range_x_min = old_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
+    s32 old_chunks_range_x_max = old_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
+    s32 old_chunks_range_y_min = old_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
+    s32 old_chunks_range_y_max = old_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
+    s32 old_chunks_range_z_min = old_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
+    s32 old_chunks_range_z_max = old_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
+    s32 new_chunks_range_x_min = new_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
+    s32 new_chunks_range_x_max = new_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
+    s32 new_chunks_range_y_min = new_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
+    s32 new_chunks_range_y_max = new_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
+    s32 new_chunks_range_z_min = new_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
+    s32 new_chunks_range_z_max = new_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
+
+    s32 overlap_x_min = chunk_dx > 0 ? new_chunks_range_x_min : old_chunks_range_x_min;
+    s32 overlap_x_max = chunk_dx > 0 ? old_chunks_range_x_max : new_chunks_range_x_max;
+    s32 overlap_y_min = chunk_dy > 0 ? new_chunks_range_y_min : old_chunks_range_y_min;
+    s32 overlap_y_max = chunk_dy > 0 ? old_chunks_range_y_max : new_chunks_range_y_max;
+    s32 overlap_z_min = chunk_dz > 0 ? new_chunks_range_z_min : old_chunks_range_z_min;
+    s32 overlap_z_max = chunk_dz > 0 ? old_chunks_range_z_max : new_chunks_range_z_max;
+
+    // Dealloc chunks we've moved away from.
+    ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
+    {
+        // Iterating through old chunks
+        s32 old_chunk_x = old_chunks_range_x_min + it.x;
+        s32 old_chunk_y = old_chunks_range_y_min + it.y;
+        s32 old_chunk_z = old_chunks_range_z_min + it.z;
+        if(old_chunk_x >= overlap_x_min && old_chunk_x < overlap_x_max && 
+           old_chunk_y >= overlap_y_min && old_chunk_y < overlap_y_max && 
+           old_chunk_z >= overlap_z_min && old_chunk_z < overlap_z_max)
+        {
+            // Move to new chunks
+            s32 new_chunk_idx = it.idx + 
+                -chunk_dz*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM +
+                -chunk_dy*LOADED_REGION_CHUNKS_DIM +
+                -chunk_dx;
+            new_chunks[new_chunk_idx] = old_chunks[it.idx];
+        }
+        else
+        {
+            deallocate_chunk(old_chunks[it.idx]);
+        }
+    }
+
+    ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
+    {
+        // Iterating through new chunks
+        if(new_chunks[it.idx] == nullptr)
+        {
+            s32 new_chunk_x = new_chunks_range_x_min + it.x;
+            s32 new_chunk_y = new_chunks_range_y_min + it.y;
+            s32 new_chunk_z = new_chunks_range_z_min + it.z;
+            new_chunks[it.idx] = allocate_and_gen_chunk(new_chunk_x, new_chunk_y, new_chunk_z);
+        }
+    }
 
     return true;
 }
@@ -875,7 +848,7 @@ bool maybe_gen_new_terrain(
 INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine, INT nCmdShow)
 {
     // GLFW
-    graphics_state = new GraphicsState();
+    G_graphics_state = new GraphicsState();
     {
         glfwSetErrorCallback(glfw_error_fn);
         if(!glfwInit())
@@ -892,18 +865,18 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
 
         u32 window_width = 1920 * 1.0f;
         u32 window_height = 1080 * 1.0f;
-        graphics_state->window = glfwCreateWindow(window_width, window_height, "My Game", NULL, NULL);
-        if(!graphics_state->window)
+        G_graphics_state->window = glfwCreateWindow(window_width, window_height, "My Game", NULL, NULL);
+        if(!G_graphics_state->window)
         {
             //fprintf(stderr, "Failed to open GLFW window\n");
             glfwTerminate();
             return 1;
         }
         
-        glfwSetFramebufferSizeCallback(graphics_state->window, reshape);
-        //glfwSetKeyCallback(graphics_state->window, key);
+        glfwSetFramebufferSizeCallback(G_graphics_state->window, reshape);
+        //glfwSetKeyCallback(G_graphics_state->window, key);
         
-        glfwMakeContextCurrent(graphics_state->window);
+        glfwMakeContextCurrent(G_graphics_state->window);
         
         if(!gladLoadGLLoader((GLADloadproc) glfwGetProcAddress))
         {
@@ -922,22 +895,22 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
         
         s32 framebuffer_width;
         s32 framebuffer_height;
-        glfwGetFramebufferSize(graphics_state->window, &framebuffer_width, &framebuffer_height);
-        reshape(graphics_state->window, framebuffer_width, framebuffer_height);
+        glfwGetFramebufferSize(G_graphics_state->window, &framebuffer_width, &framebuffer_height);
+        reshape(G_graphics_state->window, framebuffer_width, framebuffer_height);
 
-        graphics_state->cam.pos = v3(0.0f, 0.0f, -5.0f);
-        graphics_state->cam.rot_x = 0.0f;
-        graphics_state->cam.rot_y = M_PI;
-        graphics_state->cam.vfov = 90.0f;
-        graphics_state->cam.view_dist = 5000.0f;
-        graphics_state->cam.near_plane_dist = 1.0f;
-        graphics_state->debug_cam = graphics_state->cam;
+        G_graphics_state->cam.pos = v3(16.0f, 16.0f, 16.0f);
+        G_graphics_state->cam.rot_x = 0.0f;
+        G_graphics_state->cam.rot_y = M_PI;
+        G_graphics_state->cam.vfov = 90.0f;
+        G_graphics_state->cam.view_dist = 5000.0f;
+        G_graphics_state->cam.near_plane_dist = 1.0f;
+        G_graphics_state->debug_cam = G_graphics_state->cam;
 
         {
-            glGenVertexArrays(1, &graphics_state->batch_voxel_vao);
-            glBindVertexArray(graphics_state->batch_voxel_vao);
+            glGenVertexArrays(1, &G_graphics_state->batch_voxel_vao);
+            glBindVertexArray(G_graphics_state->batch_voxel_vao);
             check_gl_errors("vao");
-            glGenBuffers(1, &graphics_state->batch_voxel_vbo);
+            glGenBuffers(1, &G_graphics_state->batch_voxel_vbo);
             check_gl_errors("vbo");
             static u32 voxel_indices[] = 
             {
@@ -955,12 +928,12 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 0, 2, 3
             };
 
-            glBindBuffer(GL_ARRAY_BUFFER, graphics_state->batch_voxel_vbo);
-            glBufferData(GL_ARRAY_BUFFER, sizeof(graphics_state->voxel_vertices), graphics_state->voxel_vertices, GL_STATIC_DRAW);
+            glBindBuffer(GL_ARRAY_BUFFER, G_graphics_state->batch_voxel_vbo);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(G_graphics_state->voxel_vertices), G_graphics_state->voxel_vertices, GL_STATIC_DRAW);
             check_gl_errors("vbo voxel vertices");
 
-            glGenBuffers(1, &graphics_state->batch_voxel_ebo);
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, graphics_state->batch_voxel_ebo);
+            glGenBuffers(1, &G_graphics_state->batch_voxel_ebo);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, G_graphics_state->batch_voxel_ebo);
             glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(voxel_indices), voxel_indices, GL_STATIC_DRAW);
 
             glVertexAttribPointer(0, 1, GL_FLOAT, GL_FALSE, 0, (void *)0);
@@ -973,28 +946,28 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
 
             // https://www.khronos.org/opengl/wiki/Shader_Storage_Buffer_Object
             const u32 voxel_buffer_size = SHADER_BUFFER_WIDTH * NUM_VOXEL_DATA_FIELDS * 4;
-            glGenBuffers(1, &graphics_state->batch_voxel_ssbo);
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, graphics_state->batch_voxel_ssbo);
+            glGenBuffers(1, &G_graphics_state->batch_voxel_ssbo);
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, G_graphics_state->batch_voxel_ssbo);
             glBufferData(GL_SHADER_STORAGE_BUFFER, voxel_buffer_size, nullptr, GL_DYNAMIC_DRAW);
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, graphics_state->batch_voxel_ssbo);
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, G_graphics_state->batch_voxel_ssbo);
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
             check_gl_errors("ssbo");
 
-            graphics_state->batch_voxel_shader_program = make_shader_from_file("assets/shaders/batch_voxel.shader");
+            G_graphics_state->batch_voxel_shader_program = make_shader_from_file("assets/shaders/batch_voxel.shader");
             {
                 FILE *file = fopen("log.txt", "wt");
-                fprintf(file, graphics_state->debug_info_log);
+                fprintf(file, G_graphics_state->debug_info_log);
                 fclose(file);
             }
         }
 
         {
-            glGenVertexArrays(1, &graphics_state->debug_line_vao);
-            glBindVertexArray(graphics_state->debug_line_vao);
+            glGenVertexArrays(1, &G_graphics_state->debug_line_vao);
+            glBindVertexArray(G_graphics_state->debug_line_vao);
             check_gl_errors("vao");
-            glGenBuffers(1, &graphics_state->debug_line_vbo);
+            glGenBuffers(1, &G_graphics_state->debug_line_vbo);
             check_gl_errors("vbo");
-            glBindBuffer(GL_ARRAY_BUFFER, graphics_state->debug_line_vbo);
+            glBindBuffer(GL_ARRAY_BUFFER, G_graphics_state->debug_line_vbo);
             f32 v[6] = {};
             glBufferData(GL_ARRAY_BUFFER, sizeof(v), v, GL_STATIC_DRAW);
             check_gl_errors("vbo voxel vertices");
@@ -1007,7 +980,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             glEnableVertexAttribArray(2);
             check_gl_errors("vertex attrib pointer");
 
-            graphics_state->debug_line_shader_program = make_shader_from_string(
+            G_graphics_state->debug_line_shader_program = make_shader_from_string(
                 "#version 440 core\n"
                 "layout (location = 0) in float a_x;"
                 "layout (location = 1) in float a_y;"
@@ -1028,7 +1001,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             );
             {
                 FILE *file = fopen("log.txt", "wt");
-                fprintf(file, graphics_state->debug_info_log);
+                fprintf(file, G_graphics_state->debug_info_log);
                 fclose(file);
             }
         }
@@ -1041,20 +1014,20 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
         ImGuiIO& io = ImGui::GetIO(); (void)io;
         ImGui::StyleColorsDark();
         ImGui_ImplOpenGL3_Init("#version 440 core");
-        ImGui_ImplGlfw_InitForOpenGL(graphics_state->window, true);
+        ImGui_ImplGlfw_InitForOpenGL(G_graphics_state->window, true);
     }
 
-    input_state = new InputState();
+    G_input_state = new InputState();
 
-    ChunkBookmarkData * __restrict chunk_data0 = new ChunkBookmarkData;
-    ChunkBookmarkData * __restrict chunk_data1 = new ChunkBookmarkData;
-    VoxelData * __restrict voxel_data0 = new VoxelData;
-    VoxelData * __restrict voxel_data1 = new VoxelData;
+    Chunk** chunks = new Chunk*[MAX_CHUNKS];
+    G_gen_chunk_scratch = allocate_chunk(CHUNK_MAX_VOXELS);
+    PackedVoxels* packed_voxels = new PackedVoxels;
 
-    ChunkBookmarkData * __restrict all_chunk_data = chunk_data0;
-    VoxelData * __restrict all_voxel_data = voxel_data0;
+    VoxelRenderData * voxel_render_data = new VoxelRenderData;
 
-    VoxelRenderData * __restrict voxel_render_data = new VoxelRenderData;
+    s32 n;
+    noise_data = stbi_load("assets/noise_simplex_tiled.png", &noise_data_width, &noise_data_depth, &n, 1);
+    noise_data_height = 1;
 
     f32 frame_timer = 0.0f;
     f32 last_time = 0.0f;
@@ -1081,33 +1054,41 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 ImGui::NewFrame();
             }
 
-            running = !glfwGetKey(graphics_state->window, GLFW_KEY_ESCAPE) && !glfwWindowShouldClose(graphics_state->window);
+            running = !glfwGetKey(G_graphics_state->window, GLFW_KEY_ESCAPE) && !glfwWindowShouldClose(G_graphics_state->window);
 
             {
-                //ImGui::Text("camera pos (%f, %f, %f)", graphics_state->cam.pos.x, graphics_state->cam.pos.y, graphics_state->cam.pos.z);
-                ImGui::InputFloat("camera x", &graphics_state->cam.pos.x, 1.0f, 10.0f, 3, ImGuiInputTextFlags_EnterReturnsTrue);
-                ImGui::InputFloat("camera y", &graphics_state->cam.pos.y, 1.0f, 10.0f, 3, ImGuiInputTextFlags_EnterReturnsTrue);
-                ImGui::InputFloat("camera z", &graphics_state->cam.pos.z, 1.0f, 10.0f, 3, ImGuiInputTextFlags_EnterReturnsTrue);
-                ImGui::Text("camera x rot %f", graphics_state->cam.rot_x);
-                ImGui::Text("camera y rot %f", graphics_state->cam.rot_y);
-                ImGui::DragFloat("camera near_plane_dist", &graphics_state->cam.near_plane_dist);
-                ImGui::DragFloat("camera view_dist", &graphics_state->cam.view_dist);
-                ImGui::Checkbox("debug cam", &graphics_state->use_debug_cam);
+                //ImGui::Text("camera pos (%f, %f, %f)", G_graphics_state->cam.pos.x, G_graphics_state->cam.pos.y, G_graphics_state->cam.pos.z);
+                ImGui::InputFloat("camera x", &G_graphics_state->cam.pos.x, 1.0f, 10.0f, 3, ImGuiInputTextFlags_EnterReturnsTrue);
+                ImGui::InputFloat("camera y", &G_graphics_state->cam.pos.y, 1.0f, 10.0f, 3, ImGuiInputTextFlags_EnterReturnsTrue);
+                ImGui::InputFloat("camera z", &G_graphics_state->cam.pos.z, 1.0f, 10.0f, 3, ImGuiInputTextFlags_EnterReturnsTrue);
+                ImGui::Text("camera x rot %f", G_graphics_state->cam.rot_x);
+                ImGui::Text("camera y rot %f", G_graphics_state->cam.rot_y);
+                ImGui::InputFloat("debug camera x", &G_graphics_state->debug_cam.pos.x, 1.0f, 10.0f, 3, ImGuiInputTextFlags_EnterReturnsTrue);
+                ImGui::InputFloat("debug camera y", &G_graphics_state->debug_cam.pos.y, 1.0f, 10.0f, 3, ImGuiInputTextFlags_EnterReturnsTrue);
+                ImGui::InputFloat("debug camera z", &G_graphics_state->debug_cam.pos.z, 1.0f, 10.0f, 3, ImGuiInputTextFlags_EnterReturnsTrue);
+                ImGui::DragFloat("camera near_plane_dist", &G_graphics_state->cam.near_plane_dist);
+                ImGui::DragFloat("camera view_dist", &G_graphics_state->cam.view_dist);
+                ImGui::Checkbox("debug cam", &G_graphics_state->use_debug_cam);
 
-                if(ImGui::Button("asdf"))
+                static float d_move[3] = {};
+                ImGui::InputFloat("move by x", &d_move[0], 1.0f, 10.0f, 3);
+                ImGui::InputFloat("move by y", &d_move[1], 1.0f, 10.0f, 3);
+                ImGui::InputFloat("move by z", &d_move[2], 1.0f, 10.0f, 3);
+                if(ImGui::Button("move"))
                 {
-                    graphics_state->cam.pos.x -= 32.0f;
-                    graphics_state->cam.pos.z -= 32.0f;
+                    G_graphics_state->cam.pos.x += d_move[0];
+                    G_graphics_state->cam.pos.y += d_move[1];
+                    G_graphics_state->cam.pos.z += d_move[2];
                 }
 
                 Camera *current_cam;
-                if(graphics_state->use_debug_cam) current_cam = &graphics_state->debug_cam;
-                else current_cam = &graphics_state->cam;
+                if(G_graphics_state->use_debug_cam) current_cam = &G_graphics_state->debug_cam;
+                else current_cam = &G_graphics_state->cam;
 
                 static f32 last_mouse_x, last_mouse_y;
                 f64 xpos, ypos;
-                glfwGetCursorPos(graphics_state->window, &xpos, &ypos);
-                if(glfwGetKey(graphics_state->window, GLFW_KEY_SPACE))
+                glfwGetCursorPos(G_graphics_state->window, &xpos, &ypos);
+                if(glfwGetKey(G_graphics_state->window, GLFW_KEY_SPACE))
                 {
                     v2 mouse_delta = v2((f32)xpos - last_mouse_x, (f32)ypos - last_mouse_y);
                     current_cam->rot_y -= mouse_delta.x * TIME_STEP * 0.2f;
@@ -1121,19 +1102,19 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 v3 cam_k = v3(cam_xform[2][0], cam_xform[2][1], cam_xform[2][2]);
 
                 v3 camera_vel = v3();
-                camera_vel += -cam_i * glfwGetKey(graphics_state->window, GLFW_KEY_A);
-                camera_vel +=  cam_i * glfwGetKey(graphics_state->window, GLFW_KEY_D);
-                camera_vel +=  cam_k * glfwGetKey(graphics_state->window, GLFW_KEY_S);
-                camera_vel += -cam_k * glfwGetKey(graphics_state->window, GLFW_KEY_W);
+                camera_vel += -cam_i * glfwGetKey(G_graphics_state->window, GLFW_KEY_A);
+                camera_vel +=  cam_i * glfwGetKey(G_graphics_state->window, GLFW_KEY_D);
+                camera_vel +=  cam_k * glfwGetKey(G_graphics_state->window, GLFW_KEY_S);
+                camera_vel += -cam_k * glfwGetKey(G_graphics_state->window, GLFW_KEY_W);
                 static f32 camera_speed = 100.0f;
                 ImGui::DragFloat("camera speed", &camera_speed);
                 current_cam->pos += normalize(camera_vel) * TIME_STEP * camera_speed;
             }
 
 
-            s32 camera_x = (s32)graphics_state->cam.pos.x;
-            s32 camera_y = (s32)graphics_state->cam.pos.y;
-            s32 camera_z = (s32)graphics_state->cam.pos.z;
+            s32 camera_x = (s32)G_graphics_state->cam.pos.x;
+            s32 camera_y = (s32)G_graphics_state->cam.pos.y;
+            s32 camera_z = (s32)G_graphics_state->cam.pos.z;
             s32 camera_chunk_x = camera_x >> CHUNK_POW;
             s32 camera_chunk_y = camera_y >> CHUNK_POW;
             s32 camera_chunk_z = camera_z >> CHUNK_POW;
@@ -1145,9 +1126,6 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             s32 region_chunks_tr_y = camera_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
             s32 region_chunks_tr_z = camera_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
 
-            //static s32 last_camera_chunk_x = 0xFFFFFFFF;
-            //static s32 last_camera_chunk_y = 0xFFFFFFFF;
-            //static s32 last_camera_chunk_z = 0xFFFFFFFF;
             static s32 last_camera_chunk_x = camera_chunk_x;
             static s32 last_camera_chunk_y = camera_chunk_y;
             static s32 last_camera_chunk_z = camera_chunk_z;
@@ -1158,50 +1136,23 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             static bool do_gen = true;
             if(do_gen)
             {
-                all_chunk_data->num = 0;
+                u32 i = 0;
                 for(s32 z = region_chunks_bl_z; z < region_chunks_tr_z; z++)
                 {
                     for(s32 y = region_chunks_bl_y; y < region_chunks_tr_y; y++)
                     {
                         for(s32 x = region_chunks_bl_x; x < region_chunks_tr_x; x++)
                         {
-                            gen_chunk(
-                                all_chunk_data,
-                                all_voxel_data,
-                                x, y, z
-                            );
+                            chunks[i] = allocate_and_gen_chunk(x, y, z);
+                            i++;
                         }
                     }
                 }
-                // HACK
-                all_voxel_data->num = all_chunk_data->bookmark[all_chunk_data->num];
                 do_gen = false;
             }
 
-            ChunkBookmarkData* src_chunk_data = nullptr;
-            VoxelData* src_voxel_data = nullptr;
-            ChunkBookmarkData* dst_chunk_data = nullptr;
-            VoxelData* dst_voxel_data = nullptr;
-            if(all_chunk_data == chunk_data0)
-            {
-                src_chunk_data = chunk_data0;
-                src_voxel_data = voxel_data0;
-                dst_chunk_data = chunk_data1;
-                dst_voxel_data = voxel_data1;
-            }
-            else
-            {
-                src_chunk_data = chunk_data1;
-                src_voxel_data = voxel_data1;
-                dst_chunk_data = chunk_data0;
-                dst_voxel_data = voxel_data0;
-            }
             bool did_generation = maybe_gen_new_terrain(
-                dst_chunk_data,
-                dst_voxel_data,
-                src_chunk_data,
-                src_voxel_data,
-
+                chunks,
                 last_camera_chunk_x,
                 last_camera_chunk_y,
                 last_camera_chunk_z,
@@ -1209,40 +1160,39 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 camera_chunk_y,
                 camera_chunk_z
             );
-            if(did_generation)
-            {
-                if(all_chunk_data == chunk_data0)
-                {
-                    all_chunk_data = chunk_data1;
-                    all_voxel_data = voxel_data1;
-                }
-                else
-                {
-                    all_chunk_data = chunk_data0;
-                    all_voxel_data = voxel_data0;
-                }
-            }
 
             last_camera_chunk_x = camera_chunk_x;
             last_camera_chunk_y = camera_chunk_y;
             last_camera_chunk_z = camera_chunk_z;
             ImGui::Text("Last gen time: %ims", last_gen_time);
 
-
             // Prep render data
             {
                 TIME_SCOPE("Prep render data");
 
-                ImGui::Text("prep num_voxels %i", all_voxel_data->num);
+
+                u32 num_voxels = 0;
+                for(u32 chunk_idx = 0; chunk_idx < MAX_CHUNKS; chunk_idx++)
+                {
+                    Chunk* chunk = chunks[chunk_idx];
+                    memcpy(packed_voxels->pos + MAX_VOXELS*0 + num_voxels, chunk->voxels + chunk->num*0, chunk->num * sizeof(chunk->voxels[0]));
+                    memcpy(packed_voxels->pos + MAX_VOXELS*1 + num_voxels, chunk->voxels + chunk->num*1, chunk->num * sizeof(chunk->voxels[0]));
+                    memcpy(packed_voxels->pos + MAX_VOXELS*2 + num_voxels, chunk->voxels + chunk->num*2, chunk->num * sizeof(chunk->voxels[0]));
+                    memcpy(packed_voxels->color + num_voxels,              chunk->voxels + chunk->num*3, chunk->num * sizeof(chunk->voxels[0]));
+                    num_voxels += chunk->num;
+                }
+                packed_voxels->num = num_voxels;
+
+                ImGui::Text("prep num_voxels %i", num_voxels);
 
                 camera_cull(
                     &voxel_render_data->num,
                     voxel_render_data->pos,
                     voxel_render_data->color,
-                    all_voxel_data->num,
-                    all_voxel_data->pos,
-                    all_voxel_data->color,
-                    &graphics_state->cam
+                    packed_voxels->num,
+                    packed_voxels->pos,
+                    packed_voxels->color,
+                    &G_graphics_state->cam
                 );
             }
 
@@ -1260,39 +1210,39 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                     u32 batch_size = min(voxel_render_data->num - batch_i, VoxelRenderData::BATCH_SIZE);
 
                     assert(VoxelRenderData::BATCH_SIZE <= SHADER_BUFFER_WIDTH);
-                    glUseProgram(graphics_state->batch_voxel_shader_program);
+                    glUseProgram(G_graphics_state->batch_voxel_shader_program);
                     check_gl_errors("use program");
 
                     Camera *current_cam;
-                    if(graphics_state->use_debug_cam) current_cam = &graphics_state->debug_cam;
-                    else current_cam = &graphics_state->cam;
+                    if(G_graphics_state->use_debug_cam) current_cam = &G_graphics_state->debug_cam;
+                    else current_cam = &G_graphics_state->cam;
 
                     {
                         mat4 m = view_m_world(current_cam);
-                        GLint loc = glGetUniformLocation(graphics_state->batch_voxel_shader_program, "m_view");
+                        GLint loc = glGetUniformLocation(G_graphics_state->batch_voxel_shader_program, "m_view");
                         glUniformMatrix4fv(loc, 1, true, &(m[0][0]));
                         if(loc == -1) assert(false);
                     }
                     {
                         mat4 m = clip_m_view(current_cam);
-                        GLint loc = glGetUniformLocation(graphics_state->batch_voxel_shader_program, "m_proj");
+                        GLint loc = glGetUniformLocation(G_graphics_state->batch_voxel_shader_program, "m_proj");
                         glUniformMatrix4fv(loc, 1, true, &(m[0][0]));
                         if(loc == -1) assert(false);
                     }
 
-                    glBindVertexArray(graphics_state->batch_voxel_vao);
-                    glBindBuffer(GL_ARRAY_BUFFER, graphics_state->batch_voxel_vbo);
+                    glBindVertexArray(G_graphics_state->batch_voxel_vao);
+                    glBindBuffer(GL_ARRAY_BUFFER, G_graphics_state->batch_voxel_vbo);
                     u32 offset_x = 0 * SHADER_BUFFER_WIDTH*sizeof(f32);
                     u32 offset_y = 1 * SHADER_BUFFER_WIDTH*sizeof(f32);
                     u32 offset_z = 2 * SHADER_BUFFER_WIDTH*sizeof(f32);
                     u32 offset_color = 3 * SHADER_BUFFER_WIDTH*sizeof(u32);
                     u32 size = sizeof(f32) * batch_size;
-                    glBindBuffer(GL_SHADER_STORAGE_BUFFER, graphics_state->batch_voxel_ssbo);
+                    glBindBuffer(GL_SHADER_STORAGE_BUFFER, G_graphics_state->batch_voxel_ssbo);
                     glBufferSubData(GL_SHADER_STORAGE_BUFFER, offset_x, size, batch_x);
                     glBufferSubData(GL_SHADER_STORAGE_BUFFER, offset_y, size, batch_y);
                     glBufferSubData(GL_SHADER_STORAGE_BUFFER, offset_z, size, batch_z);
                     glBufferSubData(GL_SHADER_STORAGE_BUFFER, offset_color, size, batch_color);
-                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, graphics_state->batch_voxel_ssbo);
+                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, G_graphics_state->batch_voxel_ssbo);
 
                     glDrawElementsInstanced(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0, batch_size);
                     check_gl_errors("draw");
@@ -1309,8 +1259,8 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 draw_line(v3(), v3(0.0f, 1.0f, 0.0f), v3(0.0f, 1.0f, 0.0f));
                 draw_line(v3(), v3(0.0f, 0.0f, 1.0f), v3(0.0f, 0.0f, 1.0f));
 
-                mat4 cam_xform = view_m_world(&graphics_state->cam);
-                v3 cam_p = graphics_state->cam.pos;
+                mat4 cam_xform = view_m_world(&G_graphics_state->cam);
+                v3 cam_p = G_graphics_state->cam.pos;
                 v3 cam_i = v3(cam_xform[0][0], cam_xform[0][1], cam_xform[0][2]);
                 v3 cam_j = v3(cam_xform[1][0], cam_xform[1][1], cam_xform[1][2]);
                 v3 cam_k = v3(cam_xform[2][0], cam_xform[2][1], cam_xform[2][2]);
@@ -1318,14 +1268,14 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 draw_line(cam_p, cam_p + cam_j, v3(0.0f, 1.0f, 0.0f));
                 draw_line(cam_p, cam_p + cam_k, v3(0.0f, 0.0f, 1.0f));
 
-                f32 tan_fov = tan(graphics_state->cam.vfov*0.5f);
-                f32 near_hh = tan_fov * graphics_state->cam.near_plane_dist;
-                f32 near_hw = near_hh * graphics_state->cam.ar;
-                f32 far_hh = tan_fov * graphics_state->cam.view_dist;
-                f32 far_hw = far_hh * graphics_state->cam.ar;
+                f32 tan_fov = tan(G_graphics_state->cam.vfov*0.5f);
+                f32 near_hh = tan_fov * G_graphics_state->cam.near_plane_dist;
+                f32 near_hw = near_hh * G_graphics_state->cam.ar;
+                f32 far_hh = tan_fov * G_graphics_state->cam.view_dist;
+                f32 far_hw = far_hh * G_graphics_state->cam.ar;
 
-                v3 p_near = cam_p + -cam_k * graphics_state->cam.near_plane_dist;
-                v3 p_far = cam_p + -cam_k * graphics_state->cam.view_dist;
+                v3 p_near = cam_p + -cam_k * G_graphics_state->cam.near_plane_dist;
+                v3 p_far = cam_p + -cam_k * G_graphics_state->cam.view_dist;
 
                 v3 frustum_v[] =
                 {
@@ -1375,7 +1325,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 draw_line(frustum_v[1], frustum_v[0], v3(1.0f, 1.0f, 0.0f));
             }
 
-            static bool show_chunk_lines = true;
+            static bool show_chunk_lines = false;
             ImGui::Checkbox("show_chunk_lines", &show_chunk_lines);
             if(show_chunk_lines)
             {
@@ -1409,13 +1359,13 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 for(u32 i = 0; i < 32; i++) frame_time_sum += frame_times[i];
                 ImGui::Text("frame time: %f ms", frame_time_sum / 32.0);
 
-                ImGui::Text(graphics_state->debug_info_log);
+                ImGui::Text(G_graphics_state->debug_info_log);
             }
 
             ImGui::Render();
             ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
-            glfwSwapBuffers(graphics_state->window);
+            glfwSwapBuffers(G_graphics_state->window);
         }
     }
 
