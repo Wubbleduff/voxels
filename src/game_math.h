@@ -183,6 +183,10 @@ inline void swap(f32& a, f32& b)
     a = b;
     b = tmp;
 }
+inline bool is_power_of_2(s32 n)
+{
+    return (n & (n - 1)) == 0;
+}
 /*
 float cos(float a) { return cosf(a); }
 float sin(float a) { return sinf(a); }

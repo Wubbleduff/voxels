@@ -25,6 +25,7 @@ static constexpr s32 CHUNK_DIM = 32;
 static constexpr s32 CHUNK_POW = 5; // CHUNK_DIM = 2**CHUNK_POW
 static constexpr s32 CHUNK_MAX_VOXELS = CHUNK_DIM*CHUNK_DIM*CHUNK_DIM;
 static constexpr s32 VIEW_DIST = 512;
+//static constexpr s32 VIEW_DIST = 64;
 static constexpr s32 LOADED_REGION_CHUNKS_DIM = (VIEW_DIST/CHUNK_DIM)*2;
 static constexpr u32 MAX_CHUNKS = LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM;
 static const u32 MAX_VOXELS = 50*1024*1024;
@@ -570,9 +571,9 @@ static void draw_line(v3 a, v3 b, v3 c)
     check_gl_errors("draw");
 }
 
+#if 0
 f32 terrain_noise_3d(s32 x, s32 y, s32 z)
 {
-#if 1
     auto sample = [](f32 xx, f32 yy, f32 zz)
     {
         u32 xi = u32(xx) % noise_data_width;
@@ -583,13 +584,28 @@ f32 terrain_noise_3d(s32 x, s32 y, s32 z)
         return n;
     };
     f32 n = sample(x, y, z);
-#else
-    f32 n = pnoise(x*0.01f,y*0.1f,z*0.01f);
-#endif
     constexpr f32 y_bias = 0.04f;
     n += y*y_bias;
     return n;
 }
+#else
+__declspec(noinline) bool terrain_noise_3d(s32 x, s32 y, s32 z)
+{
+    auto sample = [](s32 xx, s32 yy, s32 zz)
+    {
+        assert(noise_data_width == 2048);
+        u32 xi = u32(xx) & 0x7FF;
+        u32 yi = u32(yy) & 0x0;
+        u32 zi = u32(zz) & 0x7FF;
+        u32 idx = yi*noise_data_width*noise_data_depth + zi*noise_data_width + xi;
+        u32 n = noise_data[idx];
+        return n;
+    };
+    s32 n = sample(x, y, z);
+    n += y;
+    return n < 128;
+}
+#endif
 
 Chunk* allocate_chunk(u32 cap_voxels)
 {
@@ -603,6 +619,7 @@ void deallocate_chunk(Chunk* chunk)
     delete chunk;
 }
 
+#if 0
 Chunk* allocate_and_gen_chunk(
     const s32 chunk_x,
     const s32 chunk_y,
@@ -617,7 +634,6 @@ Chunk* allocate_and_gen_chunk(
             for(s32 x = chunk_x * CHUNK_DIM; x < chunk_x * CHUNK_DIM + CHUNK_DIM; x++)
             {
                 f32 n = terrain_noise_3d(x, y, z);
-#if 1
                 f32 ns[] = {
                     terrain_noise_3d(x+1, y+0, z+0),
                     terrain_noise_3d(x-1, y+0, z+0),
@@ -641,9 +657,6 @@ Chunk* allocate_and_gen_chunk(
                     ns[4] < 0.0f &&
                     ns[5] < 0.0f;
                 bool surrounded = all_empty || all_filled;
-#else
-                bool surrounded = false;
-#endif
                 if(n < 0.0f && !surrounded)
                 {
                     G_gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*0 + num_voxels] = x;
@@ -664,6 +677,65 @@ Chunk* allocate_and_gen_chunk(
     memcpy(result->voxels + num_voxels*3, G_gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*3, num_voxels * sizeof(result->voxels[0]));
     return result;
 }
+#else
+Chunk* allocate_and_gen_chunk(
+    const s32 chunk_x,
+    const s32 chunk_y,
+    const s32 chunk_z
+)
+{
+    u32 num_voxels = 0;
+    for(s32 z = chunk_z * CHUNK_DIM; z < chunk_z * CHUNK_DIM + CHUNK_DIM; z++)
+    {
+        for(s32 y = chunk_y * CHUNK_DIM; y < chunk_y * CHUNK_DIM + CHUNK_DIM; y++)
+        {
+            for(s32 x = chunk_x * CHUNK_DIM; x < chunk_x * CHUNK_DIM + CHUNK_DIM; x++)
+            {
+                s32 all_empty  = true;
+                s32 all_filled = true;
+                bool n = terrain_noise_3d(x, y, z);
+
+                bool r;
+                r = terrain_noise_3d(x+1, y+0, z+0);
+                all_empty  *= s32(!r);
+                all_filled *= s32(r);
+                r = terrain_noise_3d(x-1, y+0, z+0);
+                all_empty  *= s32(!r);
+                all_filled *= s32(r);
+                r = terrain_noise_3d(x+0, y+1, z+0);
+                all_empty  *= s32(!r);
+                all_filled *= s32(r);
+                r = terrain_noise_3d(x+0, y-1, z+0);
+                all_empty  *= s32(!r);
+                all_filled *= s32(r);
+                r = terrain_noise_3d(x+0, y+0, z+1);
+                all_empty  *= s32(!r);
+                all_filled *= s32(r);
+                r = terrain_noise_3d(x+0, y+0, z-1);
+                all_empty  *= s32(!r);
+                all_filled *= s32(r);
+                bool surrounded = all_empty || all_filled;
+                if(n && !surrounded)
+                {
+                    G_gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*0 + num_voxels] = x;
+                    G_gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*1 + num_voxels] = y;
+                    G_gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*2 + num_voxels] = z;
+                    G_gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*3 + num_voxels] = 0x00AA00FF;
+                    ++num_voxels;
+                }
+            }
+        }
+    }
+
+    Chunk* result = allocate_chunk(num_voxels);
+    result->num = num_voxels;
+    memcpy(result->voxels + num_voxels*0, G_gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*0, num_voxels * sizeof(result->voxels[0]));
+    memcpy(result->voxels + num_voxels*1, G_gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*1, num_voxels * sizeof(result->voxels[0]));
+    memcpy(result->voxels + num_voxels*2, G_gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*2, num_voxels * sizeof(result->voxels[0]));
+    memcpy(result->voxels + num_voxels*3, G_gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*3, num_voxels * sizeof(result->voxels[0]));
+    return result;
+}
+#endif
 
 bool maybe_gen_new_terrain(
     Chunk** new_chunks, // Of size LOADED_REGION_CHUNKS_DIM^3
@@ -1028,6 +1100,12 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
     s32 n;
     noise_data = stbi_load("assets/noise_simplex_tiled.png", &noise_data_width, &noise_data_depth, &n, 1);
     noise_data_height = 1;
+    //assert(noise_data_width  == noise_data_height);
+    assert(noise_data_width  == noise_data_depth);
+    //assert(noise_data_height == noise_data_depth);
+    assert(is_power_of_2(noise_data_width));
+    assert(is_power_of_2(noise_data_height));
+    assert(is_power_of_2(noise_data_depth));
 
     f32 frame_timer = 0.0f;
     f32 last_time = 0.0f;
@@ -1136,6 +1214,8 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             static bool do_gen = true;
             if(do_gen)
             {
+                // LARGE_INTEGER start;
+                // QueryPerformanceCounter(&start);
                 u32 i = 0;
                 for(s32 z = region_chunks_bl_z; z < region_chunks_tr_z; z++)
                 {
@@ -1149,6 +1229,17 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                     }
                 }
                 do_gen = false;
+
+                // LARGE_INTEGER end;
+                // QueryPerformanceCounter(&end);
+                // LARGE_INTEGER freq;
+                // QueryPerformanceFrequency(&freq);
+                // LARGE_INTEGER ms;
+                // ms.QuadPart = (end.QuadPart - start.QuadPart) * 1000;
+                // ms.QuadPart /= freq.QuadPart;
+                // FILE* fp = fopen("perf_log.txt", "wt");
+                // fprintf(fp, "%lli ms", ms.QuadPart);
+                // fclose(fp);
             }
 
             bool did_generation = maybe_gen_new_terrain(
