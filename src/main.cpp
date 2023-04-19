@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <stdio.h> // fopen
 #include <immintrin.h>
+#include <atomic>
 
 #include <glad/glad.h>
 #define GLFW_INCLUDE_NONE
@@ -17,18 +18,24 @@
 #include "common.h"
 #include "game_math.h"
 
+// Globals
 // NOTE: This value must match the shader.
-static const u32 SHADER_BUFFER_WIDTH = 1024*1024;
-static const u32 NUM_VOXEL_DATA_FIELDS = 4;
-
+static constexpr u32 SHADER_BUFFER_WIDTH = 1024*1024;
+static constexpr u32 NUM_VOXEL_DATA_FIELDS = 4;
 static constexpr s32 CHUNK_DIM = 32;
 static constexpr s32 CHUNK_POW = 5; // CHUNK_DIM = 2**CHUNK_POW
 static constexpr s32 CHUNK_MAX_VOXELS = CHUNK_DIM*CHUNK_DIM*CHUNK_DIM;
-static constexpr s32 VIEW_DIST = 512;
-//static constexpr s32 VIEW_DIST = 64;
+static constexpr s32 VIEW_DIST = 256;
 static constexpr s32 LOADED_REGION_CHUNKS_DIM = (VIEW_DIST/CHUNK_DIM)*2;
 static constexpr u32 MAX_CHUNKS = LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM;
-static const u32 MAX_VOXELS = 50*1024*1024;
+static constexpr u32 MAX_VOXELS = 50*1024*1024;
+static constexpr u32 NUM_THREADS = 8;
+static struct GraphicsState *G_graphics_state = nullptr;
+static struct InputState *G_input_state = nullptr;
+static s32 noise_data_width;
+static s32 noise_data_height;
+static s32 noise_data_depth;
+static u8* noise_data;
 
 struct VoxelRenderData
 {
@@ -131,14 +138,19 @@ struct ScopeTimer
         QueryPerformanceFrequency(&freq);
 
         LARGE_INTEGER ms;
-        ms.QuadPart = (end.QuadPart - start.QuadPart) * 1000;
+        ms.QuadPart = (end.QuadPart - start.QuadPart) * 1000000;
         ms.QuadPart /= freq.QuadPart;
-        ImGui::Text("TIME - %s: %ims", m_name, ms.QuadPart);
+        ImGui::Text("TIME - %s: %ius", m_name, ms.QuadPart);
     }
     const char *m_name;
     LARGE_INTEGER start;
 };
 #define TIME_SCOPE(name) ScopeTimer _time_scope = ScopeTimer(name)
+
+struct ThreadState
+{
+    Chunk* gen_chunk_scratch = nullptr;
+};
 
 // EXPERIMENTAL
 struct CubeIterator
@@ -156,15 +168,38 @@ struct CubeIterator
         it.y = (it.idx / (N)) % (N),                             \
         it.x = it.idx % (N) )                                    
     
-// Globals
-static GraphicsState *G_graphics_state = nullptr;
-static InputState *G_input_state = nullptr;
-static Chunk* G_gen_chunk_scratch;
-static s32 noise_data_width;
-static s32 noise_data_height;
-static s32 noise_data_depth;
-static u8* noise_data;
 
+typedef void (*WorkerFn)(ThreadState*, void*);
+constexpr u32 MAX_WORK_ITEMS = 1024*1024;
+static std::atomic<u32> G_work_queue_begin = 0;
+static std::atomic<u32> G_work_queue_end = 0;
+static WorkerFn G_work_queue_fn[MAX_WORK_ITEMS];
+static void* G_work_queue_data[MAX_WORK_ITEMS];
+DWORD WINAPI worker_main(LPVOID lpParam)
+{
+    ThreadState* thread_state = reinterpret_cast<ThreadState*>(lpParam);
+    while(true)
+    {
+        u32 q_begin = G_work_queue_begin.load();
+        const u32 q_end = G_work_queue_end.load();
+        if(q_begin == q_end)
+        {
+            _mm_pause();
+            continue;
+        }
+        if(G_work_queue_begin.compare_exchange_weak(q_begin, q_begin + 1))
+        {
+            G_work_queue_fn[q_begin](thread_state, G_work_queue_data[q_begin]);
+        }
+    }
+}
+void add_work(WorkerFn fn, void* data)
+{
+    u32 q_end = G_work_queue_end.load();
+    G_work_queue_fn[q_end] = fn;
+    G_work_queue_data[q_end] = data;
+    G_work_queue_end++;
+}
 
 
 // TODO speed
@@ -222,7 +257,7 @@ static void get_frustum_planes(v3* out_normals, v3* out_points, const Camera* ca
         p_far + cam_i*far_hw + cam_j*far_hh, // tr 
         p_far - cam_i*far_hw + cam_j*far_hh, // tl 
     };
-    // TODO Think harder about this...
+    // TODO(mfritz) Think harder about this...
     out_normals[0] = normalize(cross(frustum_v[6] - frustum_v[5], frustum_v[1] - frustum_v[5]));
     out_normals[1] = normalize(cross(frustum_v[7] - frustum_v[6], frustum_v[2] - frustum_v[6]));
     out_normals[2] = normalize(cross(frustum_v[4] - frustum_v[7], frustum_v[3] - frustum_v[7]));
@@ -300,7 +335,7 @@ void camera_cull(
     // If P is a point on the plane, Q is the voxel centroid, and n is the plane normal, dist check is:
     // (Q - P) * n < sqrt(0.5^2 + 0.5^2) ->
     // Q*n - P*n - sqrt(0.5^2 + 0.5^2)
-    // We can precomupte p_dot_n = P*n + sqrt(0.5^2 + 0.5^2) outside the per-voxel loop.
+    // We can precompute p_dot_n = P*n + sqrt(0.5^2 + 0.5^2) outside the per-voxel loop.
     // Inside the loop, we just need to compute Q*n - p_dot_n. The resulting dist will
     // have the sign bit set if < 0. Then we can use movemask without needing an extra
     // cmp.
@@ -572,24 +607,19 @@ static void draw_line(v3 a, v3 b, v3 c)
 }
 
 #if 0
-f32 terrain_noise_3d(s32 x, s32 y, s32 z)
+__declspec(noinline) bool terrain_noise_3d(s32 x, s32 y, s32 z)
 {
-    auto sample = [](f32 xx, f32 yy, f32 zz)
+    auto sample = [](s32 xx, s32 yy, s32 zz)
     {
-        u32 xi = u32(xx) % noise_data_width;
-        u32 yi = u32(yy) % noise_data_height;
-        u32 zi = u32(zz) % noise_data_depth;
-        u32 idx = yi*noise_data_width*noise_data_depth + zi*noise_data_width + xi;
-        f32 n = (f32(noise_data[idx]) / 255.0f) * 2.0f - 1.0f;
+        s32 n = s32((pnoise(xx * 0.01f, yy * 0.1f, zz * 0.01f) + 1.0f) * 128.0f);
         return n;
     };
-    f32 n = sample(x, y, z);
-    constexpr f32 y_bias = 0.04f;
-    n += y*y_bias;
-    return n;
+    s32 n = sample(x, y, z);
+    n += y;
+    return n < 128;
 }
 #else
-__declspec(noinline) bool terrain_noise_3d(s32 x, s32 y, s32 z)
+__declspec(noinline) bool terrain_noise_3d(f32 x, f32 y, f32 z)
 {
     auto sample = [](s32 xx, s32 yy, s32 zz)
     {
@@ -599,11 +629,14 @@ __declspec(noinline) bool terrain_noise_3d(s32 x, s32 y, s32 z)
         u32 zi = u32(zz) & 0x7FF;
         u32 idx = yi*noise_data_width*noise_data_depth + zi*noise_data_width + xi;
         u32 n = noise_data[idx];
-        return n;
+        f32 result = float(n);
+        result = result / 128.0f - 1.0f;
+        return result;
     };
-    s32 n = sample(x, y, z);
-    n += y;
-    return n < 128;
+    f32 n = 0;
+    n += sample(x * 0.35f, y, z * 0.35f);
+    n += y / 128.0f;
+    return n < 0.0f;
 }
 #endif
 
@@ -619,66 +652,8 @@ void deallocate_chunk(Chunk* chunk)
     delete chunk;
 }
 
-#if 0
 Chunk* allocate_and_gen_chunk(
-    const s32 chunk_x,
-    const s32 chunk_y,
-    const s32 chunk_z
-)
-{
-    u32 num_voxels = 0;
-    for(s32 z = chunk_z * CHUNK_DIM; z < chunk_z * CHUNK_DIM + CHUNK_DIM; z++)
-    {
-        for(s32 y = chunk_y * CHUNK_DIM; y < chunk_y * CHUNK_DIM + CHUNK_DIM; y++)
-        {
-            for(s32 x = chunk_x * CHUNK_DIM; x < chunk_x * CHUNK_DIM + CHUNK_DIM; x++)
-            {
-                f32 n = terrain_noise_3d(x, y, z);
-                f32 ns[] = {
-                    terrain_noise_3d(x+1, y+0, z+0),
-                    terrain_noise_3d(x-1, y+0, z+0),
-                    terrain_noise_3d(x+0, y+1, z+0),
-                    terrain_noise_3d(x+0, y-1, z+0),
-                    terrain_noise_3d(x+0, y+0, z+1),
-                    terrain_noise_3d(x+0, y+0, z-1) 
-                };
-                bool all_empty =
-                    ns[0] > 0.0f &&
-                    ns[1] > 0.0f &&
-                    ns[2] > 0.0f &&
-                    ns[3] > 0.0f &&
-                    ns[4] > 0.0f &&
-                    ns[5] > 0.0f;
-                bool all_filled =
-                    ns[0] < 0.0f &&
-                    ns[1] < 0.0f &&
-                    ns[2] < 0.0f &&
-                    ns[3] < 0.0f &&
-                    ns[4] < 0.0f &&
-                    ns[5] < 0.0f;
-                bool surrounded = all_empty || all_filled;
-                if(n < 0.0f && !surrounded)
-                {
-                    G_gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*0 + num_voxels] = x;
-                    G_gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*1 + num_voxels] = y;
-                    G_gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*2 + num_voxels] = z;
-                    G_gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*3 + num_voxels] = 0x00AA00FF;
-                    ++num_voxels;
-                }
-            }
-        }
-    }
-
-    Chunk* result = allocate_chunk(num_voxels);
-    result->num = num_voxels;
-    memcpy(result->voxels + num_voxels*0, G_gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*0, num_voxels * sizeof(result->voxels[0]));
-    memcpy(result->voxels + num_voxels*1, G_gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*1, num_voxels * sizeof(result->voxels[0]));
-    memcpy(result->voxels + num_voxels*2, G_gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*2, num_voxels * sizeof(result->voxels[0]));
-    memcpy(result->voxels + num_voxels*3, G_gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*3, num_voxels * sizeof(result->voxels[0]));
-    return result;
-}
-#else
-Chunk* allocate_and_gen_chunk(
+    Chunk* gen_chunk_scratch,
     const s32 chunk_x,
     const s32 chunk_y,
     const s32 chunk_z
@@ -717,10 +692,10 @@ Chunk* allocate_and_gen_chunk(
                 bool surrounded = all_empty || all_filled;
                 if(n && !surrounded)
                 {
-                    G_gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*0 + num_voxels] = x;
-                    G_gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*1 + num_voxels] = y;
-                    G_gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*2 + num_voxels] = z;
-                    G_gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*3 + num_voxels] = 0x00AA00FF;
+                    gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*0 + num_voxels] = x;
+                    gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*1 + num_voxels] = y;
+                    gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*2 + num_voxels] = z;
+                    gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*3 + num_voxels] = 0x00AA00FF;
                     ++num_voxels;
                 }
             }
@@ -729,13 +704,80 @@ Chunk* allocate_and_gen_chunk(
 
     Chunk* result = allocate_chunk(num_voxels);
     result->num = num_voxels;
-    memcpy(result->voxels + num_voxels*0, G_gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*0, num_voxels * sizeof(result->voxels[0]));
-    memcpy(result->voxels + num_voxels*1, G_gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*1, num_voxels * sizeof(result->voxels[0]));
-    memcpy(result->voxels + num_voxels*2, G_gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*2, num_voxels * sizeof(result->voxels[0]));
-    memcpy(result->voxels + num_voxels*3, G_gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*3, num_voxels * sizeof(result->voxels[0]));
+    memcpy(result->voxels + num_voxels*0, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*0, num_voxels * sizeof(result->voxels[0]));
+    memcpy(result->voxels + num_voxels*1, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*1, num_voxels * sizeof(result->voxels[0]));
+    memcpy(result->voxels + num_voxels*2, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*2, num_voxels * sizeof(result->voxels[0]));
+    memcpy(result->voxels + num_voxels*3, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*3, num_voxels * sizeof(result->voxels[0]));
     return result;
 }
-#endif
+
+
+struct GenChunkWork
+{
+    Chunk** p_out;
+    s32 chunk_x;
+    s32 chunk_y;
+    s32 chunk_z;
+};
+void allocate_and_gen_chunk_work(ThreadState* thread_state, void* in_data)
+{
+    GenChunkWork* data = reinterpret_cast<GenChunkWork*>(in_data);
+    Chunk* gen_chunk_scratch = thread_state->gen_chunk_scratch;
+    assert(is_power_of_2(LOADED_REGION_CHUNKS_DIM));
+    s32 chunk_x = data->chunk_x;
+    s32 chunk_y = data->chunk_y;
+    s32 chunk_z = data->chunk_z;
+    u32 num_voxels = 0;
+    for(s32 z = chunk_z * CHUNK_DIM; z < chunk_z * CHUNK_DIM + CHUNK_DIM; z++)
+    {
+        for(s32 y = chunk_y * CHUNK_DIM; y < chunk_y * CHUNK_DIM + CHUNK_DIM; y++)
+        {
+            for(s32 x = chunk_x * CHUNK_DIM; x < chunk_x * CHUNK_DIM + CHUNK_DIM; x++)
+            {
+                s32 all_empty  = true;
+                s32 all_filled = true;
+                bool n = terrain_noise_3d(x, y, z);
+
+                bool r;
+                r = terrain_noise_3d(x+1, y+0, z+0);
+                all_empty  *= s32(!r);
+                all_filled *= s32(r);
+                r = terrain_noise_3d(x-1, y+0, z+0);
+                all_empty  *= s32(!r);
+                all_filled *= s32(r);
+                r = terrain_noise_3d(x+0, y+1, z+0);
+                all_empty  *= s32(!r);
+                all_filled *= s32(r);
+                r = terrain_noise_3d(x+0, y-1, z+0);
+                all_empty  *= s32(!r);
+                all_filled *= s32(r);
+                r = terrain_noise_3d(x+0, y+0, z+1);
+                all_empty  *= s32(!r);
+                all_filled *= s32(r);
+                r = terrain_noise_3d(x+0, y+0, z-1);
+                all_empty  *= s32(!r);
+                all_filled *= s32(r);
+                bool surrounded = all_empty || all_filled;
+                if(n && !surrounded)
+                {
+                    gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*0 + num_voxels] = x;
+                    gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*1 + num_voxels] = y;
+                    gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*2 + num_voxels] = z;
+                    gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*3 + num_voxels] = 0x00AA00FF;
+                    ++num_voxels;
+                }
+            }
+        }
+    }
+
+    Chunk* result = allocate_chunk(num_voxels);
+    result->num = num_voxels;
+    memcpy(result->voxels + num_voxels*0, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*0, num_voxels * sizeof(result->voxels[0]));
+    memcpy(result->voxels + num_voxels*1, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*1, num_voxels * sizeof(result->voxels[0]));
+    memcpy(result->voxels + num_voxels*2, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*2, num_voxels * sizeof(result->voxels[0]));
+    memcpy(result->voxels + num_voxels*3, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*3, num_voxels * sizeof(result->voxels[0]));
+    *data->p_out = result;
+}
 
 bool maybe_gen_new_terrain(
     Chunk** new_chunks, // Of size LOADED_REGION_CHUNKS_DIM^3
@@ -747,98 +789,6 @@ bool maybe_gen_new_terrain(
     const s32 new_chunk_z
 )
 {
-    /*
-    if(old_chunk_x == new_chunk_x &&
-       old_chunk_y == new_chunk_y &&
-       old_chunk_z == new_chunk_z)
-    {
-        return false;
-    }
-
-    Chunk** old_chunks = new Chunk*[LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM];
-    ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
-    {
-        old_chunks[it.idx] = chunks[it.idx];
-    }
-
-    s32 old_chunks_range_x_min = old_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
-    s32 old_chunks_range_x_max = old_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
-    s32 old_chunks_range_y_min = old_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
-    s32 old_chunks_range_y_max = old_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
-    s32 old_chunks_range_z_min = old_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
-    s32 old_chunks_range_z_max = old_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
-
-    s32 new_chunks_range_x_min = new_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
-    s32 new_chunks_range_x_max = new_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
-    s32 new_chunks_range_y_min = new_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
-    s32 new_chunks_range_y_max = new_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
-    s32 new_chunks_range_z_min = new_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
-    s32 new_chunks_range_z_max = new_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
-
-    s32 chunk_dx = new_chunk_x - old_chunk_x;
-    s32 chunk_dy = new_chunk_y - old_chunk_y;
-    s32 chunk_dz = new_chunk_z - old_chunk_z;
-
-    u32 D_num_de = 0;
-    ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
-    {
-        s32 new_chunk_x = new_chunks_range_x_min + it.x;
-        s32 new_chunk_y = new_chunks_range_y_min + it.y;
-        s32 new_chunk_z = new_chunks_range_z_min + it.z;
-        s32 old_chunk_x = new_chunk_x - chunk_dx;
-        s32 old_chunk_y = new_chunk_y - chunk_dy;
-        s32 old_chunk_z = new_chunk_z - chunk_dz;
-
-        bool old_inside =
-            old_chunk_x >= new_chunks_range_x_min && old_chunk_x < new_chunks_range_x_max &&
-            old_chunk_y >= new_chunks_range_y_min && old_chunk_y < new_chunks_range_y_max &&
-            old_chunk_z >= new_chunks_range_z_min && old_chunk_z < new_chunks_range_z_max;
-        bool new_inside =
-            new_chunk_x >= old_chunks_range_x_min && new_chunk_x < old_chunks_range_x_max &&
-            new_chunk_y >= old_chunks_range_y_min && new_chunk_y < old_chunks_range_y_max &&
-            new_chunk_z >= old_chunks_range_z_min && new_chunk_z < old_chunks_range_z_max;
-
-        if(old_inside && new_inside)
-        {
-            s32 old_chunk_xi = it.x - chunk_dx;
-            s32 old_chunk_yi = it.y - chunk_dy;
-            s32 old_chunk_zi = it.z - chunk_dz;
-            s32 old_chunk_idx =
-                old_chunk_zi*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM +
-                old_chunk_yi*LOADED_REGION_CHUNKS_DIM +
-                old_chunk_xi;
-            chunks[it.idx] = old_chunks[old_chunk_idx];
-        }
-        else
-        {
-            if(!old_inside)
-            {
-                deallocate_chunk(chunks[it.idx]);
-                D_num_de++;
-            }
-            chunks[it.idx] = nullptr;
-        }
-    }
-
-    u32 D_num_a = 0;
-    ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
-    {
-        if(chunks[it.idx] == nullptr)
-        {
-            s32 x = new_chunks_range_x_min + it.x;
-            s32 y = new_chunks_range_y_min + it.y;
-            s32 z = new_chunks_range_z_min + it.z;
-            chunks[it.idx] = allocate_and_gen_chunk(x, y, z);
-            D_num_a++;
-        }
-    }
-
-    delete[] old_chunks;
-
-    return true;
-    */
-
-
     if(old_chunk_x == new_chunk_x &&
        old_chunk_y == new_chunk_y &&
        old_chunk_z == new_chunk_z)
@@ -900,6 +850,7 @@ bool maybe_gen_new_terrain(
         }
     }
 
+    /*
     ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
     {
         // Iterating through new chunks
@@ -911,14 +862,83 @@ bool maybe_gen_new_terrain(
             new_chunks[it.idx] = allocate_and_gen_chunk(new_chunk_x, new_chunk_y, new_chunk_z);
         }
     }
+    */
+
+    u32 num_work_items = 0;
+    // TODO(mfritz) No static variables
+    static GenChunkWork work[LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM];
+    static s32 work_target_idx[LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM];
+    static Chunk* chunk_results[LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM];
+    ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
+    {
+        // Iterating through new chunks
+        if(new_chunks[it.idx] == nullptr)
+        {
+            s32 new_chunk_x = new_chunks_range_x_min + it.x;
+            s32 new_chunk_y = new_chunks_range_y_min + it.y;
+            s32 new_chunk_z = new_chunks_range_z_min + it.z;
+            work[num_work_items] = GenChunkWork{&chunk_results[num_work_items], new_chunk_x, new_chunk_y, new_chunk_z};
+            chunk_results[num_work_items] = nullptr;
+            work_target_idx[num_work_items] = it.idx;
+            num_work_items++;
+        }
+    }
+
+    for(u32 i = 0; i < num_work_items; i++)
+    {
+        add_work(allocate_and_gen_chunk_work, &work[i]);
+    }
+    // Wait on workers
+    bool done = false;
+    while(!done)
+    {
+        _mm_pause();
+        done = true;
+        for(u32 i = 0; i < num_work_items; i++)
+        {
+            if(*work[i].p_out == nullptr)
+            {
+                done = false;
+                break;
+            }
+        }
+    }
+    for(u32 i = 0; i < num_work_items; i++)
+    {
+        new_chunks[work_target_idx[i]] = *work[i].p_out;
+    }
 
     return true;
 }
 
-
-
 INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine, INT nCmdShow)
 {
+    HANDLE threads[NUM_THREADS];
+    u32 thread_ids[NUM_THREADS];
+    for(u32 i = 0; i < NUM_THREADS; i++)
+    {
+        ThreadState* thread_state = new ThreadState();
+        thread_state->gen_chunk_scratch = allocate_chunk(CHUNK_MAX_VOXELS);
+        threads[i] = CreateThread( 
+            NULL,                   // default security attributes
+            0,                      // use default stack size  
+            worker_main,            // thread function name
+            thread_state,           // argument to thread function 
+            0,                      // use default creation flags 
+            reinterpret_cast<DWORD*>(&thread_ids[i])); // returns the thread identifier 
+        if(threads[i] == NULL)
+        {
+            return 1;
+        }
+
+        u32 affinity_mask = 1 << i;
+        DWORD_PTR old_affinity_mask = SetThreadAffinityMask(threads[i], affinity_mask);
+        if(old_affinity_mask == 0)
+        {
+            return 1;
+        }
+    }
+
     // GLFW
     G_graphics_state = new GraphicsState();
     {
@@ -1092,7 +1112,10 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
     G_input_state = new InputState();
 
     Chunk** chunks = new Chunk*[MAX_CHUNKS];
-    G_gen_chunk_scratch = allocate_chunk(CHUNK_MAX_VOXELS);
+    for(u32 i = 0; i < MAX_CHUNKS; i++)
+    {
+        chunks[i] = nullptr;
+    }
     PackedVoxels* packed_voxels = new PackedVoxels;
 
     VoxelRenderData * voxel_render_data = new VoxelRenderData;
@@ -1204,43 +1227,14 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             s32 region_chunks_tr_y = camera_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
             s32 region_chunks_tr_z = camera_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
 
-            static s32 last_camera_chunk_x = camera_chunk_x;
-            static s32 last_camera_chunk_y = camera_chunk_y;
-            static s32 last_camera_chunk_z = camera_chunk_z;
+            //static s32 last_camera_chunk_x = camera_chunk_x;
+            //static s32 last_camera_chunk_y = camera_chunk_y;
+            //static s32 last_camera_chunk_z = camera_chunk_z;
+            static s32 last_camera_chunk_x = 0x7FFFFFFF;
+            static s32 last_camera_chunk_y = 0x7FFFFFFF;
+            static s32 last_camera_chunk_z = 0x7FFFFFFF;
 
             static s64 last_gen_time = 0;
-
-            // Initial terrain generation around player
-            static bool do_gen = true;
-            if(do_gen)
-            {
-                // LARGE_INTEGER start;
-                // QueryPerformanceCounter(&start);
-                u32 i = 0;
-                for(s32 z = region_chunks_bl_z; z < region_chunks_tr_z; z++)
-                {
-                    for(s32 y = region_chunks_bl_y; y < region_chunks_tr_y; y++)
-                    {
-                        for(s32 x = region_chunks_bl_x; x < region_chunks_tr_x; x++)
-                        {
-                            chunks[i] = allocate_and_gen_chunk(x, y, z);
-                            i++;
-                        }
-                    }
-                }
-                do_gen = false;
-
-                // LARGE_INTEGER end;
-                // QueryPerformanceCounter(&end);
-                // LARGE_INTEGER freq;
-                // QueryPerformanceFrequency(&freq);
-                // LARGE_INTEGER ms;
-                // ms.QuadPart = (end.QuadPart - start.QuadPart) * 1000;
-                // ms.QuadPart /= freq.QuadPart;
-                // FILE* fp = fopen("perf_log.txt", "wt");
-                // fprintf(fp, "%lli ms", ms.QuadPart);
-                // fclose(fp);
-            }
 
             bool did_generation = maybe_gen_new_terrain(
                 chunks,

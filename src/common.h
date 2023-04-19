@@ -18,3 +18,5 @@ typedef double f64;
 
 typedef bool b32;
 
+#define ARRAY_COUNT(N) (sizeof(N) / sizeof((N)[0]))
+
