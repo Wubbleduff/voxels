@@ -187,6 +187,12 @@ inline bool is_power_of_2(s32 n)
 {
     return (n & (n - 1)) == 0;
 }
+float inv_lerp(float a, float b, float t) { return (t - a) / (b - a); }
+float remap(float a, float from_min, float from_max, float to_min, float to_max)
+{
+    float from_percent = inv_lerp(from_min, from_max, a);
+    return lerp(to_min, to_max, from_percent);
+}
 /*
 float cos(float a) { return cosf(a); }
 float sin(float a) { return sinf(a); }
@@ -204,12 +210,6 @@ int clamp(int a, int min, int max) { if(a < min) return min; if(a > max) return 
 float clamp(float a, float min, float max) { if(a < min) return min; if(a > max) return max; return a; }
 int floor(float a) { return (int)a; }
 float abs(float a) { return (a < 0.0f) ? -a : a; } 
-float inv_lerp(float a, float b, float t) { return (t - a) / (b - a); }
-float remap(float a, float from_min, float from_max, float to_min, float to_max)
-{
-    float from_percent = inv_lerp(from_min, from_max, a);
-    return lerp(to_min, to_max, from_percent);
-}
 float average(float *values, int num)
 {
     float sum = 0.0f;
