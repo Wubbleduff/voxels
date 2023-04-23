@@ -25,18 +25,22 @@ static constexpr u32 NUM_VOXEL_DATA_FIELDS = 4;
 static constexpr s32 CHUNK_DIM = 32;
 static constexpr s32 CHUNK_POW = 5; // CHUNK_DIM = 2**CHUNK_POW
 static constexpr s32 CHUNK_MAX_VOXELS = CHUNK_DIM*CHUNK_DIM*CHUNK_DIM;
-static constexpr s32 VIEW_DIST = 256;
+static constexpr s32 VIEW_DIST = 512;
 static constexpr s32 LOADED_REGION_CHUNKS_DIM = (VIEW_DIST/CHUNK_DIM)*2;
 static constexpr u32 MAX_CHUNKS = LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM;
 static constexpr u32 MAX_VOXELS = 50*1024*1024;
+static constexpr u32 MAX_CHUNKS_GEN_PER_FRAME = 64;
 static constexpr u32 NUM_THREADS = 12;
-static struct GraphicsState *G_graphics_state = nullptr;
-static struct InputState *G_input_state = nullptr;
 static s32 noise_data_width;
 static s32 noise_data_height;
 static s32 noise_data_depth;
 static u8* noise_data;
+static struct GraphicsState *G_graphics_state = nullptr;
+static struct InputState *G_input_state = nullptr;
 
+////////////////////////////////////////////////////////////////////////////////
+// Graphics
+////////////////////////////////////////////////////////////////////////////////
 struct VoxelRenderData
 {
     u32 num = 0;
@@ -46,7 +50,6 @@ struct VoxelRenderData
 
     static const u32 BATCH_SIZE = 10*1024;
 };
-
 struct Camera
 {
     v3 pos;
@@ -57,7 +60,6 @@ struct Camera
     f32 near_plane_dist;
     f32 ar; // w / h
 };
-
 struct GraphicsState
 {
     GLFWwindow *window;
@@ -84,13 +86,15 @@ struct GraphicsState
         -0.5f, -0.5f, -0.5f, -0.5f,  0.5f,  0.5f,  0.5f,  0.5f  // Z
     };
 };
-
 struct InputState
 {
     s32 mouse_screen_x;
     s32 mouse_screen_y;
 };
 
+////////////////////////////////////////////////////////////////////////////////
+// Voxel data
+////////////////////////////////////////////////////////////////////////////////
 struct Chunk
 {
     u32 num;
@@ -105,6 +109,9 @@ struct PackedVoxels
     u32 color[MAX_VOXELS];
 };
 
+////////////////////////////////////////////////////////////////////////////////
+// Profiling
+////////////////////////////////////////////////////////////////////////////////
 struct Timer
 {
     Timer() { QueryPerformanceCounter(&start); }
@@ -121,7 +128,6 @@ struct Timer
     }
     LARGE_INTEGER start;
 };
-
 struct ScopeTimer
 {
     ScopeTimer(const char *name)
@@ -152,7 +158,9 @@ struct ThreadState
     Chunk* gen_chunk_scratch = nullptr;
 };
 
+////////////////////////////////////////////////////////////////////////////////
 // EXPERIMENTAL
+////////////////////////////////////////////////////////////////////////////////
 struct CubeIterator
 {
     s32 idx = 0;
@@ -169,38 +177,102 @@ struct CubeIterator
         it.x = it.idx % (N) )                                    
     
 
-typedef void (*WorkerFn)(ThreadState*, void*);
+
+////////////////////////////////////////////////////////////////////////////////
+// Job System
+////////////////////////////////////////////////////////////////////////////////
+enum class JobId : u64
+{
+    load_terrain,
+
+    num_jobs
+};
+typedef void (*WorkerFn)(ThreadState*, void**, const void*);
 constexpr u32 MAX_WORK_ITEMS = 1024*1024;
-static std::atomic<u32> G_work_queue_begin = 0;
-static std::atomic<u32> G_work_queue_end = 0;
-static WorkerFn G_work_queue_fn[MAX_WORK_ITEMS];
-static void* G_work_queue_data[MAX_WORK_ITEMS];
+struct WorkQueue
+{
+    std::atomic<u32> in_begin = 0;
+    std::atomic<u32> in_end = 0;
+    WorkerFn in_fn[MAX_WORK_ITEMS];
+    const void* in_data[MAX_WORK_ITEMS];
+
+    std::atomic<u32> out_begin = 0;
+    std::atomic<u32> out_end = 0;
+    void** out_data[MAX_WORK_ITEMS];
+
+    std::atomic<u32> pending_work_count = 0;
+};
+static WorkQueue G_work_queue_load_terrain;
+WorkQueue* get_queue_from_job_id(JobId job_id)
+{
+    WorkQueue* q = nullptr;
+    switch(job_id)
+    {
+        case JobId::load_terrain:
+            q = &G_work_queue_load_terrain;
+            break;
+        default:
+            assert(false);
+            break;
+    }
+    return q;
+}
 DWORD WINAPI worker_main(LPVOID lpParam)
 {
     ThreadState* thread_state = reinterpret_cast<ThreadState*>(lpParam);
+
+    for(u64 job_id = 0; job_id < u64(JobId::num_jobs); job_id++)
+    {
+        // TODO(mfritz) This can just be stored in a flat array rather than looking up each time.
+        WorkQueue* q = get_queue_from_job_id(JobId(job_id));
+        while(true)
+        {
+            u32 q_begin = q->in_begin.load();
+            const u32 q_end = q->in_end.load();
+            if(q_begin == q_end)
+            {
+                _mm_pause();
+                continue;
+            }
+            if(q->in_begin.compare_exchange_weak(q_begin, q_begin + 1))
+            {
+                q->in_fn[q_begin](thread_state, q->out_data[q_begin], q->in_data[q_begin]);
+                q->pending_work_count--;
+            }
+        }
+    }
+
+    return 0;
+}
+// Must only be called from the main thread.
+void add_work(void** out_data, const JobId job_id, const WorkerFn fn, const void* data)
+{
+    WorkQueue* q = get_queue_from_job_id(job_id);
+    u32 q_end = q->in_end.load();
+    q->in_fn[q_end] = fn;
+    q->in_data[q_end] = data;
+    q->out_data[q_end] = out_data;
+    q->in_end++;
+    q->pending_work_count++;
+}
+// Must only be called from the main thread.
+void wait_for_job(const JobId job_id)
+{
+    WorkQueue* q = get_queue_from_job_id(job_id);
     while(true)
     {
-        u32 q_begin = G_work_queue_begin.load();
-        const u32 q_end = G_work_queue_end.load();
-        if(q_begin == q_end)
+        _mm_pause();
+        u32 pending_work_count = q->pending_work_count.load();
+        if(pending_work_count == 0)
         {
-            _mm_pause();
-            continue;
-        }
-        if(G_work_queue_begin.compare_exchange_weak(q_begin, q_begin + 1))
-        {
-            G_work_queue_fn[q_begin](thread_state, G_work_queue_data[q_begin]);
+            break;
         }
     }
 }
-void add_work(WorkerFn fn, void* data)
-{
-    u32 q_end = G_work_queue_end.load();
-    G_work_queue_fn[q_end] = fn;
-    G_work_queue_data[q_end] = data;
-    G_work_queue_end++;
-}
 
+////////////////////////////////////////////////////////////////////////////////
+// Code
+////////////////////////////////////////////////////////////////////////////////
 
 // TODO speed
 mat4 view_m_world(const Camera* cam)
@@ -659,14 +731,13 @@ void deallocate_chunk(Chunk* chunk)
 
 struct GenChunkWork
 {
-    Chunk** p_out;
     s32 chunk_x;
     s32 chunk_y;
     s32 chunk_z;
 };
-void allocate_and_gen_chunk_work(ThreadState* thread_state, void* in_data)
+void allocate_and_gen_chunk_work(ThreadState* thread_state, void** out_data, const void* in_data)
 {
-    GenChunkWork* data = reinterpret_cast<GenChunkWork*>(in_data);
+    const GenChunkWork* data = reinterpret_cast<const GenChunkWork*>(in_data);
     Chunk* gen_chunk_scratch = thread_state->gen_chunk_scratch;
     assert(is_power_of_2(LOADED_REGION_CHUNKS_DIM));
     s32 chunk_x = data->chunk_x;
@@ -733,7 +804,7 @@ void allocate_and_gen_chunk_work(ThreadState* thread_state, void* in_data)
     memcpy(result->voxels + num_voxels*1, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*1, num_voxels * sizeof(result->voxels[0]));
     memcpy(result->voxels + num_voxels*2, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*2, num_voxels * sizeof(result->voxels[0]));
     memcpy(result->voxels + num_voxels*3, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*3, num_voxels * sizeof(result->voxels[0]));
-    *data->p_out = result;
+    *out_data = result;
 }
 
 bool maybe_gen_new_terrain(
@@ -746,13 +817,6 @@ bool maybe_gen_new_terrain(
     const s32 new_chunk_z
 )
 {
-    if(old_chunk_x == new_chunk_x &&
-       old_chunk_y == new_chunk_y &&
-       old_chunk_z == new_chunk_z)
-    {
-        return false;
-    }
-
     Chunk** old_chunks = new Chunk*[LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM];
     ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
     {
@@ -807,11 +871,11 @@ bool maybe_gen_new_terrain(
         }
     }
 
-    u32 num_work_items = 0;
-    // TODO(mfritz) No static variables
-    static GenChunkWork work[LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM];
-    static s32 work_target_idx[LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM];
-    static Chunk* chunk_results[LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM];
+    // NOTE(mfritz): We don't want to have jobs generating terrain across frames. This would
+    // introduce the possibility of having 2 jobs in flight for a single chunk. Generating a
+    // max number of chunks per frame avoids that issue and works nicer for single threaded
+    // situations.
+    u32 gen_count = 0;
     ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
     {
         // Iterating through new chunks
@@ -820,36 +884,20 @@ bool maybe_gen_new_terrain(
             s32 new_chunk_x = new_chunks_range_x_min + it.x;
             s32 new_chunk_y = new_chunks_range_y_min + it.y;
             s32 new_chunk_z = new_chunks_range_z_min + it.z;
-            work[num_work_items] = GenChunkWork{&chunk_results[num_work_items], new_chunk_x, new_chunk_y, new_chunk_z};
-            chunk_results[num_work_items] = nullptr;
-            work_target_idx[num_work_items] = it.idx;
-            num_work_items++;
-        }
-    }
-
-    for(u32 i = 0; i < num_work_items; i++)
-    {
-        add_work(allocate_and_gen_chunk_work, &work[i]);
-    }
-    // Wait on workers
-    bool done = false;
-    while(!done)
-    {
-        _mm_pause();
-        done = true;
-        for(u32 i = 0; i < num_work_items; i++)
-        {
-            if(*work[i].p_out == nullptr)
+            // TODO(mfritz) Dynamic allocation.
+            GenChunkWork* work = new GenChunkWork();
+            work->chunk_x = new_chunk_x;
+            work->chunk_y = new_chunk_y;
+            work->chunk_z = new_chunk_z;
+            add_work(reinterpret_cast<void**>(&new_chunks[it.idx]), JobId::load_terrain, allocate_and_gen_chunk_work, work);
+            gen_count++;
+            if(gen_count >= MAX_CHUNKS_GEN_PER_FRAME)
             {
-                done = false;
                 break;
             }
         }
     }
-    for(u32 i = 0; i < num_work_items; i++)
-    {
-        new_chunks[work_target_idx[i]] = *work[i].p_out;
-    }
+    wait_for_job(JobId::load_terrain);
 
     return true;
 }
@@ -1204,11 +1252,14 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 for(u32 chunk_idx = 0; chunk_idx < MAX_CHUNKS; chunk_idx++)
                 {
                     Chunk* chunk = chunks[chunk_idx];
-                    memcpy(packed_voxels->pos + MAX_VOXELS*0 + num_voxels, chunk->voxels + chunk->num*0, chunk->num * sizeof(chunk->voxels[0]));
-                    memcpy(packed_voxels->pos + MAX_VOXELS*1 + num_voxels, chunk->voxels + chunk->num*1, chunk->num * sizeof(chunk->voxels[0]));
-                    memcpy(packed_voxels->pos + MAX_VOXELS*2 + num_voxels, chunk->voxels + chunk->num*2, chunk->num * sizeof(chunk->voxels[0]));
-                    memcpy(packed_voxels->color + num_voxels,              chunk->voxels + chunk->num*3, chunk->num * sizeof(chunk->voxels[0]));
-                    num_voxels += chunk->num;
+                    if(chunk)
+                    {
+                        memcpy(packed_voxels->pos + MAX_VOXELS*0 + num_voxels, chunk->voxels + chunk->num*0, chunk->num * sizeof(chunk->voxels[0]));
+                        memcpy(packed_voxels->pos + MAX_VOXELS*1 + num_voxels, chunk->voxels + chunk->num*1, chunk->num * sizeof(chunk->voxels[0]));
+                        memcpy(packed_voxels->pos + MAX_VOXELS*2 + num_voxels, chunk->voxels + chunk->num*2, chunk->num * sizeof(chunk->voxels[0]));
+                        memcpy(packed_voxels->color + num_voxels,              chunk->voxels + chunk->num*3, chunk->num * sizeof(chunk->voxels[0]));
+                        num_voxels += chunk->num;
+                    }
                 }
                 packed_voxels->num = num_voxels;
 
