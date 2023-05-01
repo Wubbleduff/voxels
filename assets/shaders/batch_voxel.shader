@@ -86,7 +86,7 @@ void main()
         normal = vec4(0.0f, 0.0f, 1.0f, 0.0f);
         normal *= sign(model_position.z);
     }
-    float inten = dot(vec4(0.0f, 1.0f, 0.0f, 0.0f), normal);
+    float inten = dot(normalize(vec4(1.0f, 1.0f, 1.0f, 0.0f)), normal);
     inten = max(inten, 0.2f);
 
     frag_color = model_color * inten;

@@ -697,19 +697,14 @@ f32 perlin(f32 x, f32 y, f32 z)
 #if 0
 __declspec(noinline) bool terrain_noise_3d(s32 x, s32 y, s32 z)
 {
-    auto sample = [](s32 xx, s32 yy, s32 zz)
-    {
-        s32 n = s32((pnoise(xx * 0.01f, yy * 0.1f, zz * 0.01f) + 1.0f) * 128.0f);
-        return n;
-    };
-    s32 n = sample(x, y, z);
+    s32 n = pnoise(x * 0.01f, y * 0.01f, z * 0.01f);
     n += y;
     return n < 128;
 }
 #else
 __declspec(noinline) bool terrain_noise_3d(f32 x, f32 y, f32 z)
 {
-    f32 n1 = perlin(x * 0.06f, y, z * 0.06f);
+    f32 n1 = perlin(x * 0.6f, y, z * 0.6f);
     f32 n2 = perlin(x * 0.80f, y, z * 0.80f);
     f32 n = n1 + n2*n2;
     n -= y / 128.0f;
@@ -947,8 +942,10 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
         glfwWindowHint(GLFW_SAMPLES, 4); // TODO Not working?
 
-        u32 window_width = 1920 * 1.0f;
-        u32 window_height = 1080 * 1.0f;
+        //u32 window_width = 1920 * 1.0f;
+        //u32 window_height = 1080 * 1.0f;
+        u32 window_width = 2560 * 1.0f;
+        u32 window_height = 1440 * 1.0f;
         G_graphics_state->window = glfwCreateWindow(window_width, window_height, "My Game", NULL, NULL);
         if(!G_graphics_state->window)
         {
@@ -984,7 +981,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
 
         G_graphics_state->cam.pos = v3(16.0f, 16.0f, 16.0f);
         G_graphics_state->cam.rot_x = 0.0f;
-        G_graphics_state->cam.rot_y = M_PI;
+        G_graphics_state->cam.rot_y = 0.0f;
         G_graphics_state->cam.vfov = 90.0f;
         G_graphics_state->cam.view_dist = 5000.0f;
         G_graphics_state->cam.near_plane_dist = 1.0f;
@@ -1122,6 +1119,104 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
     assert(is_power_of_2(noise_data_height));
     assert(is_power_of_2(noise_data_depth));
 
+    
+    const u32 tree_buf_size = 1000*1024;
+    s32* tree_pos = new s32[tree_buf_size*3];
+    u32* tree_color = new u32[tree_buf_size];
+    u32 num_tree_voxels = 0;
+    {
+
+        auto voxel_line = [&tree_buf_size, &tree_pos, &tree_color, &num_tree_voxels](v3 a, v3 b, f32 a_thickness, f32 b_thickness)
+        {
+            f32 max_thickness = max(a_thickness, b_thickness);
+            s32 min_x = min(s32(a.x), s32(b.x)) - ceil(max_thickness);
+            s32 min_y = min(s32(a.y), s32(b.y)) - ceil(max_thickness);
+            s32 min_z = min(s32(a.z), s32(b.z)) - ceil(max_thickness);
+            s32 max_x = max(s32(a.x), s32(b.x)) + ceil(max_thickness);
+            s32 max_y = max(s32(a.y), s32(b.y)) + ceil(max_thickness);
+            s32 max_z = max(s32(a.z), s32(b.z)) + ceil(max_thickness);
+
+            v3 d = b - a;
+            f32 d_len = sqrtf(dot(d, d));
+            v3 dn = d / d_len;
+            for(s32 z = min_z; z <= max_z; z++)
+            {
+                for(s32 y = min_y; y <= max_y; y++)
+                {
+                    for(s32 x = min_x; x <= max_x; x++)
+                    {
+                        v3 p = v3(f32(x), f32(y), f32(z));
+                        v3 v = p - a;
+                        f32 t = dot(v, dn);
+                        v3 n = (p - dn*t) - a;
+                        f32 dist = sqrtf(n.x*n.x + n.y*n.y + n.z*n.z);
+                        f32 tn = t / d_len;
+                        f32 thickness = lerp(a_thickness, b_thickness, tn);
+                        dist = t < 0.0f ? length(a - p) : dist;
+                        dist = t > d_len ? length(b - p) : dist;
+                        if(dist < thickness)
+                        {
+                            tree_pos[tree_buf_size*0 + num_tree_voxels] = x;
+                            tree_pos[tree_buf_size*1 + num_tree_voxels] = y;
+                            tree_pos[tree_buf_size*2 + num_tree_voxels] = z;
+                            tree_color[num_tree_voxels] = 0x442222FF;
+                            num_tree_voxels++;
+                        }
+                    }
+                }
+            }
+        };
+
+        auto branch = [&voxel_line, &tree_buf_size, &tree_pos, &tree_color, &num_tree_voxels](
+                v3* nodes,
+                float thickness,
+                v3 base,
+                v3 dir,
+                f32 len,
+                u32 count,
+                f32 falloff,
+                f32 variance)
+        {
+            v3 a = base;
+            v3 b = a + dir * len;
+            for(u32 i = 0; i < count; i++)
+            {
+                voxel_line(a, b, thickness, thickness - falloff);
+                thickness -= falloff;
+
+                v3 i_axis = dir;
+                v3 j_axis = cross(dir, v3(0.0f, 1.0f, 0.0f));
+                v3 k_axis = cross(i_axis, j_axis);
+                dir += random_range(-variance, variance) * j_axis + random_range(-variance, variance) * k_axis;
+                nodes[i] = a;
+                a = b;
+                b = a + dir * len;
+                variance += 0.3f;
+            }
+        };
+        v3 nodes[7];
+        f32 thickness = 12.0f;
+        v3 dir = normalize(v3(0.1f, 1.0f, 0.1f));
+        v3 a = v3();
+        v3 b = a + dir * 64.0f;
+        for(u32 i = 0; i < 6; i++)
+        {
+            voxel_line(a, b, thickness, thickness - 1.0f);
+            thickness -= 1.0f;
+
+            dir.x += random_range(-0.2f, 0.2f);
+            dir.y += random_range(-0.2f, 0.2f);
+            dir.z += random_range(-0.2f, 0.2f);
+            nodes[i] = a;
+            a = b;
+            b = a + dir * 64.0f;
+        }
+        nodes[6] = b;
+
+        branch(4.0f, nodes[2], normalize(v3( 1.0f, 1.0f, 0.0f)), 32.0f, 8, 0.5f, 0.2f);
+        branch(4.0f, nodes[4], normalize(v3(-1.0f, 1.0f, 0.0f)), 32.0f, 8, 0.5f, 0.2f);
+    }
+
     f32 frame_timer = 0.0f;
     f32 last_time = 0.0f;
     const static f32 TIME_STEP = 0.016f;
@@ -1150,6 +1245,8 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             running = !glfwGetKey(G_graphics_state->window, GLFW_KEY_ESCAPE) && !glfwWindowShouldClose(G_graphics_state->window);
 
             {
+                TIME_SCOPE("move camera");
+                
                 //ImGui::Text("camera pos (%f, %f, %f)", G_graphics_state->cam.pos.x, G_graphics_state->cam.pos.y, G_graphics_state->cam.pos.z);
                 ImGui::InputFloat("camera x", &G_graphics_state->cam.pos.x, 1.0f, 10.0f, 3, ImGuiInputTextFlags_EnterReturnsTrue);
                 ImGui::InputFloat("camera y", &G_graphics_state->cam.pos.y, 1.0f, 10.0f, 3, ImGuiInputTextFlags_EnterReturnsTrue);
@@ -1204,50 +1301,48 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 current_cam->pos += normalize(camera_vel) * TIME_STEP * camera_speed;
             }
 
-
             s32 camera_x = (s32)G_graphics_state->cam.pos.x;
             s32 camera_y = (s32)G_graphics_state->cam.pos.y;
             s32 camera_z = (s32)G_graphics_state->cam.pos.z;
             s32 camera_chunk_x = camera_x >> CHUNK_POW;
             s32 camera_chunk_y = camera_y >> CHUNK_POW;
             s32 camera_chunk_z = camera_z >> CHUNK_POW;
-
             s32 region_chunks_bl_x = camera_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
             s32 region_chunks_bl_y = camera_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
             s32 region_chunks_bl_z = camera_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
             s32 region_chunks_tr_x = camera_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
             s32 region_chunks_tr_y = camera_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
             s32 region_chunks_tr_z = camera_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
+#if 0
+            {
+                TIME_SCOPE("gen terrain");
+                static s32 last_camera_chunk_x = 0x7FFFFFFF;
+                static s32 last_camera_chunk_y = 0x7FFFFFFF;
+                static s32 last_camera_chunk_z = 0x7FFFFFFF;
+                static s64 last_gen_time = 0;
+                bool did_generation = maybe_gen_new_terrain(
+                    chunks,
+                    last_camera_chunk_x,
+                    last_camera_chunk_y,
+                    last_camera_chunk_z,
+                    camera_chunk_x,
+                    camera_chunk_y,
+                    camera_chunk_z
+                );
 
-            //static s32 last_camera_chunk_x = camera_chunk_x;
-            //static s32 last_camera_chunk_y = camera_chunk_y;
-            //static s32 last_camera_chunk_z = camera_chunk_z;
-            static s32 last_camera_chunk_x = 0x7FFFFFFF;
-            static s32 last_camera_chunk_y = 0x7FFFFFFF;
-            static s32 last_camera_chunk_z = 0x7FFFFFFF;
-
-            static s64 last_gen_time = 0;
-
-            bool did_generation = maybe_gen_new_terrain(
-                chunks,
-                last_camera_chunk_x,
-                last_camera_chunk_y,
-                last_camera_chunk_z,
-                camera_chunk_x,
-                camera_chunk_y,
-                camera_chunk_z
-            );
-
-            last_camera_chunk_x = camera_chunk_x;
-            last_camera_chunk_y = camera_chunk_y;
-            last_camera_chunk_z = camera_chunk_z;
-            ImGui::Text("Last gen time: %ims", last_gen_time);
+                last_camera_chunk_x = camera_chunk_x;
+                last_camera_chunk_y = camera_chunk_y;
+                last_camera_chunk_z = camera_chunk_z;
+                ImGui::Text("Last gen time: %ims", last_gen_time);
+            }
+#endif
 
             // Prep render data
             {
                 TIME_SCOPE("Prep render data");
 
 
+#if 0
                 u32 num_voxels = 0;
                 for(u32 chunk_idx = 0; chunk_idx < MAX_CHUNKS; chunk_idx++)
                 {
@@ -1262,8 +1357,14 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                     }
                 }
                 packed_voxels->num = num_voxels;
-
                 ImGui::Text("prep num_voxels %i", num_voxels);
+#else
+                memcpy(packed_voxels->pos + MAX_VOXELS*0, tree_pos + tree_buf_size*0, sizeof(tree_pos[0]) * num_tree_voxels);
+                memcpy(packed_voxels->pos + MAX_VOXELS*1, tree_pos + tree_buf_size*1, sizeof(tree_pos[0]) * num_tree_voxels);
+                memcpy(packed_voxels->pos + MAX_VOXELS*2, tree_pos + tree_buf_size*2, sizeof(tree_pos[0]) * num_tree_voxels);
+                memcpy(packed_voxels->color, tree_color, sizeof(tree_color[0]) * num_tree_voxels);
+                packed_voxels->num = num_tree_voxels;
+#endif
 
                 camera_cull(
                     &voxel_render_data->num,
@@ -1278,7 +1379,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
 
             // Draw
             {
-                TIME_SCOPE("Draw");
+                TIME_SCOPE("draw");
 
                 u32 num_batches_drawn = 0;
                 for(u32 batch_i = 0; batch_i < voxel_render_data->num; batch_i += VoxelRenderData::BATCH_SIZE)
@@ -1335,6 +1436,8 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             }
 
             {
+                TIME_SCOPE("debug draw frustum");
+
                 draw_line(v3(), v3(1.0f, 0.0f, 0.0f), v3(1.0f, 0.0f, 0.0f));
                 draw_line(v3(), v3(0.0f, 1.0f, 0.0f), v3(0.0f, 1.0f, 0.0f));
                 draw_line(v3(), v3(0.0f, 0.0f, 1.0f), v3(0.0f, 0.0f, 1.0f));
@@ -1409,6 +1512,8 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             ImGui::Checkbox("show_chunk_lines", &show_chunk_lines);
             if(show_chunk_lines)
             {
+                TIME_SCOPE("debug draw chunk lines");
+
                 for(s32 z = region_chunks_bl_z; z < region_chunks_tr_z; ++z)
                 {
                     for(s32 y = region_chunks_bl_y; y < region_chunks_tr_y; ++y)
