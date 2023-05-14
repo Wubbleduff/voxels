@@ -25,7 +25,7 @@ static constexpr u32 NUM_VOXEL_DATA_FIELDS = 4;
 static constexpr s32 CHUNK_DIM = 32;
 static constexpr s32 CHUNK_POW = 5; // CHUNK_DIM = 2**CHUNK_POW
 static constexpr s32 CHUNK_MAX_VOXELS = CHUNK_DIM*CHUNK_DIM*CHUNK_DIM;
-static constexpr s32 VIEW_DIST = 512;
+static constexpr s32 VIEW_DIST = 256;
 static constexpr s32 LOADED_REGION_CHUNKS_DIM = (VIEW_DIST/CHUNK_DIM)*2;
 static constexpr u32 MAX_CHUNKS = LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM;
 static constexpr u32 MAX_VOXELS = 50*1024*1024;
@@ -37,6 +37,7 @@ static s32 noise_data_depth;
 static u8* noise_data;
 static struct GraphicsState *G_graphics_state = nullptr;
 static struct InputState *G_input_state = nullptr;
+static FILE* G_log_file = nullptr;
 
 ////////////////////////////////////////////////////////////////////////////////
 // Graphics
@@ -176,6 +177,16 @@ struct CubeIterator
         it.y = (it.idx / (N)) % (N),                             \
         it.x = it.idx % (N) )                                    
     
+
+#define ASSERT(exp, msg)                        \
+    {                                           \
+        if(!(exp))                              \
+        {                                       \
+            fprintf(G_log_file, "%s:%i @ %s @ %s", __FILE__, __LINE__, #exp, msg); \
+            fflush(G_log_file);                 \
+            DebugBreak();                       \
+        }                                       \
+    }
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -632,7 +643,7 @@ GLuint make_shader_from_file(const char *shader_path)
     bool read = read_shader_file(shader_path, &vert_source, &geom_source, &frag_source);
     if(!read)
     {
-        //fprintf(stderr, "Could not open shader file %s\n", shader_path);
+        fprintf(G_log_file, "Could not open shader file %s\n", shader_path);
         return -1;
     }
 
@@ -694,6 +705,11 @@ f32 perlin(f32 x, f32 y, f32 z)
     return result;
 }
 
+f32 perlin_01(f32 x, f32 y, f32 z)
+{
+    return perlin(x, y, z)*0.5f + 1.0f;
+}
+
 #if 0
 __declspec(noinline) bool terrain_noise_3d(s32 x, s32 y, s32 z)
 {
@@ -704,7 +720,7 @@ __declspec(noinline) bool terrain_noise_3d(s32 x, s32 y, s32 z)
 #else
 __declspec(noinline) bool terrain_noise_3d(f32 x, f32 y, f32 z)
 {
-    f32 n1 = perlin(x * 0.6f, y, z * 0.6f);
+    f32 n1 = perlin(x * 0.06f, y, z * 0.06f);
     f32 n2 = perlin(x * 0.80f, y, z * 0.80f);
     f32 n = n1 + n2*n2;
     n -= y / 128.0f;
@@ -948,6 +964,7 @@ void voxel_line(
     *out_num = num;
 };
 
+#if 0
 struct TreeParams
 {
     s32* out_pos = nullptr;
@@ -987,9 +1004,183 @@ void tree(const TreeParams& in)
     }
     in.out_nodes[in.count] = b;
 }
+#endif
+
+struct Tree
+{
+    static constexpr u32 MAX_NODES = 8;
+    static constexpr u32 MAX_BRANCHES = 8;
+
+    u32 num_nodes;
+    v3 nodes_pos[MAX_NODES];
+    f32 nodes_dist[MAX_NODES];
+
+    u32 num_branches;
+    Tree* branches[8];
+
+    v3 get_point_at_height(f32 h)
+    {
+        ASSERT(num_nodes > 0, "Can't find point on empty tree.");
+        if(num_nodes == 1)
+        {
+            ASSERT(h == 0.0f, "Tree with only 1 node must have h of 0.");
+            return nodes_pos[0];
+        }
+
+        u32 node_idx = 0;
+        while(h > nodes_dist[node_idx + 1])
+        {
+            node_idx++;
+            ASSERT(node_idx < num_nodes, "Finding point on tree given h is too tall.");
+        }
+
+        f32 t = (h - nodes_dist[node_idx]) / (nodes_dist[node_idx + 1] - nodes_dist[node_idx]);
+        return lerp(nodes_pos[node_idx], nodes_pos[node_idx + 1], t);
+    }
+};
+struct TreeParams
+{
+    v3 base = v3();
+    v3 dir = v3();
+    f32 len = 0.0f;
+    u32 count = 0;
+    f32 thickness = 0.0f;
+    f32 thickness_falloff = 0.0f;
+    f32 variance = 0.0f;
+};
+void make_tree_branch(Tree& out, const TreeParams& in)
+{
+    ASSERT(in.count < Tree::MAX_NODES, "Too many nodes for tree. Must be less than Tree::MAX_NODES - 1");
+
+    f32 len = in.len;
+    f32 variance = in.variance;
+    v3 dir = in.dir;
+
+    u32 num_nodes = 0;
+    v3 cur_node_pos = in.base;
+
+    out.nodes_pos[num_nodes] = cur_node_pos;
+    out.nodes_dist[num_nodes] = 0;
+    num_nodes++;
+
+    f32 len_accum = 0.0f;
+    for(u32 i = 0; i < in.count; i++)
+    {
+        cur_node_pos += dir * len;
+
+        out.nodes_pos[num_nodes] = cur_node_pos;
+        out.nodes_dist[num_nodes] = len_accum;
+        num_nodes++;
+
+        len_accum += len;
+
+        v3 i_axis = dir;
+        v3 j_axis = cross(dir, v3(0.0f, 1.0f, 0.0f));
+        v3 k_axis = cross(i_axis, j_axis);
+        dir += random_range(-variance, variance) * j_axis + random_range(-variance, variance) * k_axis;
+        dir += v3(0.0f, variance * 0.1f, 0.0f); // Push tree upwards
+        dir = normalize(dir);
+        len *= 0.9f;
+        variance *= 1.1f;
+    }
+
+    out.num_nodes = num_nodes;
+}
+void make_tree(Tree& out, v3 base)
+{
+    make_tree_branch(out, TreeParams{
+        .base = base,
+        .dir = normalize(v3(0.0f, 1.0f, 0.1f)),
+        .len = 12.0f,
+        .count = 6,
+        .thickness = 0.0f,
+        .thickness_falloff = 0.0f,
+        .variance = 2.0f,
+    });
+    f32 h = 12.0f;
+    out.num_branches = 0;
+    for(u32 i = 0; i < 4; i++)
+    {
+        // TODO(mfritz) No dynamic allocation
+        out.branches[i] = new Tree;
+        make_tree_branch(*out.branches[i], TreeParams{
+            .base = out.get_point_at_height(h),
+            .dir = make_axis_rotation_matrix(random_range(0.0f, 2*M_PI), v3(0.0f, 1.0f, 0.0f)) * normalize(v3(0.0f, 1.0f, 1.0f)),
+            .len = 5.0f,
+            .count = 4,
+            .thickness = 0.0f,
+            .thickness_falloff = 0.0f,
+            .variance = 0.5f,
+        });
+        out.num_branches++;
+
+        h += 10.0f;
+    }
+}
+void leaf_ball(s32* out_pos, u32* out_color, u32* out_num, const u32 pos_stride, const v3 leaf_center, s32 radius)
+{
+    u32 num = *out_num;
+    ITER_CUBE(radius*2)
+    {
+        s32 px = it.x - radius + floor(leaf_center.x);
+        s32 py = it.y - radius + floor(leaf_center.y);
+        s32 pz = it.z - radius + floor(leaf_center.z);
+        v3 p = v3(px, py, pz);
+
+        f32 r = radius - perlin_01(p.x * 20.0f, p.y * 20.0f, p.z * 20.0f) * (f32(radius) * 0.5f);
+        if(abs(length(p - leaf_center) - r) < 1.5f)
+        {
+            out_pos[pos_stride*0 + num] = px;
+            out_pos[pos_stride*1 + num] = py;
+            out_pos[pos_stride*2 + num] = pz;
+            out_color[num] = 0x50BA2CFF;
+            num++;
+        }
+    }
+    *out_num = num;
+}
+void rasterize_tree(s32* out_pos, u32* out_color, u32* out_num, const u32 pos_stride, const Tree& tree)
+{
+    for(u32 i = 0; i < tree.num_nodes - 1; i++)
+    {
+        voxel_line(out_pos, out_color, out_num, pos_stride, tree.nodes_pos[i], tree.nodes_pos[i+1], 2.0f, 2.0f);
+    }
+
+    leaf_ball(out_pos, out_color, out_num, pos_stride, tree.nodes_pos[tree.num_nodes - 1], 22);
+
+    for(u32 b = 0; b < tree.num_branches; b++)
+    {
+        Tree *branch = tree.branches[b];
+        for(u32 i = 0; i < branch->num_nodes - 1; i++)
+        {
+            //draw_line(branch->nodes_pos[i], branch->nodes_pos[i+1], v3(0.0f, 1.0f, 0.0f));
+            voxel_line(out_pos, out_color, out_num, pos_stride, branch->nodes_pos[i], branch->nodes_pos[i+1], 1.0f, 1.0f);
+        }
+
+        leaf_ball(out_pos, out_color, out_num, pos_stride, branch->nodes_pos[branch->num_nodes - 1], 14);
+    }
+}
+void debug_draw_tree(const Tree& tree)
+{
+    for(u32 i = 0; i < tree.num_nodes - 1; i++)
+    {
+        draw_line(tree.nodes_pos[i], tree.nodes_pos[i+1], v3(0.0f, 1.0f, 0.0f));
+    }
+    for(u32 b = 0; b < tree.num_branches; b++)
+    {
+        Tree *branch = tree.branches[b];
+        for(u32 i = 0; i < branch->num_nodes - 1; i++)
+        {
+            draw_line(branch->nodes_pos[i], branch->nodes_pos[i+1], v3(0.0f, 1.0f, 0.0f));
+        }
+    }
+}
+
 
 INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine, INT nCmdShow)
 {
+    G_log_file = fopen("log.txt", "wt");
+
     HANDLE threads[NUM_THREADS];
     u32 thread_ids[NUM_THREADS];
     for(u32 i = 0; i < NUM_THREADS; i++)
@@ -1023,7 +1214,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
         glfwSetErrorCallback(glfw_error_fn);
         if(!glfwInit())
         {
-            //fprintf(stderr, "Failed to initialize GLFW\n");
+            fprintf(G_log_file, "Failed to initialize GLFW\n");
             return 1;
         }
         
@@ -1040,7 +1231,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
         G_graphics_state->window = glfwCreateWindow(window_width, window_height, "My Game", NULL, NULL);
         if(!G_graphics_state->window)
         {
-            //fprintf(stderr, "Failed to open GLFW window\n");
+            fprintf(G_log_file, "Failed to open GLFW window\n");
             glfwTerminate();
             return 1;
         }
@@ -1052,7 +1243,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
         
         if(!gladLoadGLLoader((GLADloadproc) glfwGetProcAddress))
         {
-            //fprintf(stderr, "Failed to initialize OpenGL context\n");
+            fprintf(G_log_file, "Failed to initialize OpenGL context\n");
             return 1;
         }
         
@@ -1127,9 +1318,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
 
             G_graphics_state->batch_voxel_shader_program = make_shader_from_file("assets/shaders/batch_voxel.shader");
             {
-                FILE *file = fopen("log.txt", "wt");
-                fprintf(file, G_graphics_state->debug_info_log);
-                fclose(file);
+                fprintf(G_log_file, G_graphics_state->debug_info_log);
             }
         }
 
@@ -1173,7 +1362,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             );
             {
                 FILE *file = fopen("log.txt", "wt");
-                fprintf(file, G_graphics_state->debug_info_log);
+                fprintf(G_log_file, G_graphics_state->debug_info_log);
                 fclose(file);
             }
         }
@@ -1210,104 +1399,18 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
     assert(is_power_of_2(noise_data_height));
     assert(is_power_of_2(noise_data_depth));
 
-    
-    const u32 tree_buf_size = 1000*1024;
-    s32* tree_pos = new s32[tree_buf_size*3];
+
+    Tree trees[5];
+    make_tree(trees[0], v3());
+    make_tree(trees[1], v3( 50.0f, 10.0f, 0.0f));
+    make_tree(trees[2], v3(-50.0f, 10.0f, 0.0f));
+    make_tree(trees[3], v3(0.0f, 10.0f,  50.0f));
+    make_tree(trees[4], v3(0.0f, 10.0f, -50.0f));
+
+    // TODO(mfritz) Maybe these should live elsewhere
+    const u32 tree_buf_size = 100 * 1024;
+    s32* tree_pos = new s32[tree_buf_size * 3];
     u32* tree_color = new u32[tree_buf_size];
-    u32 num_tree_voxels = 0;
-    v3* tree_nodes = new v3[32];
-    v3* tree_nodes2 = new v3[32];
-    {
-        // branch(4.0f, nodes[2], normalize(v3( 1.0f, 1.0f, 0.0f)), 32.0f, 8, 0.5f, 0.2f);
-        // branch(4.0f, nodes[4], normalize(v3(-1.0f, 1.0f, 0.0f)), 32.0f, 8, 0.5f, 0.2f);
-        // branch(12.0f, v3(), normalize(v3(0.0f, 1.0f, 0.0f)), 64.0f, 8, 1.0f, 0.2f);
-        tree(TreeParams{
-            .out_pos=tree_pos,
-            .out_color=tree_color,
-            .out_num=&num_tree_voxels,
-            .out_nodes=tree_nodes,
-            .pos_stride=tree_buf_size,
-            .base=v3(),
-            .dir=v3(0.0f, 1.0f, 0.1f),
-            .len=64.0f,
-            .count=8,
-            .thickness=12.0f,
-            .thickness_falloff=1.5f,
-            .variance=0.3f,
-        });
-
-        {
-            v3 leaf_center = tree_nodes[6];
-            s32 radius = 64;
-            ITER_CUBE(radius*2)
-            {
-                s32 px = it.x - radius + floor(leaf_center.x);
-                s32 py = it.y - radius + floor(leaf_center.y);
-                s32 pz = it.z - radius + floor(leaf_center.z);
-                v3 p = v3(px, py, pz);
-
-                f32 r = (radius - 10.0f) + perlin(p.x * 1.0f, p.y * 1.0f, p.z * 1.0f) * 70.0f;
-                if(abs(length(p - leaf_center) - r) < 2.0f)
-                {
-                    s32* out_pos = tree_pos;
-                    u32 pos_stride = tree_buf_size;
-                    u32* out_color = tree_color;
-                    u32& num = num_tree_voxels;
-                    out_pos[pos_stride*0 + num] = px;
-                    out_pos[pos_stride*1 + num] = py;
-                    out_pos[pos_stride*2 + num] = pz;
-                    out_color[num] = 0x50BA2CFF;
-                    num++;
-                }
-            }
-        }
-
-        for(u32 i = 0; i < 4; i++)
-        {
-            f32 t = i/4.0f;
-            tree(TreeParams{
-                .out_pos=tree_pos,
-                .out_color=tree_color,
-                .out_num=&num_tree_voxels,
-                .out_nodes=tree_nodes2,
-                .pos_stride=tree_buf_size,
-                .base=lerp(tree_nodes[i + 1], tree_nodes[i + 2], t),
-                .dir=(make_y_axis_rotation_matrix(random_01() * 2*M_PI) * v4(normalize(v3(1.0f, 1.0f, 1.0f)), 0.0f)).xyz(),
-                .len=16.0f + lerp(4.0f, 0.0f, t),
-                .count=6,
-                .thickness=4.0f + lerp(2.0f, 0.0f, t),
-                .thickness_falloff=0.8f,
-                .variance=0.2f,
-            });
-            {
-                v3 leaf_center = tree_nodes2[5];
-                s32 radius = 48;
-                ITER_CUBE(radius*2)
-                {
-                    s32 px = it.x - radius + floor(leaf_center.x);
-                    s32 py = it.y - radius + floor(leaf_center.y);
-                    s32 pz = it.z - radius + floor(leaf_center.z);
-                    v3 p = v3(px, py, pz);
-
-                    f32 r = (radius - 10.0f) + perlin(p.x * 1.0f, p.y * 1.0f, p.z * 1.0f) * 70.0f;
-                    if(abs(length(p - leaf_center) - r) < 2.0f)
-                    {
-                        s32* out_pos = tree_pos;
-                        u32 pos_stride = tree_buf_size;
-                        u32* out_color = tree_color;
-                        u32& num = num_tree_voxels;
-                        out_pos[pos_stride*0 + num] = px;
-                        out_pos[pos_stride*1 + num] = py;
-                        out_pos[pos_stride*2 + num] = pz;
-                        out_color[num] = 0x50BA2CFF;
-                        num++;
-                    }
-                }
-            }
-        }
-
-
-    }
 
     f32 frame_timer = 0.0f;
     f32 last_time = 0.0f;
@@ -1335,11 +1438,6 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             }
 
             running = !glfwGetKey(G_graphics_state->window, GLFW_KEY_ESCAPE) && !glfwWindowShouldClose(G_graphics_state->window);
-
-            for(u32 i = 0; i < 8; i++)
-            {
-                draw_line(tree_nodes[i], tree_nodes[i] + v3(100.0f, 0.0f, 0.0f), v3(1.0f, 0.0f, 0.0f));
-            }
 
             {
                 TIME_SCOPE("move camera");
@@ -1410,7 +1508,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             s32 region_chunks_tr_x = camera_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
             s32 region_chunks_tr_y = camera_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
             s32 region_chunks_tr_z = camera_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
-#if 0
+#if 1
             {
                 TIME_SCOPE("gen terrain");
                 static s32 last_camera_chunk_x = 0x7FFFFFFF;
@@ -1439,7 +1537,6 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 TIME_SCOPE("Prep render data");
 
 
-#if 0
                 u32 num_voxels = 0;
                 for(u32 chunk_idx = 0; chunk_idx < MAX_CHUNKS; chunk_idx++)
                 {
@@ -1454,15 +1551,28 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                     }
                 }
                 packed_voxels->num = num_voxels;
-                ImGui::Text("prep num_voxels %i", num_voxels);
-#else
-                memcpy(packed_voxels->pos + MAX_VOXELS*0, tree_pos + tree_buf_size*0, sizeof(tree_pos[0]) * num_tree_voxels);
-                memcpy(packed_voxels->pos + MAX_VOXELS*1, tree_pos + tree_buf_size*1, sizeof(tree_pos[0]) * num_tree_voxels);
-                memcpy(packed_voxels->pos + MAX_VOXELS*2, tree_pos + tree_buf_size*2, sizeof(tree_pos[0]) * num_tree_voxels);
-                memcpy(packed_voxels->color, tree_color, sizeof(tree_color[0]) * num_tree_voxels);
-                packed_voxels->num = num_tree_voxels;
-#endif
 
+                {
+                    TIME_SCOPE("rasterize trees");
+                    // Tree
+                    for(u32 tree_idx = 0; tree_idx < ARRAY_COUNT(trees); tree_idx++)
+                    {
+                        debug_draw_tree(trees[tree_idx]);
+
+                        u32 num = 0;
+                        rasterize_tree(tree_pos, tree_color, &num, tree_buf_size, trees[tree_idx]);
+
+                        memcpy(packed_voxels->pos + MAX_VOXELS*0 + packed_voxels->num, tree_pos + tree_buf_size*0, sizeof(tree_pos[0]) * num);
+                        memcpy(packed_voxels->pos + MAX_VOXELS*1 + packed_voxels->num, tree_pos + tree_buf_size*1, sizeof(tree_pos[0]) * num);
+                        memcpy(packed_voxels->pos + MAX_VOXELS*2 + packed_voxels->num, tree_pos + tree_buf_size*2, sizeof(tree_pos[0]) * num);
+                        memcpy(packed_voxels->color + packed_voxels->num, tree_color, sizeof(tree_color[0]) * num);
+                        packed_voxels->num += num;
+                    }
+                }
+
+                ImGui::Text("prep num_voxels %i", packed_voxels->num);
+
+                // TODO(mfritz) Pad to nearest next 8 voxels with 0xFFFFFFFF
                 camera_cull(
                     &voxel_render_data->num,
                     voxel_render_data->pos,
