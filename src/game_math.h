@@ -54,6 +54,11 @@ struct v4
     v4(float a, float b, v2 v) : x(a),   y(b),   z(v.x), w(v.y) { }
     v4(v3 v, float a)          : x(v.x), y(v.y), z(v.z), w(a)   { }
     v4(float a, v3 v)          : x(a),   y(v.x), z(v.y), w(v.z) { }
+
+    v3 xyz()
+    {
+        return v3(x,y,z);
+    }
 };
 
 struct v2i
@@ -909,7 +914,7 @@ static float perlin_noise(float x, float y)
 
 float pnoise(float x, float y, float z)
 {
-    auto& get_gradient = [](s32 px, s32 py, s32 pz)
+    const auto& get_gradient = [](s32 px, s32 py, s32 pz)
     {
         int kNumPoints = 100000;
         //f32 v = fract(sinf(dot(intPos, v3(12.9898, 78.233, 1234.5678))));

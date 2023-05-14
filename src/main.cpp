@@ -897,6 +897,97 @@ bool maybe_gen_new_terrain(
     return true;
 }
 
+void voxel_line(
+        s32* out_pos,
+        u32* out_color,
+        u32* out_num,
+        const u32 pos_stride,
+        const v3 a,
+        const v3 b,
+        const f32 a_thickness,
+        const f32 b_thickness)
+{
+    f32 max_thickness = max(a_thickness, b_thickness);
+    s32 min_x = min(s32(a.x), s32(b.x)) - ceil(max_thickness);
+    s32 min_y = min(s32(a.y), s32(b.y)) - ceil(max_thickness);
+    s32 min_z = min(s32(a.z), s32(b.z)) - ceil(max_thickness);
+    s32 max_x = max(s32(a.x), s32(b.x)) + ceil(max_thickness);
+    s32 max_y = max(s32(a.y), s32(b.y)) + ceil(max_thickness);
+    s32 max_z = max(s32(a.z), s32(b.z)) + ceil(max_thickness);
+
+    v3 d = b - a;
+    f32 d_len = sqrtf(dot(d, d));
+    v3 dn = d / d_len;
+    u32 num = *out_num;
+    for(s32 z = min_z; z <= max_z; z++)
+    {
+        for(s32 y = min_y; y <= max_y; y++)
+        {
+            for(s32 x = min_x; x <= max_x; x++)
+            {
+                v3 p = v3(f32(x), f32(y), f32(z));
+                v3 v = p - a;
+                f32 t = dot(v, dn);
+                v3 n = (p - dn*t) - a;
+                f32 dist = sqrtf(n.x*n.x + n.y*n.y + n.z*n.z);
+                f32 tn = t / d_len;
+                f32 thickness = lerp(a_thickness, b_thickness, tn);
+                dist = t < 0.0f ? length(a - p) : dist;
+                dist = t > d_len ? length(b - p) : dist;
+                if(dist < thickness)
+                {
+                    out_pos[pos_stride*0 + num] = x;
+                    out_pos[pos_stride*1 + num] = y;
+                    out_pos[pos_stride*2 + num] = z;
+                    out_color[num] = 0x442222FF;
+                    num++;
+                }
+            }
+        }
+    }
+    *out_num = num;
+};
+
+struct TreeParams
+{
+    s32* out_pos = nullptr;
+    u32* out_color = nullptr;
+    u32* out_num = nullptr;
+    v3* out_nodes = nullptr;
+    u32 pos_stride = 0;
+
+    v3 base = v3();
+    v3 dir = v3();
+    f32 len = 0.0f;
+    u32 count = 0;
+    f32 thickness = 0.0f;
+    f32 thickness_falloff = 0.0f;
+    f32 variance = 0.0f;
+};
+void tree(const TreeParams& in)
+{
+    f32 thickness = in.thickness;
+    v3 dir = in.dir;
+    f32 variance = in.variance;
+    v3 a = in.base;
+    v3 b = a + dir * in.len;
+    for(u32 i = 0; i < in.count; i++)
+    {
+        voxel_line(in.out_pos, in.out_color, in.out_num, in.pos_stride, a, b, thickness, thickness - in.thickness_falloff);
+        thickness -= in.thickness_falloff;
+
+        v3 i_axis = dir;
+        v3 j_axis = cross(dir, v3(0.0f, 1.0f, 0.0f));
+        v3 k_axis = cross(i_axis, j_axis);
+        dir += random_range(-variance, variance) * j_axis + random_range(-variance, variance) * k_axis;
+        in.out_nodes[i] = a;
+        a = b;
+        b = a + dir * in.len;
+        variance += 0.3f;
+    }
+    in.out_nodes[in.count] = b;
+}
+
 INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine, INT nCmdShow)
 {
     HANDLE threads[NUM_THREADS];
@@ -1124,97 +1215,98 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
     s32* tree_pos = new s32[tree_buf_size*3];
     u32* tree_color = new u32[tree_buf_size];
     u32 num_tree_voxels = 0;
+    v3* tree_nodes = new v3[32];
+    v3* tree_nodes2 = new v3[32];
     {
+        // branch(4.0f, nodes[2], normalize(v3( 1.0f, 1.0f, 0.0f)), 32.0f, 8, 0.5f, 0.2f);
+        // branch(4.0f, nodes[4], normalize(v3(-1.0f, 1.0f, 0.0f)), 32.0f, 8, 0.5f, 0.2f);
+        // branch(12.0f, v3(), normalize(v3(0.0f, 1.0f, 0.0f)), 64.0f, 8, 1.0f, 0.2f);
+        tree(TreeParams{
+            .out_pos=tree_pos,
+            .out_color=tree_color,
+            .out_num=&num_tree_voxels,
+            .out_nodes=tree_nodes,
+            .pos_stride=tree_buf_size,
+            .base=v3(),
+            .dir=v3(0.0f, 1.0f, 0.1f),
+            .len=64.0f,
+            .count=8,
+            .thickness=12.0f,
+            .thickness_falloff=1.5f,
+            .variance=0.3f,
+        });
 
-        auto voxel_line = [&tree_buf_size, &tree_pos, &tree_color, &num_tree_voxels](v3 a, v3 b, f32 a_thickness, f32 b_thickness)
         {
-            f32 max_thickness = max(a_thickness, b_thickness);
-            s32 min_x = min(s32(a.x), s32(b.x)) - ceil(max_thickness);
-            s32 min_y = min(s32(a.y), s32(b.y)) - ceil(max_thickness);
-            s32 min_z = min(s32(a.z), s32(b.z)) - ceil(max_thickness);
-            s32 max_x = max(s32(a.x), s32(b.x)) + ceil(max_thickness);
-            s32 max_y = max(s32(a.y), s32(b.y)) + ceil(max_thickness);
-            s32 max_z = max(s32(a.z), s32(b.z)) + ceil(max_thickness);
-
-            v3 d = b - a;
-            f32 d_len = sqrtf(dot(d, d));
-            v3 dn = d / d_len;
-            for(s32 z = min_z; z <= max_z; z++)
+            v3 leaf_center = tree_nodes[6];
+            s32 radius = 64;
+            ITER_CUBE(radius*2)
             {
-                for(s32 y = min_y; y <= max_y; y++)
+                s32 px = it.x - radius + floor(leaf_center.x);
+                s32 py = it.y - radius + floor(leaf_center.y);
+                s32 pz = it.z - radius + floor(leaf_center.z);
+                v3 p = v3(px, py, pz);
+
+                f32 r = (radius - 10.0f) + perlin(p.x * 1.0f, p.y * 1.0f, p.z * 1.0f) * 70.0f;
+                if(abs(length(p - leaf_center) - r) < 2.0f)
                 {
-                    for(s32 x = min_x; x <= max_x; x++)
+                    s32* out_pos = tree_pos;
+                    u32 pos_stride = tree_buf_size;
+                    u32* out_color = tree_color;
+                    u32& num = num_tree_voxels;
+                    out_pos[pos_stride*0 + num] = px;
+                    out_pos[pos_stride*1 + num] = py;
+                    out_pos[pos_stride*2 + num] = pz;
+                    out_color[num] = 0x50BA2CFF;
+                    num++;
+                }
+            }
+        }
+
+        for(u32 i = 0; i < 4; i++)
+        {
+            f32 t = i/4.0f;
+            tree(TreeParams{
+                .out_pos=tree_pos,
+                .out_color=tree_color,
+                .out_num=&num_tree_voxels,
+                .out_nodes=tree_nodes2,
+                .pos_stride=tree_buf_size,
+                .base=lerp(tree_nodes[i + 1], tree_nodes[i + 2], t),
+                .dir=(make_y_axis_rotation_matrix(random_01() * 2*M_PI) * v4(normalize(v3(1.0f, 1.0f, 1.0f)), 0.0f)).xyz(),
+                .len=16.0f + lerp(4.0f, 0.0f, t),
+                .count=6,
+                .thickness=4.0f + lerp(2.0f, 0.0f, t),
+                .thickness_falloff=0.8f,
+                .variance=0.2f,
+            });
+            {
+                v3 leaf_center = tree_nodes2[5];
+                s32 radius = 48;
+                ITER_CUBE(radius*2)
+                {
+                    s32 px = it.x - radius + floor(leaf_center.x);
+                    s32 py = it.y - radius + floor(leaf_center.y);
+                    s32 pz = it.z - radius + floor(leaf_center.z);
+                    v3 p = v3(px, py, pz);
+
+                    f32 r = (radius - 10.0f) + perlin(p.x * 1.0f, p.y * 1.0f, p.z * 1.0f) * 70.0f;
+                    if(abs(length(p - leaf_center) - r) < 2.0f)
                     {
-                        v3 p = v3(f32(x), f32(y), f32(z));
-                        v3 v = p - a;
-                        f32 t = dot(v, dn);
-                        v3 n = (p - dn*t) - a;
-                        f32 dist = sqrtf(n.x*n.x + n.y*n.y + n.z*n.z);
-                        f32 tn = t / d_len;
-                        f32 thickness = lerp(a_thickness, b_thickness, tn);
-                        dist = t < 0.0f ? length(a - p) : dist;
-                        dist = t > d_len ? length(b - p) : dist;
-                        if(dist < thickness)
-                        {
-                            tree_pos[tree_buf_size*0 + num_tree_voxels] = x;
-                            tree_pos[tree_buf_size*1 + num_tree_voxels] = y;
-                            tree_pos[tree_buf_size*2 + num_tree_voxels] = z;
-                            tree_color[num_tree_voxels] = 0x442222FF;
-                            num_tree_voxels++;
-                        }
+                        s32* out_pos = tree_pos;
+                        u32 pos_stride = tree_buf_size;
+                        u32* out_color = tree_color;
+                        u32& num = num_tree_voxels;
+                        out_pos[pos_stride*0 + num] = px;
+                        out_pos[pos_stride*1 + num] = py;
+                        out_pos[pos_stride*2 + num] = pz;
+                        out_color[num] = 0x50BA2CFF;
+                        num++;
                     }
                 }
             }
-        };
-
-        auto branch = [&voxel_line, &tree_buf_size, &tree_pos, &tree_color, &num_tree_voxels](
-                v3* nodes,
-                float thickness,
-                v3 base,
-                v3 dir,
-                f32 len,
-                u32 count,
-                f32 falloff,
-                f32 variance)
-        {
-            v3 a = base;
-            v3 b = a + dir * len;
-            for(u32 i = 0; i < count; i++)
-            {
-                voxel_line(a, b, thickness, thickness - falloff);
-                thickness -= falloff;
-
-                v3 i_axis = dir;
-                v3 j_axis = cross(dir, v3(0.0f, 1.0f, 0.0f));
-                v3 k_axis = cross(i_axis, j_axis);
-                dir += random_range(-variance, variance) * j_axis + random_range(-variance, variance) * k_axis;
-                nodes[i] = a;
-                a = b;
-                b = a + dir * len;
-                variance += 0.3f;
-            }
-        };
-        v3 nodes[7];
-        f32 thickness = 12.0f;
-        v3 dir = normalize(v3(0.1f, 1.0f, 0.1f));
-        v3 a = v3();
-        v3 b = a + dir * 64.0f;
-        for(u32 i = 0; i < 6; i++)
-        {
-            voxel_line(a, b, thickness, thickness - 1.0f);
-            thickness -= 1.0f;
-
-            dir.x += random_range(-0.2f, 0.2f);
-            dir.y += random_range(-0.2f, 0.2f);
-            dir.z += random_range(-0.2f, 0.2f);
-            nodes[i] = a;
-            a = b;
-            b = a + dir * 64.0f;
         }
-        nodes[6] = b;
 
-        branch(4.0f, nodes[2], normalize(v3( 1.0f, 1.0f, 0.0f)), 32.0f, 8, 0.5f, 0.2f);
-        branch(4.0f, nodes[4], normalize(v3(-1.0f, 1.0f, 0.0f)), 32.0f, 8, 0.5f, 0.2f);
+
     }
 
     f32 frame_timer = 0.0f;
@@ -1243,6 +1335,11 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             }
 
             running = !glfwGetKey(G_graphics_state->window, GLFW_KEY_ESCAPE) && !glfwWindowShouldClose(G_graphics_state->window);
+
+            for(u32 i = 0; i < 8; i++)
+            {
+                draw_line(tree_nodes[i], tree_nodes[i] + v3(100.0f, 0.0f, 0.0f), v3(1.0f, 0.0f, 0.0f));
+            }
 
             {
                 TIME_SCOPE("move camera");
