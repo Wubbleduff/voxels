@@ -22,8 +22,9 @@
 // NOTE: This value must match the shader.
 static constexpr u32 SHADER_BUFFER_WIDTH = 1024*1024;
 static constexpr u32 NUM_VOXEL_DATA_FIELDS = 4;
-static constexpr s32 CHUNK_DIM = 32;
-static constexpr s32 CHUNK_POW = 5; // CHUNK_DIM = 2**CHUNK_POW
+static constexpr s32 CHUNK_DIM = 16;
+static constexpr s32 CHUNK_POW = 4; // CHUNK_DIM = 2**CHUNK_POW
+static_assert(1 << CHUNK_POW == CHUNK_DIM);
 static constexpr s32 CHUNK_MAX_VOXELS = CHUNK_DIM*CHUNK_DIM*CHUNK_DIM;
 static constexpr s32 VIEW_DIST = 256;
 static constexpr s32 LOADED_REGION_CHUNKS_DIM = (VIEW_DIST/CHUNK_DIM)*2;
@@ -107,7 +108,7 @@ struct PackedVoxels
 {
     u32 num;
     s32 pos[MAX_VOXELS*3];
-    u32 color[MAX_VOXELS];
+    u32 voxel_id[MAX_VOXELS];
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -187,6 +188,9 @@ struct CubeIterator
             DebugBreak();                       \
         }                                       \
     }
+
+#define KB(n) ((n) / 1024)
+#define MB(n) ((n) / 1024 / 1024)
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -406,11 +410,11 @@ static __m256i left_pack(__m256i a, u32 mask)
 void camera_cull(
     u32* out_num_voxels,
     f32* out_voxel_pos,
-    u32* out_voxel_color,
+    u32* out_voxel_id,
 
     const u32 in_num_voxels,
     const s32* in_voxel_pos,
-    const u32* in_voxel_color,
+    const u32* in_voxel_id,
     const Camera* cam)
 {
     // Check distance from voxel centroid to each plane and compare against 1.0f.
@@ -444,7 +448,7 @@ void camera_cull(
         __m256 vx = _mm256_cvtepi32_ps(_mm256_loadu_si256((__m256i*)(in_voxel_pos + MAX_VOXELS*0 + i)));
         __m256 vy = _mm256_cvtepi32_ps(_mm256_loadu_si256((__m256i*)(in_voxel_pos + MAX_VOXELS*1 + i)));
         __m256 vz = _mm256_cvtepi32_ps(_mm256_loadu_si256((__m256i*)(in_voxel_pos + MAX_VOXELS*2 + i)));
-        __m256i vc = _mm256_loadu_si256((__m256i*)(in_voxel_color + i));
+        __m256i vc = _mm256_loadu_si256((__m256i*)(in_voxel_id + i));
 
         __m256 mask = _mm256_cvtepi32_ps(_mm256_set1_epi8(0xFF));
         for(u32 ni = 0; ni < 6; ni++)
@@ -461,7 +465,7 @@ void camera_cull(
         _mm256_storeu_ps(out_voxel_pos + MAX_VOXELS*0 + num_voxels,   left_pack(vx, pack_index));
         _mm256_storeu_ps(out_voxel_pos + MAX_VOXELS*1 + num_voxels,   left_pack(vy, pack_index));
         _mm256_storeu_ps(out_voxel_pos + MAX_VOXELS*2 + num_voxels,   left_pack(vz, pack_index));
-        _mm256_storeu_si256((__m256i*)(out_voxel_color + num_voxels), left_pack(vc, pack_index));
+        _mm256_storeu_si256((__m256i*)(out_voxel_id + num_voxels), left_pack(vc, pack_index));
         num_voxels += _mm_popcnt_u32(pack_index);
     }
     *out_num_voxels = num_voxels;
@@ -915,7 +919,7 @@ bool maybe_gen_new_terrain(
 
 void voxel_line(
         s32* out_pos,
-        u32* out_color,
+        u32* out_voxel_id,
         u32* out_num,
         const u32 pos_stride,
         const v3 a,
@@ -955,7 +959,7 @@ void voxel_line(
                     out_pos[pos_stride*0 + num] = x;
                     out_pos[pos_stride*1 + num] = y;
                     out_pos[pos_stride*2 + num] = z;
-                    out_color[num] = 0x442222FF;
+                    out_voxel_id[num] = 0x442222FF;
                     num++;
                 }
             }
@@ -964,48 +968,15 @@ void voxel_line(
     *out_num = num;
 };
 
-#if 0
-struct TreeParams
+// Dense voxel array.
+struct TreeBuffer
 {
-    s32* out_pos = nullptr;
-    u32* out_color = nullptr;
-    u32* out_num = nullptr;
-    v3* out_nodes = nullptr;
-    u32 pos_stride = 0;
-
-    v3 base = v3();
-    v3 dir = v3();
-    f32 len = 0.0f;
-    u32 count = 0;
-    f32 thickness = 0.0f;
-    f32 thickness_falloff = 0.0f;
-    f32 variance = 0.0f;
+    static constexpr u32 MAX_DIM = 96;
+    s32 x;
+    s32 y;
+    s32 z;
+    u32 voxel_id[MAX_DIM*MAX_DIM*MAX_DIM];
 };
-void tree(const TreeParams& in)
-{
-    f32 thickness = in.thickness;
-    v3 dir = in.dir;
-    f32 variance = in.variance;
-    v3 a = in.base;
-    v3 b = a + dir * in.len;
-    for(u32 i = 0; i < in.count; i++)
-    {
-        voxel_line(in.out_pos, in.out_color, in.out_num, in.pos_stride, a, b, thickness, thickness - in.thickness_falloff);
-        thickness -= in.thickness_falloff;
-
-        v3 i_axis = dir;
-        v3 j_axis = cross(dir, v3(0.0f, 1.0f, 0.0f));
-        v3 k_axis = cross(i_axis, j_axis);
-        dir += random_range(-variance, variance) * j_axis + random_range(-variance, variance) * k_axis;
-        in.out_nodes[i] = a;
-        a = b;
-        b = a + dir * in.len;
-        variance += 0.3f;
-    }
-    in.out_nodes[in.count] = b;
-}
-#endif
-
 struct Tree
 {
     static constexpr u32 MAX_NODES = 8;
@@ -1117,7 +1088,7 @@ void make_tree(Tree& out, v3 base)
         h += 10.0f;
     }
 }
-void leaf_ball(s32* out_pos, u32* out_color, u32* out_num, const u32 pos_stride, const v3 leaf_center, s32 radius)
+void leaf_ball(s32* out_pos, u32* out_voxel_id, u32* out_num, const u32 pos_stride, const v3 leaf_center, s32 radius)
 {
     u32 num = *out_num;
     ITER_CUBE(radius*2)
@@ -1133,20 +1104,22 @@ void leaf_ball(s32* out_pos, u32* out_color, u32* out_num, const u32 pos_stride,
             out_pos[pos_stride*0 + num] = px;
             out_pos[pos_stride*1 + num] = py;
             out_pos[pos_stride*2 + num] = pz;
-            out_color[num] = 0x50BA2CFF;
+            out_voxel_id[num] = 0x50BA2CFF;
             num++;
         }
     }
     *out_num = num;
 }
-void rasterize_tree(s32* out_pos, u32* out_color, u32* out_num, const u32 pos_stride, const Tree& tree)
+
+// Rasterize a tree description (series of line segments) to a sparse voxel array. Appends to existing voxels.
+void rasterize_tree(s32* out_pos, u32* out_voxel_id, u32* out_num, const u32 pos_stride, const Tree& tree)
 {
     for(u32 i = 0; i < tree.num_nodes - 1; i++)
     {
-        voxel_line(out_pos, out_color, out_num, pos_stride, tree.nodes_pos[i], tree.nodes_pos[i+1], 2.0f, 2.0f);
+        voxel_line(out_pos, out_voxel_id, out_num, pos_stride, tree.nodes_pos[i], tree.nodes_pos[i+1], 2.0f, 2.0f);
     }
 
-    leaf_ball(out_pos, out_color, out_num, pos_stride, tree.nodes_pos[tree.num_nodes - 1], 22);
+    leaf_ball(out_pos, out_voxel_id, out_num, pos_stride, tree.nodes_pos[tree.num_nodes - 1], 22);
 
     for(u32 b = 0; b < tree.num_branches; b++)
     {
@@ -1154,10 +1127,10 @@ void rasterize_tree(s32* out_pos, u32* out_color, u32* out_num, const u32 pos_st
         for(u32 i = 0; i < branch->num_nodes - 1; i++)
         {
             //draw_line(branch->nodes_pos[i], branch->nodes_pos[i+1], v3(0.0f, 1.0f, 0.0f));
-            voxel_line(out_pos, out_color, out_num, pos_stride, branch->nodes_pos[i], branch->nodes_pos[i+1], 1.0f, 1.0f);
+            voxel_line(out_pos, out_voxel_id, out_num, pos_stride, branch->nodes_pos[i], branch->nodes_pos[i+1], 1.0f, 1.0f);
         }
 
-        leaf_ball(out_pos, out_color, out_num, pos_stride, branch->nodes_pos[branch->num_nodes - 1], 14);
+        leaf_ball(out_pos, out_voxel_id, out_num, pos_stride, branch->nodes_pos[branch->num_nodes - 1], 14);
     }
 }
 void debug_draw_tree(const Tree& tree)
@@ -1410,7 +1383,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
     // TODO(mfritz) Maybe these should live elsewhere
     const u32 tree_buf_size = 100 * 1024;
     s32* tree_pos = new s32[tree_buf_size * 3];
-    u32* tree_color = new u32[tree_buf_size];
+    u32* tree_voxel_id = new u32[tree_buf_size];
 
     f32 frame_timer = 0.0f;
     f32 last_time = 0.0f;
@@ -1546,7 +1519,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                         memcpy(packed_voxels->pos + MAX_VOXELS*0 + num_voxels, chunk->voxels + chunk->num*0, chunk->num * sizeof(chunk->voxels[0]));
                         memcpy(packed_voxels->pos + MAX_VOXELS*1 + num_voxels, chunk->voxels + chunk->num*1, chunk->num * sizeof(chunk->voxels[0]));
                         memcpy(packed_voxels->pos + MAX_VOXELS*2 + num_voxels, chunk->voxels + chunk->num*2, chunk->num * sizeof(chunk->voxels[0]));
-                        memcpy(packed_voxels->color + num_voxels,              chunk->voxels + chunk->num*3, chunk->num * sizeof(chunk->voxels[0]));
+                        memcpy(packed_voxels->voxel_id + num_voxels,              chunk->voxels + chunk->num*3, chunk->num * sizeof(chunk->voxels[0]));
                         num_voxels += chunk->num;
                     }
                 }
@@ -1560,12 +1533,12 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                         debug_draw_tree(trees[tree_idx]);
 
                         u32 num = 0;
-                        rasterize_tree(tree_pos, tree_color, &num, tree_buf_size, trees[tree_idx]);
+                        rasterize_tree(tree_pos, tree_voxel_id, &num, tree_buf_size, trees[tree_idx]);
 
                         memcpy(packed_voxels->pos + MAX_VOXELS*0 + packed_voxels->num, tree_pos + tree_buf_size*0, sizeof(tree_pos[0]) * num);
                         memcpy(packed_voxels->pos + MAX_VOXELS*1 + packed_voxels->num, tree_pos + tree_buf_size*1, sizeof(tree_pos[0]) * num);
                         memcpy(packed_voxels->pos + MAX_VOXELS*2 + packed_voxels->num, tree_pos + tree_buf_size*2, sizeof(tree_pos[0]) * num);
-                        memcpy(packed_voxels->color + packed_voxels->num, tree_color, sizeof(tree_color[0]) * num);
+                        memcpy(packed_voxels->voxel_id + packed_voxels->num, tree_voxel_id, sizeof(tree_voxel_id[0]) * num);
                         packed_voxels->num += num;
                     }
                 }
@@ -1579,10 +1552,39 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                     voxel_render_data->color,
                     packed_voxels->num,
                     packed_voxels->pos,
-                    packed_voxels->color,
+                    packed_voxels->voxel_id,
                     &G_graphics_state->cam
                 );
             }
+
+            // Stats
+            {
+                ImGui::Separator();
+                ImGui::Text("Stats");
+                ImGui::Text("View dist: %i", VIEW_DIST);
+                ImGui::Text("Max chunks: %i", MAX_CHUNKS);
+                ImGui::Text("Chunks table mem: %iKB", KB(MAX_CHUNKS * sizeof(Chunk*)));
+                u32 num_populated_chunks = 0;
+                u32 avg_voxels_per_populated_chunk = 0;
+                u32 max_voxels_per_chunk = 0;
+                u32 voxels_bytes = 0;
+                for(u32 i = 0; i < MAX_CHUNKS; i++)
+                {
+                    if(chunks[i])
+                    {
+                        num_populated_chunks += chunks[i]->num > 0;
+                        avg_voxels_per_populated_chunk += chunks[i]->num;
+                        max_voxels_per_chunk = max(max_voxels_per_chunk, chunks[i]->num);
+                        voxels_bytes += sizeof(chunks[i]->num) + chunks[i]->num * sizeof(chunks[i]->voxels[0]);
+                    }
+                }
+                ImGui::Text("# populated chunks: %i", num_populated_chunks);
+                ImGui::Text("# avg voxels per populated chunk: %i", num_populated_chunks == 0 ? 0 : avg_voxels_per_populated_chunk / num_populated_chunks);
+                ImGui::Text("# max voxels per chunk: %i", max_voxels_per_chunk);
+                ImGui::Text("Voxels mem: %i KB", KB(voxels_bytes));
+                ImGui::Separator();
+            }
+
 
             // Draw
             {
