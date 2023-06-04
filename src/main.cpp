@@ -185,6 +185,47 @@ struct PackedVoxels
     u32 voxel_id[MAX_VOXELS];
 };
 
+// Sparse voxel array.
+struct TreeBuffer
+{
+    static constexpr u32 CAP = 32768;
+    u32 num;
+    s32 pos[CAP*3]; // xxx yyy zzz
+    u32 voxel_id[CAP];
+};
+struct Tree
+{
+    static constexpr u32 MAX_NODES = 8;
+    static constexpr u32 MAX_BRANCHES = 8;
+
+    u32 num_nodes;
+    v3 nodes_pos[MAX_NODES];
+    f32 nodes_dist[MAX_NODES];
+
+    u32 num_branches;
+    Tree* branches[8];
+
+    v3 get_point_at_height(f32 h)
+    {
+        ASSERT(num_nodes > 0, "Can't find point on empty tree.");
+        if(num_nodes == 1)
+        {
+            ASSERT(h == 0.0f, "Tree with only 1 node must have h of 0.");
+            return nodes_pos[0];
+        }
+
+        u32 node_idx = 0;
+        while(h > nodes_dist[node_idx + 1])
+        {
+            node_idx++;
+            ASSERT(node_idx < num_nodes, "Finding point on tree given h is too tall.");
+        }
+
+        f32 t = (h - nodes_dist[node_idx]) / (nodes_dist[node_idx + 1] - nodes_dist[node_idx]);
+        return lerp(nodes_pos[node_idx], nodes_pos[node_idx + 1], t);
+    }
+};
+
 ////////////////////////////////////////////////////////////////////////////////
 // Profiling
 ////////////////////////////////////////////////////////////////////////////////
@@ -933,11 +974,15 @@ void allocate_and_gen_chunk_work(ThreadState* thread_state, void** out_data, con
     }
 
     Chunk* result = allocate_chunk(num_voxels);
+#if 1
     result->num = num_voxels;
     memcpy(result->voxels + num_voxels*0, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*0, num_voxels * sizeof(result->voxels[0]));
     memcpy(result->voxels + num_voxels*1, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*1, num_voxels * sizeof(result->voxels[0]));
     memcpy(result->voxels + num_voxels*2, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*2, num_voxels * sizeof(result->voxels[0]));
     memcpy(result->voxels + num_voxels*3, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*3, num_voxels * sizeof(result->voxels[0]));
+#else
+    result->num = 0;
+#endif
     *out_data = result;
 }
 
@@ -948,8 +993,10 @@ bool maybe_gen_new_terrain(
     const s32 old_chunk_z,
     const s32 new_chunk_x,
     const s32 new_chunk_y,
-    const s32 new_chunk_z
-)
+    const s32 new_chunk_z,
+    const u32 num_trees,
+    const TreeBuffer* const* tree_buffers,
+    const f32* tree_pos)
 {
     Chunk** old_chunks = new Chunk*[LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM];
     ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
@@ -1005,6 +1052,9 @@ bool maybe_gen_new_terrain(
         }
     }
 
+    // With view distance of 1024, will be 262.1 kb.
+    BitArray<MAX_CHUNKS> chunks_generated;
+
     // NOTE(mfritz): We don't want to have jobs generating terrain across frames. This would
     // introduce the possibility of having 2 jobs in flight for a single chunk. Generating a
     // max number of chunks per frame avoids that issue and works nicer for single threaded
@@ -1025,6 +1075,7 @@ bool maybe_gen_new_terrain(
             work->chunk_z = new_chunk_z;
             add_work(reinterpret_cast<void**>(&new_chunks[it.idx]), JobId::load_terrain, allocate_and_gen_chunk_work, work);
             gen_count++;
+            chunks_generated.set_bit(it.idx);
             if(gen_count >= MAX_CHUNKS_GEN_PER_FRAME)
             {
                 break;
@@ -1035,6 +1086,102 @@ bool maybe_gen_new_terrain(
 
     // Copy in other objects in the world that occupy this chunk.
     // TODO
+
+    // Chunks are packed with xxx yyy zzz ccc.
+    // So, when adding trees to chunks, we'll need two passes:
+    // 1. Count how many new voxels are in each ** NEWLY GENERATED ** chunk
+    // 2. Allocate the new chunk and copy the tree data over.
+
+    u32* new_voxels_per_chunk = new u32[MAX_CHUNKS]{};
+
+    // 1.
+    for(u32 tree_idx = 0; tree_idx < num_trees; tree_idx++)
+    {
+        const TreeBuffer* tree_buffer = tree_buffers[tree_idx];
+        for(u32 voxel_idx = 0; voxel_idx < tree_buffer->num; voxel_idx++)
+        {
+            s32 vx = tree_buffer->pos[TreeBuffer::CAP*0 + voxel_idx] + floor(tree_pos[num_trees*0 + tree_idx]);
+            s32 vy = tree_buffer->pos[TreeBuffer::CAP*1 + voxel_idx] + floor(tree_pos[num_trees*1 + tree_idx]);
+            s32 vz = tree_buffer->pos[TreeBuffer::CAP*2 + voxel_idx] + floor(tree_pos[num_trees*2 + tree_idx]);
+            s32 chunk_x = vx >> CHUNK_POW;
+            s32 chunk_y = vy >> CHUNK_POW;
+            s32 chunk_z = vz >> CHUNK_POW;
+            if(chunk_x >= new_chunks_range_x_min && chunk_x < new_chunks_range_x_max &&
+               chunk_y >= new_chunks_range_y_min && chunk_y < new_chunks_range_y_max &&
+               chunk_z >= new_chunks_range_z_min && chunk_z < new_chunks_range_z_max)
+            {
+                s32 chunki_x = chunk_x - new_chunks_range_x_min;
+                s32 chunki_y = chunk_y - new_chunks_range_y_min;
+                s32 chunki_z = chunk_z - new_chunks_range_z_min;
+                u32 chunk_idx = chunki_z*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM + chunki_y*LOADED_REGION_CHUNKS_DIM + chunki_x;
+                if(chunks_generated.is_bit_set(chunk_idx))
+                {
+                    new_voxels_per_chunk[chunk_idx]++;
+                }
+            }
+        }
+    }
+
+    ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
+    {
+        Chunk* chunk = new_chunks[it.idx];
+        const u32 num_new_voxels = new_voxels_per_chunk[it.idx];
+        // TODO(mfritz) Is this correct? Will we come back around and fill this out once the chunk is being generated?
+        if(chunk != nullptr && num_new_voxels > 0)
+        {
+            Chunk* new_chunk = allocate_chunk(chunk->num + num_new_voxels);
+            new_chunk->num = chunk->num + num_new_voxels;
+            // reuse new_voxels_per_chunk to keep track of how many voxels have been copied over so far.
+            new_voxels_per_chunk[it.idx] = chunk->num;
+            memcpy(new_chunk->voxels + new_chunk->num*0, chunk->voxels + chunk->num*0, chunk->num * sizeof(chunk->voxels[0]));
+            memcpy(new_chunk->voxels + new_chunk->num*1, chunk->voxels + chunk->num*1, chunk->num * sizeof(chunk->voxels[0]));
+            memcpy(new_chunk->voxels + new_chunk->num*2, chunk->voxels + chunk->num*2, chunk->num * sizeof(chunk->voxels[0]));
+            memcpy(new_chunk->voxels + new_chunk->num*3, chunk->voxels + chunk->num*3, chunk->num * sizeof(chunk->voxels[0]));
+            new_chunks[it.idx] = new_chunk;
+            deallocate_chunk(chunk);
+        }
+    }
+
+    // 2.
+    for(u32 tree_idx = 0; tree_idx < num_trees; tree_idx++)
+    {
+        const TreeBuffer* tree_buffer = tree_buffers[tree_idx];
+        for(u32 voxel_idx = 0; voxel_idx < tree_buffer->num; voxel_idx++)
+        {
+            const s32 tree_x = floor(tree_pos[num_trees*0 + tree_idx]);
+            const s32 tree_y = floor(tree_pos[num_trees*1 + tree_idx]);
+            const s32 tree_z = floor(tree_pos[num_trees*2 + tree_idx]);
+            const s32 vx = tree_buffer->pos[TreeBuffer::CAP*0 + voxel_idx] + tree_x;
+            const s32 vy = tree_buffer->pos[TreeBuffer::CAP*1 + voxel_idx] + tree_y;
+            const s32 vz = tree_buffer->pos[TreeBuffer::CAP*2 + voxel_idx] + tree_z;
+            const s32 v_id = tree_buffer->voxel_id[voxel_idx];
+            const s32 chunk_x = vx >> CHUNK_POW;
+            const s32 chunk_y = vy >> CHUNK_POW;
+            const s32 chunk_z = vz >> CHUNK_POW;
+            if(chunk_x >= new_chunks_range_x_min && chunk_x < new_chunks_range_x_max &&
+               chunk_y >= new_chunks_range_y_min && chunk_y < new_chunks_range_y_max &&
+               chunk_z >= new_chunks_range_z_min && chunk_z < new_chunks_range_z_max)
+            {
+                const s32 chunki_x = chunk_x - new_chunks_range_x_min;
+                const s32 chunki_y = chunk_y - new_chunks_range_y_min;
+                const s32 chunki_z = chunk_z - new_chunks_range_z_min;
+                const u32 chunk_idx = chunki_z*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM + chunki_y*LOADED_REGION_CHUNKS_DIM + chunki_x;
+                Chunk* chunk = new_chunks[chunk_idx];
+                if(chunk != nullptr && chunks_generated.is_bit_set(chunk_idx))
+                {
+                    u32& num_new_voxels = new_voxels_per_chunk[chunk_idx];
+                    chunk->voxels[chunk->num*0 + num_new_voxels] = vx;
+                    chunk->voxels[chunk->num*1 + num_new_voxels] = vy;
+                    chunk->voxels[chunk->num*2 + num_new_voxels] = vz;
+                    chunk->voxels[chunk->num*3 + num_new_voxels] = v_id;
+                    num_new_voxels++;
+                }
+            }
+        }
+    }
+
+    delete[] new_voxels_per_chunk;
+    new_voxels_per_chunk = nullptr;;
 
     return true;
 }
@@ -1090,46 +1237,6 @@ void voxel_line(
     *out_num = num;
 };
 
-// Sparse voxel array.
-struct TreeBuffer
-{
-    static constexpr u32 CAP = 32768;
-    u32 num;
-    s32 pos[CAP*3]; // xxx yyy zzz
-    u32 voxel_id[CAP];
-};
-struct Tree
-{
-    static constexpr u32 MAX_NODES = 8;
-    static constexpr u32 MAX_BRANCHES = 8;
-
-    u32 num_nodes;
-    v3 nodes_pos[MAX_NODES];
-    f32 nodes_dist[MAX_NODES];
-
-    u32 num_branches;
-    Tree* branches[8];
-
-    v3 get_point_at_height(f32 h)
-    {
-        ASSERT(num_nodes > 0, "Can't find point on empty tree.");
-        if(num_nodes == 1)
-        {
-            ASSERT(h == 0.0f, "Tree with only 1 node must have h of 0.");
-            return nodes_pos[0];
-        }
-
-        u32 node_idx = 0;
-        while(h > nodes_dist[node_idx + 1])
-        {
-            node_idx++;
-            ASSERT(node_idx < num_nodes, "Finding point on tree given h is too tall.");
-        }
-
-        f32 t = (h - nodes_dist[node_idx]) / (nodes_dist[node_idx + 1] - nodes_dist[node_idx]);
-        return lerp(nodes_pos[node_idx], nodes_pos[node_idx + 1], t);
-    }
-};
 struct TreeParams
 {
     v3 base = v3();
@@ -1516,13 +1623,20 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
     assert(is_power_of_2(noise_data_depth));
 
 
-    Tree trees[32];
-    for(u32 i = 0; i < ARRAY_COUNT(trees); i++)
+    static constexpr u32 NUM_TREES = 64;
+    Tree trees[NUM_TREES];
+    const u32 num_trees = NUM_TREES;
+    f32 tree_pos[NUM_TREES*3];
+    for(u32 i = 0; i < NUM_TREES; i++)
     {
         make_tree(trees[i], v3());
+        tree_pos[NUM_TREES*0 + i] = random_range(-128.0f, 128.0f);
+        //tree_pos[NUM_TREES*1 + i] = random_range(-32.0f, 32.0f);
+        tree_pos[NUM_TREES*1 + i] = random_range(0.0f, 2.0f);
+        tree_pos[NUM_TREES*2 + i] = random_range(-128.0f, 128.0f);
     }
 
-    TreeBuffer* tree_buffers[ARRAY_COUNT(trees)];
+    TreeBuffer* tree_buffers[NUM_TREES];
     for(u32 i = 0; i < ARRAY_COUNT(tree_buffers); i++)
     {
         // TODO(mfritz) No dynamic allocation.
@@ -1600,7 +1714,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 static f32 last_mouse_x, last_mouse_y;
                 f64 xpos, ypos;
                 glfwGetCursorPos(G_graphics_state->window, &xpos, &ypos);
-                if(glfwGetKey(G_graphics_state->window, GLFW_KEY_SPACE))
+                if(glfwGetKey(G_graphics_state->window, GLFW_KEY_ENTER))
                 {
                     v2 mouse_delta = v2((f32)xpos - last_mouse_x, (f32)ypos - last_mouse_y);
                     current_cam->rot_y -= mouse_delta.x * TIME_STEP * 0.2f;
@@ -1614,10 +1728,12 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 v3 cam_k = v3(cam_xform[2][0], cam_xform[2][1], cam_xform[2][2]);
 
                 v3 camera_vel = v3();
-                camera_vel += -cam_i * glfwGetKey(G_graphics_state->window, GLFW_KEY_A);
-                camera_vel +=  cam_i * glfwGetKey(G_graphics_state->window, GLFW_KEY_D);
-                camera_vel +=  cam_k * glfwGetKey(G_graphics_state->window, GLFW_KEY_S);
-                camera_vel += -cam_k * glfwGetKey(G_graphics_state->window, GLFW_KEY_W);
+                camera_vel += -cam_i * glfwGetKey(G_graphics_state->window, GLFW_KEY_S);
+                camera_vel +=  cam_i * glfwGetKey(G_graphics_state->window, GLFW_KEY_F);
+                camera_vel +=  cam_k * glfwGetKey(G_graphics_state->window, GLFW_KEY_D);
+                camera_vel += -cam_k * glfwGetKey(G_graphics_state->window, GLFW_KEY_E);
+                static f32 camera_speed = 100.0f;
+                ImGui::DragFloat("camera speed", &camera_speed);
                 current_cam->pos += normalize(camera_vel) * TIME_STEP * camera_speed;
 
             }
@@ -1647,7 +1763,10 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                     last_camera_chunk_z,
                     camera_chunk_x,
                     camera_chunk_y,
-                    camera_chunk_z
+                    camera_chunk_z,
+                    num_trees,
+                    tree_buffers,
+                    tree_pos
                 );
 
                 last_camera_chunk_x = camera_chunk_x;
@@ -1675,6 +1794,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 }
                 packed_voxels->num = num_voxels;
 
+#if 0
                 {
                     TIME_SCOPE("copy trees");
                     // Tree
@@ -1700,6 +1820,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                         packed_voxels->num += num;
                     }
                 }
+#endif
 
                 // TODO(mfritz) Pad to nearest next 8 voxels with 0xFFFFFFFF
                 camera_cull(
