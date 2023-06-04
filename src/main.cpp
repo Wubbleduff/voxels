@@ -40,6 +40,29 @@ static struct GraphicsState *G_graphics_state = nullptr;
 static struct InputState *G_input_state = nullptr;
 static FILE* G_log_file = nullptr;
 
+#define ASSERT(exp, msg)                        \
+    {                                           \
+        if(!(exp))                              \
+        {                                       \
+            fprintf(G_log_file, "%s:%i @ %s @ %s", __FILE__, __LINE__, #exp, msg); \
+            fflush(G_log_file);                 \
+            DebugBreak();                       \
+        }                                       \
+    }
+
+struct StringBuf
+{
+    static constexpr u32 SIZE = 32;
+    char s[SIZE];
+};
+static StringBuf make_string_buf(const char* s)
+{
+    ASSERT(strlen(s) < 32, "String too long for StringBuf");
+    StringBuf r;
+    strncpy(r.s, s, StringBuf::SIZE);
+    return r;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Graphics
 ////////////////////////////////////////////////////////////////////////////////
@@ -77,6 +100,11 @@ struct GraphicsState
     GLuint debug_line_vao;
     GLuint debug_line_vbo;
 
+    u32 imgui_debug_texture_width;
+    u32 imgui_debug_texture_height;
+    GLuint imgui_debug_texture;
+    u32* imgui_debug_texture_data;
+
     Camera cam;
     Camera debug_cam;
     bool use_debug_cam;
@@ -94,9 +122,55 @@ struct InputState
     s32 mouse_screen_y;
 };
 
+// TODO speed
+mat4 view_m_world(const Camera* cam)
+{
+    mat4 y_rot = make_y_axis_rotation_matrix(-cam->rot_y);
+    mat4 x_rot = make_x_axis_rotation_matrix(-cam->rot_x);
+    mat4 result = x_rot * y_rot * make_translation_matrix(-cam->pos);
+    return result;
+}
+
+mat4 clip_m_view(const Camera* cam)
+{
+    static f32 n = cam->near_plane_dist;
+    static f32 f = cam->view_dist;
+    f32 fov = deg_to_rad(cam->vfov);
+    f32 r = -(f + n) / (f - n);
+    f32 s = -(2.0f * n * f) / (f - n);
+    mat4 result =
+    {
+         (f32)(1.0f / (tanf(fov / 2.0f) * cam->ar)) , 0.0f, 0.0f, 0.0f,
+         0.0f, 1.0f / tanf(fov / 2.0f), 0.0f, 0.0f,
+         0.0f, 0.0f, r, s,
+         0.0f, 0.0f, -1.0f, 0.0f
+    };
+    return result;
+}
+
+void glfw_error_fn(s32 error, const char *message)
+{
+    //printf("%i: %s\n", error, message);
+    assert(false);
+}
+
+static void check_gl_errors(const char *desc)
+{
+    GLint error = glGetError();
+    if(error)
+    {
+        glfw_error_fn(error, desc);
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Voxel data
 ////////////////////////////////////////////////////////////////////////////////
+
+// Indicates voxel is empty for dense arrays.
+// Voxel IDs are valid for values [0, EMPTY_VOXEL)
+static constexpr u32 EMPTY_VOXEL = u32(-1);
+
 struct Chunk
 {
     u32 num;
@@ -114,6 +188,24 @@ struct PackedVoxels
 ////////////////////////////////////////////////////////////////////////////////
 // Profiling
 ////////////////////////////////////////////////////////////////////////////////
+
+struct ProfileData
+{
+    static constexpr u32 MAX_TIMES = 64;
+    u32 num;
+    s64 time[MAX_TIMES];
+    StringBuf name[MAX_TIMES];
+};
+static ProfileData G_profile_data;
+
+void record_profile_data(const char* name, s64 t)
+{
+    u32& num = G_profile_data.num;
+    G_profile_data.time[num] = t;
+    G_profile_data.name[num] = make_string_buf(name);
+    num++;
+}
+
 struct Timer
 {
     Timer() { QueryPerformanceCounter(&start); }
@@ -148,17 +240,14 @@ struct ScopeTimer
         LARGE_INTEGER ms;
         ms.QuadPart = (end.QuadPart - start.QuadPart) * 1000000;
         ms.QuadPart /= freq.QuadPart;
-        ImGui::Text("TIME - %s: %ius", m_name, ms.QuadPart);
+
+        //ImGui::Text("TIME - %s: %ius", m_name, ms.QuadPart);
+        record_profile_data(m_name, ms.QuadPart);
     }
     const char *m_name;
     LARGE_INTEGER start;
 };
 #define TIME_SCOPE(name) ScopeTimer _time_scope = ScopeTimer(name)
-
-struct ThreadState
-{
-    Chunk* gen_chunk_scratch = nullptr;
-};
 
 ////////////////////////////////////////////////////////////////////////////////
 // EXPERIMENTAL
@@ -179,16 +268,6 @@ struct CubeIterator
         it.x = it.idx % (N) )                                    
     
 
-#define ASSERT(exp, msg)                        \
-    {                                           \
-        if(!(exp))                              \
-        {                                       \
-            fprintf(G_log_file, "%s:%i @ %s @ %s", __FILE__, __LINE__, #exp, msg); \
-            fflush(G_log_file);                 \
-            DebugBreak();                       \
-        }                                       \
-    }
-
 #define KB(n) ((n) / 1024)
 #define MB(n) ((n) / 1024 / 1024)
 
@@ -196,6 +275,10 @@ struct CubeIterator
 ////////////////////////////////////////////////////////////////////////////////
 // Job System
 ////////////////////////////////////////////////////////////////////////////////
+struct ThreadState
+{
+    Chunk* gen_chunk_scratch = nullptr;
+};
 enum class JobId : u64
 {
     load_terrain,
@@ -286,33 +369,118 @@ void wait_for_job(const JobId job_id)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Code
+// Debug draw
 ////////////////////////////////////////////////////////////////////////////////
 
-// TODO speed
-mat4 view_m_world(const Camera* cam)
+static void draw_line(v3 a, v3 b, v3 c)
 {
-    mat4 y_rot = make_y_axis_rotation_matrix(-cam->rot_y);
-    mat4 x_rot = make_x_axis_rotation_matrix(-cam->rot_x);
-    mat4 result = x_rot * y_rot * make_translation_matrix(-cam->pos);
-    return result;
-}
-mat4 clip_m_view(const Camera* cam)
-{
-    static f32 n = cam->near_plane_dist;
-    static f32 f = cam->view_dist;
-    f32 fov = deg_to_rad(cam->vfov);
-    f32 r = -(f + n) / (f - n);
-    f32 s = -(2.0f * n * f) / (f - n);
-    mat4 result =
+    glUseProgram(G_graphics_state->debug_line_shader_program);
+    check_gl_errors("use program");
+
+    Camera *current_cam;
+    if(G_graphics_state->use_debug_cam) current_cam = &G_graphics_state->debug_cam;
+    else current_cam = &G_graphics_state->cam;
+
+    mat4 m = clip_m_view(current_cam) * view_m_world(current_cam);
+    GLint loc = glGetUniformLocation(G_graphics_state->debug_line_shader_program, "mvp");
+    glUniformMatrix4fv(loc, 1, true, &(m[0][0]));
+    if(loc == -1) assert(false);
+
+    loc = glGetUniformLocation(G_graphics_state->debug_line_shader_program, "color");
+    glUniform3f(loc, c.r, c.g, c.b);
+    if(loc == -1) assert(false);
+
+    glBindVertexArray(G_graphics_state->debug_line_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, G_graphics_state->debug_line_vbo);
+
+    f32 v[] =
     {
-         (f32)(1.0f / (tanf(fov / 2.0f) * cam->ar)) , 0.0f, 0.0f, 0.0f,
-         0.0f, 1.0f / tanf(fov / 2.0f), 0.0f, 0.0f,
-         0.0f, 0.0f, r, s,
-         0.0f, 0.0f, -1.0f, 0.0f
+        a.x, a.y, a.z,
+        b.x, b.y, b.z
     };
-    return result;
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(v), v);
+
+    glDrawArrays(GL_LINES, 0, 2);
+    check_gl_errors("draw");
 }
+
+static void debug_draw_frustum()
+{
+    TIME_SCOPE("debug draw frustum");
+
+    draw_line(v3(), v3(1.0f, 0.0f, 0.0f), v3(1.0f, 0.0f, 0.0f));
+    draw_line(v3(), v3(0.0f, 1.0f, 0.0f), v3(0.0f, 1.0f, 0.0f));
+    draw_line(v3(), v3(0.0f, 0.0f, 1.0f), v3(0.0f, 0.0f, 1.0f));
+
+    mat4 cam_xform = view_m_world(&G_graphics_state->cam);
+    v3 cam_p = G_graphics_state->cam.pos;
+    v3 cam_i = v3(cam_xform[0][0], cam_xform[0][1], cam_xform[0][2]);
+    v3 cam_j = v3(cam_xform[1][0], cam_xform[1][1], cam_xform[1][2]);
+    v3 cam_k = v3(cam_xform[2][0], cam_xform[2][1], cam_xform[2][2]);
+    draw_line(cam_p, cam_p + cam_i, v3(1.0f, 0.0f, 0.0f));
+    draw_line(cam_p, cam_p + cam_j, v3(0.0f, 1.0f, 0.0f));
+    draw_line(cam_p, cam_p + cam_k, v3(0.0f, 0.0f, 1.0f));
+
+    f32 tan_fov = tan(G_graphics_state->cam.vfov*0.5f);
+    f32 near_hh = tan_fov * G_graphics_state->cam.near_plane_dist;
+    f32 near_hw = near_hh * G_graphics_state->cam.ar;
+    f32 far_hh = tan_fov * G_graphics_state->cam.view_dist;
+    f32 far_hw = far_hh * G_graphics_state->cam.ar;
+
+    v3 p_near = cam_p + -cam_k * G_graphics_state->cam.near_plane_dist;
+    v3 p_far = cam_p + -cam_k * G_graphics_state->cam.view_dist;
+
+    v3 frustum_v[] =
+    {
+        p_near - cam_i*near_hw - cam_j*near_hh, // bl 
+        p_near + cam_i*near_hw - cam_j*near_hh, // br 
+        p_near + cam_i*near_hw + cam_j*near_hh, // tr 
+        p_near - cam_i*near_hw + cam_j*near_hh, // tl 
+
+        p_far - cam_i*far_hw - cam_j*far_hh, // bl 
+        p_far + cam_i*far_hw - cam_j*far_hh, // br 
+        p_far + cam_i*far_hw + cam_j*far_hh, // tr 
+        p_far - cam_i*far_hw + cam_j*far_hh, // tl 
+    };
+
+    draw_line(frustum_v[0], frustum_v[1], v3(1.0f, 0.0f, 0.0f));
+    draw_line(frustum_v[1], frustum_v[2], v3(1.0f, 0.0f, 0.0f));
+    draw_line(frustum_v[2], frustum_v[3], v3(1.0f, 0.0f, 0.0f));
+    draw_line(frustum_v[3], frustum_v[0], v3(1.0f, 0.0f, 0.0f));
+
+    draw_line(frustum_v[4], frustum_v[5], v3(0.0f, 1.0f, 0.0f));
+    draw_line(frustum_v[5], frustum_v[6], v3(0.0f, 1.0f, 0.0f));
+    draw_line(frustum_v[6], frustum_v[7], v3(0.0f, 1.0f, 0.0f));
+    draw_line(frustum_v[7], frustum_v[4], v3(0.0f, 1.0f, 0.0f));
+
+    // Right
+    draw_line(frustum_v[1], frustum_v[5], v3(0.0f, 0.0f, 1.0f));
+    draw_line(frustum_v[5], frustum_v[6], v3(0.0f, 0.0f, 1.0f));
+    draw_line(frustum_v[6], frustum_v[2], v3(0.0f, 0.0f, 1.0f));
+    draw_line(frustum_v[2], frustum_v[1], v3(0.0f, 0.0f, 1.0f));
+
+    // Top
+    draw_line(frustum_v[2], frustum_v[6], v3(1.0f, 0.0f, 1.0f));
+    draw_line(frustum_v[6], frustum_v[7], v3(1.0f, 0.0f, 1.0f));
+    draw_line(frustum_v[7], frustum_v[3], v3(1.0f, 0.0f, 1.0f));
+    draw_line(frustum_v[3], frustum_v[2], v3(1.0f, 0.0f, 1.0f));
+
+    // Left
+    draw_line(frustum_v[3], frustum_v[7], v3(0.0f, 1.0f, 1.0f));
+    draw_line(frustum_v[7], frustum_v[4], v3(0.0f, 1.0f, 1.0f));
+    draw_line(frustum_v[4], frustum_v[0], v3(0.0f, 1.0f, 1.0f));
+    draw_line(frustum_v[0], frustum_v[3], v3(0.0f, 1.0f, 1.0f));
+
+    // Bottom
+    draw_line(frustum_v[0], frustum_v[4], v3(1.0f, 1.0f, 0.0f));
+    draw_line(frustum_v[4], frustum_v[5], v3(1.0f, 1.0f, 0.0f));
+    draw_line(frustum_v[5], frustum_v[1], v3(1.0f, 1.0f, 0.0f));
+    draw_line(frustum_v[1], frustum_v[0], v3(1.0f, 1.0f, 0.0f));
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Code
+////////////////////////////////////////////////////////////////////////////////
 
 // Outputs plan normals for right, top, left, bottom, near, far in that order.
 static void get_frustum_planes(v3* out_normals, v3* out_points, const Camera* cam)
@@ -471,21 +639,6 @@ void camera_cull(
     *out_num_voxels = num_voxels;
 }
 
-void glfw_error_fn(s32 error, const char *message)
-{
-    //printf("%i: %s\n", error, message);
-    assert(false);
-}
-
-static void check_gl_errors(const char *desc)
-{
-    GLint error = glGetError();
-    if(error)
-    {
-        glfw_error_fn(error, desc);
-    }
-}
-
 static char *read_file_into_string(const char *path)
 {
     FILE *file = fopen(path, "rb");
@@ -498,12 +651,10 @@ static char *read_file_into_string(const char *path)
     buffer[size] = '\0';
     return buffer;
 }
-
 static bool is_newline(char *c)
 {
     return (c[0] == '\n' || c[0] == '\r' || (c[0] == '\r' && c[1] == '\n'));
 }
-
 static bool read_shader_file(const char *path, char **vert_source, char **geom_source, char **frag_source)
 {
     *vert_source = nullptr;
@@ -661,38 +812,6 @@ static void reshape(GLFWwindow *window, s32 width, s32 height)
     G_graphics_state->debug_cam.ar = (f32)width / height;
 }
 
-static void draw_line(v3 a, v3 b, v3 c)
-{
-    glUseProgram(G_graphics_state->debug_line_shader_program);
-    check_gl_errors("use program");
-
-    Camera *current_cam;
-    if(G_graphics_state->use_debug_cam) current_cam = &G_graphics_state->debug_cam;
-    else current_cam = &G_graphics_state->cam;
-
-    mat4 m = clip_m_view(current_cam) * view_m_world(current_cam);
-    GLint loc = glGetUniformLocation(G_graphics_state->debug_line_shader_program, "mvp");
-    glUniformMatrix4fv(loc, 1, true, &(m[0][0]));
-    if(loc == -1) assert(false);
-
-    loc = glGetUniformLocation(G_graphics_state->debug_line_shader_program, "color");
-    glUniform3f(loc, c.r, c.g, c.b);
-    if(loc == -1) assert(false);
-
-    glBindVertexArray(G_graphics_state->debug_line_vao);
-    glBindBuffer(GL_ARRAY_BUFFER, G_graphics_state->debug_line_vbo);
-
-    f32 v[] =
-    {
-        a.x, a.y, a.z,
-        b.x, b.y, b.z
-    };
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(v), v);
-
-    glDrawArrays(GL_LINES, 0, 2);
-    check_gl_errors("draw");
-}
-
 f32 perlin(f32 x, f32 y, f32 z)
 {
     s32 xx = s32(x);
@@ -839,36 +958,36 @@ bool maybe_gen_new_terrain(
         new_chunks[it.idx] = nullptr;
     }
 
-    s32 chunk_dx = new_chunk_x - old_chunk_x;
-    s32 chunk_dy = new_chunk_y - old_chunk_y;
-    s32 chunk_dz = new_chunk_z - old_chunk_z;
-    s32 old_chunks_range_x_min = old_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
-    s32 old_chunks_range_x_max = old_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
-    s32 old_chunks_range_y_min = old_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
-    s32 old_chunks_range_y_max = old_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
-    s32 old_chunks_range_z_min = old_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
-    s32 old_chunks_range_z_max = old_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
-    s32 new_chunks_range_x_min = new_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
-    s32 new_chunks_range_x_max = new_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
-    s32 new_chunks_range_y_min = new_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
-    s32 new_chunks_range_y_max = new_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
-    s32 new_chunks_range_z_min = new_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
-    s32 new_chunks_range_z_max = new_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
+    const s32 chunk_dx = new_chunk_x - old_chunk_x;
+    const s32 chunk_dy = new_chunk_y - old_chunk_y;
+    const s32 chunk_dz = new_chunk_z - old_chunk_z;
+    const s32 old_chunks_range_x_min = old_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
+    const s32 old_chunks_range_x_max = old_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
+    const s32 old_chunks_range_y_min = old_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
+    const s32 old_chunks_range_y_max = old_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
+    const s32 old_chunks_range_z_min = old_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
+    const s32 old_chunks_range_z_max = old_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
+    const s32 new_chunks_range_x_min = new_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
+    const s32 new_chunks_range_x_max = new_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
+    const s32 new_chunks_range_y_min = new_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
+    const s32 new_chunks_range_y_max = new_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
+    const s32 new_chunks_range_z_min = new_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
+    const s32 new_chunks_range_z_max = new_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
 
-    s32 overlap_x_min = chunk_dx > 0 ? new_chunks_range_x_min : old_chunks_range_x_min;
-    s32 overlap_x_max = chunk_dx > 0 ? old_chunks_range_x_max : new_chunks_range_x_max;
-    s32 overlap_y_min = chunk_dy > 0 ? new_chunks_range_y_min : old_chunks_range_y_min;
-    s32 overlap_y_max = chunk_dy > 0 ? old_chunks_range_y_max : new_chunks_range_y_max;
-    s32 overlap_z_min = chunk_dz > 0 ? new_chunks_range_z_min : old_chunks_range_z_min;
-    s32 overlap_z_max = chunk_dz > 0 ? old_chunks_range_z_max : new_chunks_range_z_max;
+    const s32 overlap_x_min = chunk_dx > 0 ? new_chunks_range_x_min : old_chunks_range_x_min;
+    const s32 overlap_x_max = chunk_dx > 0 ? old_chunks_range_x_max : new_chunks_range_x_max;
+    const s32 overlap_y_min = chunk_dy > 0 ? new_chunks_range_y_min : old_chunks_range_y_min;
+    const s32 overlap_y_max = chunk_dy > 0 ? old_chunks_range_y_max : new_chunks_range_y_max;
+    const s32 overlap_z_min = chunk_dz > 0 ? new_chunks_range_z_min : old_chunks_range_z_min;
+    const s32 overlap_z_max = chunk_dz > 0 ? old_chunks_range_z_max : new_chunks_range_z_max;
 
     // Dealloc chunks we've moved away from.
     ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
     {
         // Iterating through old chunks
-        s32 old_chunk_x = old_chunks_range_x_min + it.x;
-        s32 old_chunk_y = old_chunks_range_y_min + it.y;
-        s32 old_chunk_z = old_chunks_range_z_min + it.z;
+        const s32 old_chunk_x = old_chunks_range_x_min + it.x;
+        const s32 old_chunk_y = old_chunks_range_y_min + it.y;
+        const s32 old_chunk_z = old_chunks_range_z_min + it.z;
         if(old_chunk_x >= overlap_x_min && old_chunk_x < overlap_x_max && 
            old_chunk_y >= overlap_y_min && old_chunk_y < overlap_y_max && 
            old_chunk_z >= overlap_z_min && old_chunk_z < overlap_z_max)
@@ -913,6 +1032,9 @@ bool maybe_gen_new_terrain(
         }
     }
     wait_for_job(JobId::load_terrain);
+
+    // Copy in other objects in the world that occupy this chunk.
+    // TODO
 
     return true;
 }
@@ -968,14 +1090,13 @@ void voxel_line(
     *out_num = num;
 };
 
-// Dense voxel array.
+// Sparse voxel array.
 struct TreeBuffer
 {
-    static constexpr u32 MAX_DIM = 96;
-    s32 x;
-    s32 y;
-    s32 z;
-    u32 voxel_id[MAX_DIM*MAX_DIM*MAX_DIM];
+    static constexpr u32 CAP = 32768;
+    u32 num;
+    s32 pos[CAP*3]; // xxx yyy zzz
+    u32 voxel_id[CAP];
 };
 struct Tree
 {
@@ -1097,7 +1218,6 @@ void leaf_ball(s32* out_pos, u32* out_voxel_id, u32* out_num, const u32 pos_stri
         s32 py = it.y - radius + floor(leaf_center.y);
         s32 pz = it.z - radius + floor(leaf_center.z);
         v3 p = v3(px, py, pz);
-
         f32 r = radius - perlin_01(p.x * 20.0f, p.y * 20.0f, p.z * 20.0f) * (f32(radius) * 0.5f);
         if(abs(length(p - leaf_center) - r) < 1.5f)
         {
@@ -1111,28 +1231,30 @@ void leaf_ball(s32* out_pos, u32* out_voxel_id, u32* out_num, const u32 pos_stri
     *out_num = num;
 }
 
-// Rasterize a tree description (series of line segments) to a sparse voxel array. Appends to existing voxels.
 void rasterize_tree(s32* out_pos, u32* out_voxel_id, u32* out_num, const u32 pos_stride, const Tree& tree)
 {
     for(u32 i = 0; i < tree.num_nodes - 1; i++)
     {
         voxel_line(out_pos, out_voxel_id, out_num, pos_stride, tree.nodes_pos[i], tree.nodes_pos[i+1], 2.0f, 2.0f);
+        ASSERT(*out_num < TreeBuffer::CAP, "Rasterize tree too big");
     }
 
     leaf_ball(out_pos, out_voxel_id, out_num, pos_stride, tree.nodes_pos[tree.num_nodes - 1], 22);
+    ASSERT(*out_num < TreeBuffer::CAP, "Rasterize tree too big");
 
     for(u32 b = 0; b < tree.num_branches; b++)
     {
         Tree *branch = tree.branches[b];
         for(u32 i = 0; i < branch->num_nodes - 1; i++)
         {
-            //draw_line(branch->nodes_pos[i], branch->nodes_pos[i+1], v3(0.0f, 1.0f, 0.0f));
             voxel_line(out_pos, out_voxel_id, out_num, pos_stride, branch->nodes_pos[i], branch->nodes_pos[i+1], 1.0f, 1.0f);
+            ASSERT(*out_num < TreeBuffer::CAP, "Rasterize tree too big");
         }
-
         leaf_ball(out_pos, out_voxel_id, out_num, pos_stride, branch->nodes_pos[branch->num_nodes - 1], 14);
+        ASSERT(*out_num < TreeBuffer::CAP, "Rasterize tree too big");
     }
 }
+
 void debug_draw_tree(const Tree& tree)
 {
     for(u32 i = 0; i < tree.num_nodes - 1; i++)
@@ -1339,6 +1461,27 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 fclose(file);
             }
         }
+
+        glGenTextures(1, &G_graphics_state->imgui_debug_texture);
+        glBindTexture(GL_TEXTURE_2D, G_graphics_state->imgui_debug_texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        
+        G_graphics_state->imgui_debug_texture_width = 512;
+        G_graphics_state->imgui_debug_texture_height = 512;
+        G_graphics_state->imgui_debug_texture_data = new u32[G_graphics_state->imgui_debug_texture_width * G_graphics_state->imgui_debug_texture_height]{};
+        glTexImage2D(
+                GL_TEXTURE_2D,
+                0,
+                GL_RGBA,
+                G_graphics_state->imgui_debug_texture_width,
+                G_graphics_state->imgui_debug_texture_height,
+                0,
+                GL_RGBA,
+                GL_UNSIGNED_BYTE,
+                G_graphics_state->imgui_debug_texture_data);
     }
 
     // ImGui
@@ -1373,17 +1516,20 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
     assert(is_power_of_2(noise_data_depth));
 
 
-    Tree trees[5];
-    make_tree(trees[0], v3());
-    make_tree(trees[1], v3( 50.0f, 10.0f, 0.0f));
-    make_tree(trees[2], v3(-50.0f, 10.0f, 0.0f));
-    make_tree(trees[3], v3(0.0f, 10.0f,  50.0f));
-    make_tree(trees[4], v3(0.0f, 10.0f, -50.0f));
+    Tree trees[32];
+    for(u32 i = 0; i < ARRAY_COUNT(trees); i++)
+    {
+        make_tree(trees[i], v3());
+    }
 
-    // TODO(mfritz) Maybe these should live elsewhere
-    const u32 tree_buf_size = 100 * 1024;
-    s32* tree_pos = new s32[tree_buf_size * 3];
-    u32* tree_voxel_id = new u32[tree_buf_size];
+    TreeBuffer* tree_buffers[ARRAY_COUNT(trees)];
+    for(u32 i = 0; i < ARRAY_COUNT(tree_buffers); i++)
+    {
+        // TODO(mfritz) No dynamic allocation.
+        tree_buffers[i] = new TreeBuffer;
+        tree_buffers[i]->num = 0;
+        rasterize_tree(tree_buffers[i]->pos, tree_buffers[i]->voxel_id, &tree_buffers[i]->num, TreeBuffer::CAP, trees[i]);
+    }
 
     f32 frame_timer = 0.0f;
     f32 last_time = 0.0f;
@@ -1410,12 +1556,14 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 ImGui::NewFrame();
             }
 
+            const ImGuiTabBarFlags imgui_tab_bar_flags = ImGuiTabBarFlags_None;
+            const bool imgui_tab_bar = ImGui::BeginTabBar("MyTabBar", imgui_tab_bar_flags);
+
             running = !glfwGetKey(G_graphics_state->window, GLFW_KEY_ESCAPE) && !glfwWindowShouldClose(G_graphics_state->window);
 
+            static f32 camera_speed = 100.0f;
+            if(imgui_tab_bar && ImGui::BeginTabItem("Debug Camera"))
             {
-                TIME_SCOPE("move camera");
-                
-                //ImGui::Text("camera pos (%f, %f, %f)", G_graphics_state->cam.pos.x, G_graphics_state->cam.pos.y, G_graphics_state->cam.pos.z);
                 ImGui::InputFloat("camera x", &G_graphics_state->cam.pos.x, 1.0f, 10.0f, 3, ImGuiInputTextFlags_EnterReturnsTrue);
                 ImGui::InputFloat("camera y", &G_graphics_state->cam.pos.y, 1.0f, 10.0f, 3, ImGuiInputTextFlags_EnterReturnsTrue);
                 ImGui::InputFloat("camera z", &G_graphics_state->cam.pos.z, 1.0f, 10.0f, 3, ImGuiInputTextFlags_EnterReturnsTrue);
@@ -1438,6 +1586,12 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                     G_graphics_state->cam.pos.y += d_move[1];
                     G_graphics_state->cam.pos.z += d_move[2];
                 }
+                ImGui::DragFloat("camera speed", &camera_speed);
+                ImGui::EndTabItem();
+            }
+
+            {
+                TIME_SCOPE("move camera");
 
                 Camera *current_cam;
                 if(G_graphics_state->use_debug_cam) current_cam = &G_graphics_state->debug_cam;
@@ -1464,9 +1618,8 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 camera_vel +=  cam_i * glfwGetKey(G_graphics_state->window, GLFW_KEY_D);
                 camera_vel +=  cam_k * glfwGetKey(G_graphics_state->window, GLFW_KEY_S);
                 camera_vel += -cam_k * glfwGetKey(G_graphics_state->window, GLFW_KEY_W);
-                static f32 camera_speed = 100.0f;
-                ImGui::DragFloat("camera speed", &camera_speed);
                 current_cam->pos += normalize(camera_vel) * TIME_STEP * camera_speed;
+
             }
 
             s32 camera_x = (s32)G_graphics_state->cam.pos.x;
@@ -1487,7 +1640,6 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 static s32 last_camera_chunk_x = 0x7FFFFFFF;
                 static s32 last_camera_chunk_y = 0x7FFFFFFF;
                 static s32 last_camera_chunk_z = 0x7FFFFFFF;
-                static s64 last_gen_time = 0;
                 bool did_generation = maybe_gen_new_terrain(
                     chunks,
                     last_camera_chunk_x,
@@ -1501,14 +1653,12 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 last_camera_chunk_x = camera_chunk_x;
                 last_camera_chunk_y = camera_chunk_y;
                 last_camera_chunk_z = camera_chunk_z;
-                ImGui::Text("Last gen time: %ims", last_gen_time);
             }
 #endif
 
             // Prep render data
             {
                 TIME_SCOPE("Prep render data");
-
 
                 u32 num_voxels = 0;
                 for(u32 chunk_idx = 0; chunk_idx < MAX_CHUNKS; chunk_idx++)
@@ -1526,24 +1676,30 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 packed_voxels->num = num_voxels;
 
                 {
-                    TIME_SCOPE("rasterize trees");
+                    TIME_SCOPE("copy trees");
                     // Tree
-                    for(u32 tree_idx = 0; tree_idx < ARRAY_COUNT(trees); tree_idx++)
+                    for(u32 tree_idx = 0; tree_idx < ARRAY_COUNT(tree_buffers); tree_idx++)
                     {
-                        debug_draw_tree(trees[tree_idx]);
+                        //debug_draw_tree(trees[tree_idx]);
 
-                        u32 num = 0;
-                        rasterize_tree(tree_pos, tree_voxel_id, &num, tree_buf_size, trees[tree_idx]);
+                        TreeBuffer* tree_buf = tree_buffers[tree_idx];
+                        const u32 num = tree_buf->num;
+                        memcpy(packed_voxels->pos + MAX_VOXELS*0 + packed_voxels->num, tree_buf->pos + TreeBuffer::CAP*0, sizeof(tree_buf->pos[0]) * num);
+                        memcpy(packed_voxels->pos + MAX_VOXELS*1 + packed_voxels->num, tree_buf->pos + TreeBuffer::CAP*1, sizeof(tree_buf->pos[0]) * num);
+                        memcpy(packed_voxels->pos + MAX_VOXELS*2 + packed_voxels->num, tree_buf->pos + TreeBuffer::CAP*2, sizeof(tree_buf->pos[0]) * num);
+                        memcpy(packed_voxels->voxel_id + packed_voxels->num, tree_buf->voxel_id, sizeof(tree_buf->voxel_id[0]) * num);
 
-                        memcpy(packed_voxels->pos + MAX_VOXELS*0 + packed_voxels->num, tree_pos + tree_buf_size*0, sizeof(tree_pos[0]) * num);
-                        memcpy(packed_voxels->pos + MAX_VOXELS*1 + packed_voxels->num, tree_pos + tree_buf_size*1, sizeof(tree_pos[0]) * num);
-                        memcpy(packed_voxels->pos + MAX_VOXELS*2 + packed_voxels->num, tree_pos + tree_buf_size*2, sizeof(tree_pos[0]) * num);
-                        memcpy(packed_voxels->voxel_id + packed_voxels->num, tree_voxel_id, sizeof(tree_voxel_id[0]) * num);
+                        s32 off_x = (tree_idx % 8) * 64;
+                        s32 off_z = (tree_idx / 8) * 64;
+                        for(u32 i = 0; i < num; i++)
+                        {
+                            packed_voxels->pos[packed_voxels->num + MAX_VOXELS*0 + i] += off_x;
+                            packed_voxels->pos[packed_voxels->num + MAX_VOXELS*2 + i] += off_z;
+                        }
+
                         packed_voxels->num += num;
                     }
                 }
-
-                ImGui::Text("prep num_voxels %i", packed_voxels->num);
 
                 // TODO(mfritz) Pad to nearest next 8 voxels with 0xFFFFFFFF
                 camera_cull(
@@ -1557,40 +1713,11 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 );
             }
 
-            // Stats
-            {
-                ImGui::Separator();
-                ImGui::Text("Stats");
-                ImGui::Text("View dist: %i", VIEW_DIST);
-                ImGui::Text("Max chunks: %i", MAX_CHUNKS);
-                ImGui::Text("Chunks table mem: %iKB", KB(MAX_CHUNKS * sizeof(Chunk*)));
-                u32 num_populated_chunks = 0;
-                u32 avg_voxels_per_populated_chunk = 0;
-                u32 max_voxels_per_chunk = 0;
-                u32 voxels_bytes = 0;
-                for(u32 i = 0; i < MAX_CHUNKS; i++)
-                {
-                    if(chunks[i])
-                    {
-                        num_populated_chunks += chunks[i]->num > 0;
-                        avg_voxels_per_populated_chunk += chunks[i]->num;
-                        max_voxels_per_chunk = max(max_voxels_per_chunk, chunks[i]->num);
-                        voxels_bytes += sizeof(chunks[i]->num) + chunks[i]->num * sizeof(chunks[i]->voxels[0]);
-                    }
-                }
-                ImGui::Text("# populated chunks: %i", num_populated_chunks);
-                ImGui::Text("# avg voxels per populated chunk: %i", num_populated_chunks == 0 ? 0 : avg_voxels_per_populated_chunk / num_populated_chunks);
-                ImGui::Text("# max voxels per chunk: %i", max_voxels_per_chunk);
-                ImGui::Text("Voxels mem: %i KB", KB(voxels_bytes));
-                ImGui::Separator();
-            }
-
-
             // Draw
+            u32 num_batches_drawn = 0;
             {
                 TIME_SCOPE("draw");
 
-                u32 num_batches_drawn = 0;
                 for(u32 batch_i = 0; batch_i < voxel_render_data->num; batch_i += VoxelRenderData::BATCH_SIZE)
                 {
                     f32 *batch_x = voxel_render_data->pos + MAX_VOXELS*0 + batch_i;
@@ -1639,108 +1766,120 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
 
                     num_batches_drawn++;
                 }
+            }
+
+            // Stats
+            if(imgui_tab_bar && ImGui::BeginTabItem("Stats"))
+            {
+                ImGui::Text("View dist: %i", VIEW_DIST);
+                ImGui::Text("Max chunks: %i", MAX_CHUNKS);
+                ImGui::Text("Chunks table mem: %iKB", KB(MAX_CHUNKS * sizeof(Chunk*)));
+                u32 num_populated_chunks = 0;
+                u32 avg_voxels_per_populated_chunk = 0;
+                u32 max_voxels_per_chunk = 0;
+                u32 voxels_bytes = 0;
+                for(u32 i = 0; i < MAX_CHUNKS; i++)
+                {
+                    if(chunks[i])
+                    {
+                        num_populated_chunks += chunks[i]->num > 0;
+                        avg_voxels_per_populated_chunk += chunks[i]->num;
+                        max_voxels_per_chunk = max(max_voxels_per_chunk, chunks[i]->num);
+                        voxels_bytes += sizeof(chunks[i]->num) + chunks[i]->num * sizeof(chunks[i]->voxels[0]);
+                    }
+                }
+                ImGui::Text("# populated chunks: %i", num_populated_chunks);
+                ImGui::Text("# avg voxels per populated chunk: %i", num_populated_chunks == 0 ? 0 : avg_voxels_per_populated_chunk / num_populated_chunks);
+                ImGui::Text("# max voxels per chunk: %i", max_voxels_per_chunk);
+                ImGui::Text("Voxels mem: %i KB", KB(voxels_bytes));
+
                 ImGui::Text("num_voxels %i", voxel_render_data->num);
                 ImGui::Text("batches %i", num_batches_drawn);
+                ImGui::Text("prep num_voxels %i", packed_voxels->num);
 
+                ImGui::EndTabItem();
             }
 
+            if(imgui_tab_bar && ImGui::BeginTabItem("Debug Draw"))
             {
-                TIME_SCOPE("debug draw frustum");
+                debug_draw_frustum();
 
-                draw_line(v3(), v3(1.0f, 0.0f, 0.0f), v3(1.0f, 0.0f, 0.0f));
-                draw_line(v3(), v3(0.0f, 1.0f, 0.0f), v3(0.0f, 1.0f, 0.0f));
-                draw_line(v3(), v3(0.0f, 0.0f, 1.0f), v3(0.0f, 0.0f, 1.0f));
-
-                mat4 cam_xform = view_m_world(&G_graphics_state->cam);
-                v3 cam_p = G_graphics_state->cam.pos;
-                v3 cam_i = v3(cam_xform[0][0], cam_xform[0][1], cam_xform[0][2]);
-                v3 cam_j = v3(cam_xform[1][0], cam_xform[1][1], cam_xform[1][2]);
-                v3 cam_k = v3(cam_xform[2][0], cam_xform[2][1], cam_xform[2][2]);
-                draw_line(cam_p, cam_p + cam_i, v3(1.0f, 0.0f, 0.0f));
-                draw_line(cam_p, cam_p + cam_j, v3(0.0f, 1.0f, 0.0f));
-                draw_line(cam_p, cam_p + cam_k, v3(0.0f, 0.0f, 1.0f));
-
-                f32 tan_fov = tan(G_graphics_state->cam.vfov*0.5f);
-                f32 near_hh = tan_fov * G_graphics_state->cam.near_plane_dist;
-                f32 near_hw = near_hh * G_graphics_state->cam.ar;
-                f32 far_hh = tan_fov * G_graphics_state->cam.view_dist;
-                f32 far_hw = far_hh * G_graphics_state->cam.ar;
-
-                v3 p_near = cam_p + -cam_k * G_graphics_state->cam.near_plane_dist;
-                v3 p_far = cam_p + -cam_k * G_graphics_state->cam.view_dist;
-
-                v3 frustum_v[] =
+                static bool show_chunk_lines = false;
+                ImGui::Checkbox("show_chunk_lines", &show_chunk_lines);
+                if(show_chunk_lines)
                 {
-                    p_near - cam_i*near_hw - cam_j*near_hh, // bl 
-                    p_near + cam_i*near_hw - cam_j*near_hh, // br 
-                    p_near + cam_i*near_hw + cam_j*near_hh, // tr 
-                    p_near - cam_i*near_hw + cam_j*near_hh, // tl 
+                    TIME_SCOPE("debug draw chunk lines");
 
-                    p_far - cam_i*far_hw - cam_j*far_hh, // bl 
-                    p_far + cam_i*far_hw - cam_j*far_hh, // br 
-                    p_far + cam_i*far_hw + cam_j*far_hh, // tr 
-                    p_far - cam_i*far_hw + cam_j*far_hh, // tl 
-                };
-
-                draw_line(frustum_v[0], frustum_v[1], v3(1.0f, 0.0f, 0.0f));
-                draw_line(frustum_v[1], frustum_v[2], v3(1.0f, 0.0f, 0.0f));
-                draw_line(frustum_v[2], frustum_v[3], v3(1.0f, 0.0f, 0.0f));
-                draw_line(frustum_v[3], frustum_v[0], v3(1.0f, 0.0f, 0.0f));
-
-                draw_line(frustum_v[4], frustum_v[5], v3(0.0f, 1.0f, 0.0f));
-                draw_line(frustum_v[5], frustum_v[6], v3(0.0f, 1.0f, 0.0f));
-                draw_line(frustum_v[6], frustum_v[7], v3(0.0f, 1.0f, 0.0f));
-                draw_line(frustum_v[7], frustum_v[4], v3(0.0f, 1.0f, 0.0f));
-
-                // Right
-                draw_line(frustum_v[1], frustum_v[5], v3(0.0f, 0.0f, 1.0f));
-                draw_line(frustum_v[5], frustum_v[6], v3(0.0f, 0.0f, 1.0f));
-                draw_line(frustum_v[6], frustum_v[2], v3(0.0f, 0.0f, 1.0f));
-                draw_line(frustum_v[2], frustum_v[1], v3(0.0f, 0.0f, 1.0f));
-
-                // Top
-                draw_line(frustum_v[2], frustum_v[6], v3(1.0f, 0.0f, 1.0f));
-                draw_line(frustum_v[6], frustum_v[7], v3(1.0f, 0.0f, 1.0f));
-                draw_line(frustum_v[7], frustum_v[3], v3(1.0f, 0.0f, 1.0f));
-                draw_line(frustum_v[3], frustum_v[2], v3(1.0f, 0.0f, 1.0f));
-
-                // Left
-                draw_line(frustum_v[3], frustum_v[7], v3(0.0f, 1.0f, 1.0f));
-                draw_line(frustum_v[7], frustum_v[4], v3(0.0f, 1.0f, 1.0f));
-                draw_line(frustum_v[4], frustum_v[0], v3(0.0f, 1.0f, 1.0f));
-                draw_line(frustum_v[0], frustum_v[3], v3(0.0f, 1.0f, 1.0f));
-
-                // Bottom
-                draw_line(frustum_v[0], frustum_v[4], v3(1.0f, 1.0f, 0.0f));
-                draw_line(frustum_v[4], frustum_v[5], v3(1.0f, 1.0f, 0.0f));
-                draw_line(frustum_v[5], frustum_v[1], v3(1.0f, 1.0f, 0.0f));
-                draw_line(frustum_v[1], frustum_v[0], v3(1.0f, 1.0f, 0.0f));
-            }
-
-            static bool show_chunk_lines = false;
-            ImGui::Checkbox("show_chunk_lines", &show_chunk_lines);
-            if(show_chunk_lines)
-            {
-                TIME_SCOPE("debug draw chunk lines");
-
-                for(s32 z = region_chunks_bl_z; z < region_chunks_tr_z; ++z)
-                {
-                    for(s32 y = region_chunks_bl_y; y < region_chunks_tr_y; ++y)
+                    for(s32 z = region_chunks_bl_z; z < region_chunks_tr_z; ++z)
                     {
-                        for(s32 x = region_chunks_bl_x; x < region_chunks_tr_x; ++x)
+                        for(s32 y = region_chunks_bl_y; y < region_chunks_tr_y; ++y)
                         {
-                            draw_line(v3(f32(x*CHUNK_DIM),       f32(y*CHUNK_DIM), f32(z*CHUNK_DIM)),
-                                      v3(f32((x + 1)*CHUNK_DIM), f32(y*CHUNK_DIM), f32(z*CHUNK_DIM)),
-                                      v3(1.0f, 0.0f, 0.0f));
-                            draw_line(v3(f32(x*CHUNK_DIM), f32(y*CHUNK_DIM),       f32(z*CHUNK_DIM)),
-                                      v3(f32(x*CHUNK_DIM), f32((y + 1)*CHUNK_DIM), f32(z*CHUNK_DIM)),
-                                      v3(0.0f, 1.0f, 0.0f));
-                            draw_line(v3(f32(x*CHUNK_DIM), f32(y*CHUNK_DIM), f32(z*CHUNK_DIM)),
-                                      v3(f32(x*CHUNK_DIM), f32(y*CHUNK_DIM), f32((z + 1)*CHUNK_DIM)),
-                                      v3(0.0f, 0.0f, 1.0f));
+                            for(s32 x = region_chunks_bl_x; x < region_chunks_tr_x; ++x)
+                            {
+                                draw_line(v3(f32(x*CHUNK_DIM),       f32(y*CHUNK_DIM), f32(z*CHUNK_DIM)),
+                                          v3(f32((x + 1)*CHUNK_DIM), f32(y*CHUNK_DIM), f32(z*CHUNK_DIM)),
+                                          v3(1.0f, 0.0f, 0.0f));
+                                draw_line(v3(f32(x*CHUNK_DIM), f32(y*CHUNK_DIM),       f32(z*CHUNK_DIM)),
+                                          v3(f32(x*CHUNK_DIM), f32((y + 1)*CHUNK_DIM), f32(z*CHUNK_DIM)),
+                                          v3(0.0f, 1.0f, 0.0f));
+                                draw_line(v3(f32(x*CHUNK_DIM), f32(y*CHUNK_DIM), f32(z*CHUNK_DIM)),
+                                          v3(f32(x*CHUNK_DIM), f32(y*CHUNK_DIM), f32((z + 1)*CHUNK_DIM)),
+                                          v3(0.0f, 0.0f, 1.0f));
+                            }
                         }
                     }
                 }
+                ImGui::EndTabItem();
+            }
+
+            // ImGui debug texture
+            if(imgui_tab_bar && ImGui::BeginTabItem("Debug Texture"))
+            {
+                TIME_SCOPE("debug draw texture");
+                static f32 freq = 1.0f;
+                ImGui::DragFloat("freq", &freq, 0.001f);
+                for(s32 z = 0; z < G_graphics_state->imgui_debug_texture_height; z++)
+                {
+                    for(s32 x = 0; x < G_graphics_state->imgui_debug_texture_width; x++)
+                    {
+                        //f32 n = (pnoise(f32(x) * freq, 0, f32(z) * freq) * 0.5f + 0.5f);
+                        f32 n = perlin_01(x * freq, 0, z * freq);
+                        //f32 n = perlin_noise(x * freq, z * freq) * 0.5f + 0.5f;
+                        u32 c = n * 0xFF;
+                        G_graphics_state->imgui_debug_texture_data[z*G_graphics_state->imgui_debug_texture_width + x] =
+                            (c << 0) |
+                            (c << 8) |
+                            (c << 16) |
+                            (c << 24);
+                    }
+                }
+                
+                glBindTexture(GL_TEXTURE_2D, G_graphics_state->imgui_debug_texture);
+                glTexSubImage2D(
+                        GL_TEXTURE_2D,
+                        0,
+                        0,
+                        0,
+                        G_graphics_state->imgui_debug_texture_width,
+                        G_graphics_state->imgui_debug_texture_height,
+                        GL_RGBA,
+                        GL_UNSIGNED_BYTE,
+                        G_graphics_state->imgui_debug_texture_data);
+
+                ImGui::Image((void*)(intptr_t)G_graphics_state->imgui_debug_texture,
+                        ImVec2(G_graphics_state->imgui_debug_texture_width, G_graphics_state->imgui_debug_texture_width));
+                glBindTexture(GL_TEXTURE_2D, 0);
+                
+                ImGui::EndTabItem();
+            }
+
+            if(imgui_tab_bar && ImGui::BeginTabItem("Profile"))
+            {
+                for(u32 i = 0; i < G_profile_data.num; i++)
+                {
+                    ImGui::Text("%s: %i us", G_profile_data.name[i], G_profile_data.time[i]);
+                }
+                ImGui::EndTabItem();
             }
 
             {
@@ -1752,9 +1891,17 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 f64 frame_time_sum = 0.0;
                 for(u32 i = 0; i < 32; i++) frame_time_sum += frame_times[i];
                 ImGui::Text("frame time: %f ms", frame_time_sum / 32.0);
-
                 ImGui::Text(G_graphics_state->debug_info_log);
+
+                G_profile_data.num = 0;
             }
+
+            if(imgui_tab_bar)
+            {
+                ImGui::EndTabBar();
+            }
+
+            //ImGui::ShowDemoWindow();
 
             ImGui::Render();
             ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
