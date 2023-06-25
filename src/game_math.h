@@ -3,9 +3,10 @@
 
 #include "common.h"
 
-#include <stdlib.h>
-#define _USE_MATH_DEFINES
-#include <math.h>
+#include <cstdlib>
+#include <cmath>
+
+#define M_PI 3.14159265f
 
 struct v2
 {
@@ -168,9 +169,9 @@ float squared(float a) { return a * a; }
 float lerp(float a, float b, float t) { return ((1.0f - t) * a) + (t * b); }
 float deg_to_rad(float a) { return a * (M_PI / 180.0f); }
 float rad_to_deg(float a) { return a * (180.0f / M_PI); }
-float floor(float a) { return float(int(a)); }
+//float floor(float a) { return float(int(a)); }
 //float ceil(float a) { return float(int(a - 1.0f)+1); }
-float ceil(float a) { return ceilf(a); }
+//float ceil(float a) { return ceilf(a); }
 inline void swap(s32& a, s32& b)
 {
     s32 tmp = a;
@@ -868,19 +869,41 @@ static v4 random_color()
 }
 
 
+static u32 random(u32 x)
+{
+    x ^= x << 13;
+    x *= 182376581;
+    x ^= x >> 17;
+    x *= 783456103;
+    x ^= x << 5;
+    x *= 53523;
+    return x;
+}
+
+static __m256i rand8(__m256i x)
+{
+    x = _mm256_xor_si256(x, _mm256_slli_epi32(x, 13));
+    x = _mm256_mullo_epi32(x, _mm256_set1_epi32(182376581));
+    x = _mm256_xor_si256(x, _mm256_srli_epi32(x, 17));
+    x = _mm256_mullo_epi32(x, _mm256_set1_epi32(783456103));
+    x = _mm256_xor_si256(x, _mm256_slli_epi32(x, 5));
+    //x = _mm256_mullo_epi32(x, _mm256_set1_epi32(53523));
+    return x;
+}
 
 static v2 random_gradient(s32 x, s32 y)
 {
     u32 w = 8 * sizeof(unsigned);
     u32 s = w / 2;
     u32 a = x, b = y;
-    a *= 3284157443; b ^= a << s | a >> w-s;
-    b *= 1911520717; a ^= b << s | b >> w-s;
+    a *= 3284157443;
+    b ^= a << s | a >> w-s;
+    b *= 1911520717;
+    a ^= b << s | b >> w-s;
     a *= 2048419325;
     float random = a * (3.14159265 / ~(~0u >> 1));
     return v2(cosf(random), sinf(random));
 }
-
 static float smoothstep(float a0, float a1, float w)
 {
     return (a1 - a0) * (3.0 - w * 2.0) * w * w + a0;
@@ -995,4 +1018,226 @@ float pnoise(float x, float y, float z)
     return noiseVal / 0.7; // normalize to about [-1..1];
 }
 #endif
+
+f32 fract(f32 x)
+{
+    f32 f = std::floor(x);
+    return x - f;
+}
+
+f32 approx_sin(f32 x)
+{
+    constexpr f32 pi = f32(M_PI);
+
+    //f32 sign = x < 0 ? -1.0f : 1.0f;
+
+    f32 sign = 1.0f;
+    {
+        f32 xx = x / (pi*2.0f);
+        xx = fract(xx);
+        sign = xx >= 0.5f ? -1.0f : 1.0f;
+    }
+    
+    bool flip = false;
+    {
+        f32 xx = std::abs(x);
+        xx = xx / pi;
+        xx = fract(xx);
+        flip = xx >= 0.5f;
+    }
+
+    x = std::abs(x);
+    x = x / (pi*0.5f);
+    x = fract(x);
+    x *= pi*0.5f;
+
+    if(flip)
+    {
+        x = pi*0.5f - x;
+    }
+
+    // [0, pi/2]  : x
+    // [pi/2, pi] : 1.0f - x
+
+    // [0, pi]    :  x
+    // [pi, 2*pi] : -x
+
+#define POW2(n) ((n)*(n))
+#define POW3(n) ((n)*(n)*(n))
+#define POW4(n) ((n)*(n)*(n)*(n))
+    f32 eval_1 = x - POW3(x) / 6.0f;
+    f32 eval_2 = (1.0f / 384.0f) * POW4(pi - 2.0f*x) - (1.0f/8.0f) * POW2(pi - 2.0f * x) + 1.0f;
+    f32 eval = x < 0.6403 ? eval_1 : eval_2;
+    return eval * sign;
+#undef POW2
+#undef POW3
+#undef POW4
+}
+
+static inline __m256 approx_sin8(__m256 x)
+{
+    const __m256 pi       = _mm256_set1_ps(3.14159265f);
+    const __m256 h_pi     = _mm256_set1_ps(0.5f * 3.14159265f);
+    const __m256 inv_pi   = _mm256_set1_ps(1.0f / 3.14159265f);
+    const __m256 inv_h_pi = _mm256_set1_ps(1.0f / (0.5f * 3.14159265f));
+    const __m256 inv_2_pi = _mm256_set1_ps(1.0f / (2.0f * 3.14159265f));
+
+    // Range reduce to [0, 2*pi] to check if we need to negate result.
+    __m256 sign;
+    {
+        __m256 xx = _mm256_mul_ps(x, inv_2_pi);
+        xx = _mm256_sub_ps(xx, _mm256_round_ps(xx, _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+        __m256 mask = _mm256_cmp_ps(xx, _mm256_set1_ps(0.5f), _CMP_NLT_UQ);
+        sign = _mm256_and_ps(mask, _mm256_castsi256_ps(_mm256_set1_epi32(0x80000000)));
+    }
+
+    // From now on x is positive
+    x = _mm256_and_ps(x, _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF)));
+
+    // Range reduce to [0, pi] to check if we need to flip X.
+    __m256 flip_mask;
+    {
+        __m256 xx = _mm256_mul_ps(x, inv_pi);
+        xx = _mm256_sub_ps(xx, _mm256_round_ps(xx, _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC));
+        flip_mask = _mm256_cmp_ps(xx, _mm256_set1_ps(0.5f), _CMP_NLT_UQ);
+    }
+
+    // Range reduce to [0, pi/2] for evaluation
+    x = _mm256_mul_ps(x, inv_h_pi);
+    x = _mm256_sub_ps(x, _mm256_round_ps(x, _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC));
+    x = _mm256_mul_ps(x,  h_pi);
+
+    __m256 flip_x = _mm256_fmadd_ps(x, _mm256_set1_ps(-1.0f), h_pi);
+    x = _mm256_blendv_ps(x, flip_x, flip_mask);
+
+    // x = x - x^3 / 6
+    __m256 eval0 =  _mm256_fnmadd_ps(_mm256_mul_ps(_mm256_mul_ps(x, x), x), _mm256_set1_ps(1.0f / 6.0f), x);
+
+    // x = 1/384*(pi - 2*x)^4 - 1/8*(pi - 2x)^2 + 1
+    __m256 t = _mm256_fnmadd_ps(x, _mm256_set1_ps(2.0f), pi);
+    __m256 t2 = _mm256_mul_ps(t, t);
+    __m256 t4 = _mm256_mul_ps(t2, t2);
+    __m256 eval1 = _mm256_mul_ps(_mm256_set1_ps(1.0f/384.0f), t4);
+    eval1 = _mm256_fnmadd_ps(_mm256_set1_ps(1.0f/8.0f), t2, eval1);
+    eval1 = _mm256_add_ps(eval1, _mm256_set1_ps(1.0f));
+
+    __m256 eval_blend_mask = _mm256_cmp_ps(x, _mm256_set1_ps(0.6403f), _CMP_LT_OQ);
+    __m256 eval = _mm256_blendv_ps(eval1, eval0, eval_blend_mask);
+
+    eval = _mm256_or_ps(eval, sign);
+
+    return eval;
+}
+
+static inline __m256 approx_cos8(__m256 x)
+{
+    const __m256 h_pi = _mm256_set1_ps(0.5f * 3.14159265f);
+    return approx_sin8(_mm256_sub_ps(x, h_pi));
+}
+
+
+static inline __m256 lerp8(__m256 a, __m256 b, __m256 t)
+{
+    return _mm256_add_ps(
+        _mm256_mul_ps(_mm256_sub_ps(_mm256_set1_ps(1.0f), t), a),
+        _mm256_mul_ps(t, b)
+    );
+}
+static inline __m256 pnoise8(__m256 x, __m256 y, __m256 z)
+{
+    const __m256 x0 = _mm256_round_ps(x, (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+    const __m256 x1 = _mm256_round_ps(_mm256_add_ps(x, _mm256_set1_ps(1.0f)), (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+    const __m256 y0 = _mm256_round_ps(y, (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+    const __m256 y1 = _mm256_round_ps(_mm256_add_ps(y, _mm256_set1_ps(1.0f)), (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+    const __m256 z0 = _mm256_round_ps(z, (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+    const __m256 z1 = _mm256_round_ps(_mm256_add_ps(z, _mm256_set1_ps(1.0f)), (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+
+    __m256 vx[8];
+    __m256 vy[8];
+    __m256 vz[8];
+    vx[0] = x0; vy[0] = y0; vz[0] = z0;
+    vx[1] = x1; vy[1] = y0; vz[1] = z0;
+    vx[2] = x0; vy[2] = y1; vz[2] = z0;
+    vx[3] = x1; vy[3] = y1; vz[3] = z0;
+    vx[4] = x0; vy[4] = y0; vz[4] = z1;
+    vx[5] = x1; vy[5] = y0; vz[5] = z1;
+    vx[6] = x0; vy[6] = y1; vz[6] = z1;
+    vx[7] = x1; vy[7] = y1; vz[7] = z1;
+
+    __m256 dx[8];
+    __m256 dy[8];
+    __m256 dz[8];
+    for(u32 i = 0; i < 8; i++)
+    {
+        dx[i] = _mm256_sub_ps(x, vx[i]);
+        dy[i] = _mm256_sub_ps(y, vy[i]);
+        dz[i] = _mm256_sub_ps(z, vz[i]);
+    }
+
+    __m256 gx[8];
+    __m256 gy[8];
+    __m256 gz[8];
+    __m256 v_noise[8];
+    constexpr u32 num_sphere_points = 1 << 16;
+    for(u32 i = 0; i < 8; i++)
+    {
+        __m256i i_noise = rand8(_mm256_castps_si256(_mm256_xor_ps(_mm256_xor_ps(vx[i], vy[i]), vz[i])));
+        i_noise = _mm256_and_si256(i_noise, _mm256_set1_epi32(num_sphere_points - 1));
+        v_noise[i] = _mm256_cvtepi32_ps(i_noise);
+    }
+    for(u32 i = 0; i < 8; i++)
+    {
+        const __m256 noise = v_noise[i];
+        __m256 u = _mm256_fmsub_ps(_mm256_set1_ps(2.0f / float(num_sphere_points - 1)), noise, _mm256_set1_ps(1.0f));
+        __m256 t = _mm256_mul_ps(_mm256_set1_ps(10.166640738f), noise);
+        __m256 up = _mm256_sqrt_ps(
+            _mm256_max_ps(
+                _mm256_set1_ps(0.0f),
+                _mm256_fnmadd_ps(u, u, _mm256_set1_ps(1.0f))
+            )
+        );
+        gx[i] = _mm256_mul_ps(up, approx_cos8(t));
+        gy[i] = _mm256_mul_ps(up, approx_sin8(t));
+        gz[i] = u;
+    }
+
+    __m256 dot_product[8];
+    for(u32 i = 0; i < 8; i++)
+    {
+        dot_product[i] = _mm256_fmadd_ps(dx[i], gx[i], _mm256_fmadd_ps(dy[i], gy[i], _mm256_mul_ps(dz[i], gz[i])));
+    }
+
+    // TODO(mfritz) smooth
+    __m256 tx = dx[0];
+    __m256 ty = dy[0];
+    __m256 tz = dz[0];
+
+    __m256 result = 
+        lerp8(
+            lerp8(
+                lerp8(
+                    dot_product[0],
+                    dot_product[1],
+                    tx),
+                lerp8(
+                    dot_product[2],
+                    dot_product[3],
+                    tx),
+                ty
+            ),
+            lerp8(
+                lerp8(
+                    dot_product[4],
+                    dot_product[5],
+                    tx),
+                lerp8(
+                    dot_product[6],
+                    dot_product[7],
+                    tx),
+                ty
+            ),
+            tz
+        );
+    return result;
+}
 

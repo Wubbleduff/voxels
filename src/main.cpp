@@ -996,8 +996,10 @@ bool maybe_gen_new_terrain(
     const s32 new_chunk_z,
     const u32 num_trees,
     const TreeBuffer* const* tree_buffers,
-    const f32* tree_pos)
+    const f32* xtree_pos)
 {
+    (void)xtree_pos;
+
     Chunk** old_chunks = new Chunk*[LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM];
     ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
     {
@@ -1084,6 +1086,44 @@ bool maybe_gen_new_terrain(
     }
     wait_for_job(JobId::load_terrain);
 
+    constexpr u32 max_trees = 128;
+    u32 num_gen_trees = 0;
+    f32* tree_pos = new f32[max_trees*3];
+
+    /*
+    ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
+    {
+        Chunk* chunk = new_chunks[it.idx];
+        if(chunk != nullptr)
+        {
+            for(u32 i = 0; i < chunk->num; i++)
+            {
+                s32 vx = chunk->voxels[chunk->num*0 + i];
+                s32 vy = chunk->voxels[chunk->num*1 + i];
+                s32 vz = chunk->voxels[chunk->num*2 + i];
+                s32 v_id = chunk->voxels[chunk->num*3 + i];
+                s32 vi = vz*CHUNK_DIM*CHUNK_DIM + vy*CHUNK_DIM + vx;
+                u32 r = random(vi);
+                if(r < 1000000 && v_id != 0x50BA2CFF && v_id != 0x442222FF)
+                {
+                    tree_pos[max_trees*0 + num_gen_trees] = vx;
+                    tree_pos[max_trees*1 + num_gen_trees] = vy;
+                    tree_pos[max_trees*2 + num_gen_trees] = vz;
+                    num_gen_trees++;
+                }
+                if(num_gen_trees >= max_trees)
+                {
+                    break;
+                }
+            }
+        }
+        if(num_gen_trees >= max_trees)
+        {
+            break;
+        }
+    }
+    */
+
     // Copy in other objects in the world that occupy this chunk.
     // TODO
 
@@ -1095,14 +1135,14 @@ bool maybe_gen_new_terrain(
     u32* new_voxels_per_chunk = new u32[MAX_CHUNKS]{};
 
     // 1.
-    for(u32 tree_idx = 0; tree_idx < num_trees; tree_idx++)
+    for(u32 i = 0; i < num_gen_trees; i++)
     {
-        const TreeBuffer* tree_buffer = tree_buffers[tree_idx];
+        const TreeBuffer* tree_buffer = tree_buffers[i % num_trees];
         for(u32 voxel_idx = 0; voxel_idx < tree_buffer->num; voxel_idx++)
         {
-            s32 vx = tree_buffer->pos[TreeBuffer::CAP*0 + voxel_idx] + floor(tree_pos[num_trees*0 + tree_idx]);
-            s32 vy = tree_buffer->pos[TreeBuffer::CAP*1 + voxel_idx] + floor(tree_pos[num_trees*1 + tree_idx]);
-            s32 vz = tree_buffer->pos[TreeBuffer::CAP*2 + voxel_idx] + floor(tree_pos[num_trees*2 + tree_idx]);
+            s32 vx = tree_buffer->pos[TreeBuffer::CAP*0 + voxel_idx] + floor(tree_pos[max_trees*0 + i]);
+            s32 vy = tree_buffer->pos[TreeBuffer::CAP*1 + voxel_idx] + floor(tree_pos[max_trees*1 + i]);
+            s32 vz = tree_buffer->pos[TreeBuffer::CAP*2 + voxel_idx] + floor(tree_pos[max_trees*2 + i]);
             s32 chunk_x = vx >> CHUNK_POW;
             s32 chunk_y = vy >> CHUNK_POW;
             s32 chunk_z = vz >> CHUNK_POW;
@@ -1143,14 +1183,14 @@ bool maybe_gen_new_terrain(
     }
 
     // 2.
-    for(u32 tree_idx = 0; tree_idx < num_trees; tree_idx++)
+    for(u32 i = 0; i < num_gen_trees; i++)
     {
-        const TreeBuffer* tree_buffer = tree_buffers[tree_idx];
+        const TreeBuffer* tree_buffer = tree_buffers[i % num_trees];
         for(u32 voxel_idx = 0; voxel_idx < tree_buffer->num; voxel_idx++)
         {
-            const s32 tree_x = floor(tree_pos[num_trees*0 + tree_idx]);
-            const s32 tree_y = floor(tree_pos[num_trees*1 + tree_idx]);
-            const s32 tree_z = floor(tree_pos[num_trees*2 + tree_idx]);
+            const s32 tree_x = floor(tree_pos[max_trees*0 + i]);
+            const s32 tree_y = floor(tree_pos[max_trees*1 + i]);
+            const s32 tree_z = floor(tree_pos[max_trees*2 + i]);
             const s32 vx = tree_buffer->pos[TreeBuffer::CAP*0 + voxel_idx] + tree_x;
             const s32 vy = tree_buffer->pos[TreeBuffer::CAP*1 + voxel_idx] + tree_y;
             const s32 vz = tree_buffer->pos[TreeBuffer::CAP*2 + voxel_idx] + tree_z;
@@ -1182,6 +1222,9 @@ bool maybe_gen_new_terrain(
 
     delete[] new_voxels_per_chunk;
     new_voxels_per_chunk = nullptr;;
+
+    delete[] tree_pos;
+    tree_pos = nullptr;
 
     return true;
 }
@@ -1957,23 +2000,94 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             if(imgui_tab_bar && ImGui::BeginTabItem("Debug Texture"))
             {
                 TIME_SCOPE("debug draw texture");
-                static f32 freq = 1.0f;
-                ImGui::DragFloat("freq", &freq, 0.001f);
-                for(s32 z = 0; z < G_graphics_state->imgui_debug_texture_height; z++)
+                memset(G_graphics_state->imgui_debug_texture_data, 0, G_graphics_state->imgui_debug_texture_width*G_graphics_state->imgui_debug_texture_height*sizeof(u32));
+                ASSERT((G_graphics_state->imgui_debug_texture_width*G_graphics_state->imgui_debug_texture_height & 0b111) == 0, "Texture must be divisible by 8");
+                /*
+                for(s32 i = 0; i < G_graphics_state->imgui_debug_texture_width*G_graphics_state->imgui_debug_texture_height; i += 8)
                 {
-                    for(s32 x = 0; x < G_graphics_state->imgui_debug_texture_width; x++)
+                    __m256i in = _mm256_add_epi32(_mm256_set1_epi32(i), _mm256_setr_epi32(7, 6, 5, 4, 3, 2, 1, 0));
+                    __m256i n = rand8(in);
+                    _mm256_storeu_si256((__m256i*)(G_graphics_state->imgui_debug_texture_data + i), n);
+                }
+                */
+
+                /*
+                for(u32 x = 0; x < G_graphics_state->imgui_debug_texture_width; x++)
+                {
+                    u32 y = G_graphics_state->imgui_debug_texture_height / 2;
+                    G_graphics_state->imgui_debug_texture_data[y*G_graphics_state->imgui_debug_texture_width + x] = 0xAAAAAAAA;
+                }
+                for(u32 y = 0; y < G_graphics_state->imgui_debug_texture_width; y++)
+                {
+                    u32 x = G_graphics_state->imgui_debug_texture_height / 2;
+                    G_graphics_state->imgui_debug_texture_data[y*G_graphics_state->imgui_debug_texture_width + x] = 0xAAAAAAAA;
+                }
+                for(s32 xi = -s32(G_graphics_state->imgui_debug_texture_width)/2; xi < s32(G_graphics_state->imgui_debug_texture_width)/2; xi++)
+                {
+                    f32 x = remap(f32(xi),
+                            -f32(G_graphics_state->imgui_debug_texture_width/2), f32(G_graphics_state->imgui_debug_texture_width/2),
+                            -2.0f*M_PI, 2.0f*M_PI);
                     {
-                        //f32 n = (pnoise(f32(x) * freq, 0, f32(z) * freq) * 0.5f + 0.5f);
-                        f32 n = perlin_01(x * freq, 0, z * freq);
-                        //f32 n = perlin_noise(x * freq, z * freq) * 0.5f + 0.5f;
-                        u32 c = n * 0xFF;
-                        G_graphics_state->imgui_debug_texture_data[z*G_graphics_state->imgui_debug_texture_width + x] =
-                            (c << 0) |
-                            (c << 8) |
-                            (c << 16) |
-                            (c << 24);
+                        __m256 y8 = approx_sin8(_mm256_set1_ps(x));
+                        f32 ya[8];
+                        _mm256_storeu_ps(ya, y8);
+                        f32 y = ya[0];
+                        s32 xx = xi + G_graphics_state->imgui_debug_texture_width/2;
+                        s32 yy = s32(-y * 40.0f) + G_graphics_state->imgui_debug_texture_height/2;
+                        yy = yy >= G_graphics_state->imgui_debug_texture_height ? G_graphics_state->imgui_debug_texture_height - 1 : yy;
+                        G_graphics_state->imgui_debug_texture_data[yy*G_graphics_state->imgui_debug_texture_width + xx] = 0xFF0000FF;
+                    }
+
+                    {
+                        __m256 y8 = approx_cos8(_mm256_set1_ps(x));
+                        f32 ya[8];
+                        _mm256_storeu_ps(ya, y8);
+                        f32 y = ya[0];
+                        s32 xx = xi + G_graphics_state->imgui_debug_texture_width/2;
+                        s32 yy = s32(-y * 40.0f) + G_graphics_state->imgui_debug_texture_height/2;
+                        yy = yy >= G_graphics_state->imgui_debug_texture_height ? G_graphics_state->imgui_debug_texture_height - 1 : yy;
+                        G_graphics_state->imgui_debug_texture_data[yy*G_graphics_state->imgui_debug_texture_width + xx] = 0xFFFFFFFF;
                     }
                 }
+                */
+
+                static f32 x_off = 0.0f;
+                static f32 y_off = 0.0f;
+                static f32 z_off = 0.0f;
+                static f32 scale = 0.05f;
+                ImGui::DragFloat("x_off", &x_off);
+                ImGui::DragFloat("y_off", &y_off);
+                ImGui::DragFloat("z_off", &z_off);
+                ImGui::DragFloat("scale", &scale, 0.01f);
+                ASSERT((G_graphics_state->imgui_debug_texture_width & 0b111) == 0, "Texture width must be divisible by 8");
+                for(u32 zi = 0; zi < 1; zi++)
+                {
+                    for(u32 yi = 0; yi < G_graphics_state->imgui_debug_texture_height; yi++)
+                    {
+                        for(u32 xi = 0; xi < G_graphics_state->imgui_debug_texture_width; xi += 8)
+                        {
+                            __m256 x = _mm256_fmadd_ps(_mm256_add_ps(_mm256_set1_ps(f32(xi)), _mm256_setr_ps(0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f)), _mm256_set1_ps(scale), _mm256_set1_ps(x_off));
+                            __m256 y = _mm256_fmadd_ps(_mm256_add_ps(_mm256_set1_ps(f32(yi)), _mm256_setr_ps(0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f)), _mm256_set1_ps(scale), _mm256_set1_ps(y_off));
+                            __m256 z = _mm256_fmadd_ps(_mm256_add_ps(_mm256_set1_ps(f32(zi)), _mm256_setr_ps(0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f)), _mm256_set1_ps(scale), _mm256_set1_ps(z_off));
+                            __m256 n = pnoise8(x, y, z);
+                            n = _mm256_fmadd_ps(n, _mm256_set1_ps(0.5f), _mm256_set1_ps(0.5f));
+                            n = _mm256_max_ps(n, _mm256_set1_ps(0.0f));
+                            n = _mm256_min_ps(n, _mm256_set1_ps(1.0f));
+                            n = _mm256_mul_ps(n, _mm256_set1_ps(255.0f));
+                            __m256i ni = _mm256_cvtps_epi32(n);
+                            u32 nia[8];
+                            _mm256_storeu_si256((__m256i*)nia, ni);
+                            for(u32 pi = 0; pi < 8; pi++)
+                            {
+                                u32 pc = nia[pi];
+                                u32 c = (0xFF << 24) | (pc << 16) | (pc << 8) | pc;
+                                G_graphics_state->imgui_debug_texture_data[yi*G_graphics_state->imgui_debug_texture_width + xi + pi] = c;
+                            }
+                        }
+                    }
+                }
+                
+
                 
                 glBindTexture(GL_TEXTURE_2D, G_graphics_state->imgui_debug_texture);
                 glTexSubImage2D(
