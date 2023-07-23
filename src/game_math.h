@@ -887,7 +887,7 @@ static __m256i rand8(__m256i x)
     x = _mm256_xor_si256(x, _mm256_srli_epi32(x, 17));
     x = _mm256_mullo_epi32(x, _mm256_set1_epi32(783456103));
     x = _mm256_xor_si256(x, _mm256_slli_epi32(x, 5));
-    //x = _mm256_mullo_epi32(x, _mm256_set1_epi32(53523));
+    x = _mm256_mullo_epi32(x, _mm256_set1_epi32(53523));
     return x;
 }
 
@@ -1145,12 +1145,21 @@ static inline __m256 lerp8(__m256 a, __m256 b, __m256 t)
 }
 static inline __m256 pnoise8(__m256 x, __m256 y, __m256 z)
 {
-    const __m256 x0 = _mm256_round_ps(x, (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
-    const __m256 x1 = _mm256_round_ps(_mm256_add_ps(x, _mm256_set1_ps(1.0f)), (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
-    const __m256 y0 = _mm256_round_ps(y, (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
-    const __m256 y1 = _mm256_round_ps(_mm256_add_ps(y, _mm256_set1_ps(1.0f)), (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
-    const __m256 z0 = _mm256_round_ps(z, (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
-    const __m256 z1 = _mm256_round_ps(_mm256_add_ps(z, _mm256_set1_ps(1.0f)), (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+    __m256 x0 = _mm256_round_ps(x, (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+    __m256 x1 = _mm256_round_ps(_mm256_add_ps(x, _mm256_set1_ps(1.0f)), (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+    __m256 y0 = _mm256_round_ps(y, (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+    __m256 y1 = _mm256_round_ps(_mm256_add_ps(y, _mm256_set1_ps(1.0f)), (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+    __m256 z0 = _mm256_round_ps(z, (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+    __m256 z1 = _mm256_round_ps(_mm256_add_ps(z, _mm256_set1_ps(1.0f)), (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+
+    // Handle the case where e.g. x is 1.99999988. x0 will be 1 and x1 will be 3 (1.99999988f + 1.0f = 3.0f).
+    // If x1 - x0 > 1, x1--
+    __m256 sub_mask = _mm256_cmp_ps(_mm256_sub_ps(x1, x0), _mm256_set1_ps(1.0f), _CMP_GT_OQ);
+    x1 = _mm256_sub_ps(x1, _mm256_and_ps(_mm256_set1_ps(1.0f), sub_mask));
+    sub_mask = _mm256_cmp_ps(_mm256_sub_ps(y1, y0), _mm256_set1_ps(1.0f), _CMP_GT_OQ);
+    y1 = _mm256_sub_ps(y1, _mm256_and_ps(_mm256_set1_ps(1.0f), sub_mask));
+    sub_mask = _mm256_cmp_ps(_mm256_sub_ps(z1, z0), _mm256_set1_ps(1.0f), _CMP_GT_OQ);
+    z1 = _mm256_sub_ps(z1, _mm256_and_ps(_mm256_set1_ps(1.0f), sub_mask));
 
     __m256 vx[8];
     __m256 vy[8];
@@ -1178,13 +1187,15 @@ static inline __m256 pnoise8(__m256 x, __m256 y, __m256 z)
     __m256 gy[8];
     __m256 gz[8];
     __m256 v_noise[8];
-    constexpr u32 num_sphere_points = 1 << 16;
+    constexpr u32 num_sphere_points = 1 << 12;
+    // Create noise for each vertex.
     for(u32 i = 0; i < 8; i++)
     {
         __m256i i_noise = rand8(_mm256_castps_si256(_mm256_xor_ps(_mm256_xor_ps(vx[i], vy[i]), vz[i])));
         i_noise = _mm256_and_si256(i_noise, _mm256_set1_epi32(num_sphere_points - 1));
         v_noise[i] = _mm256_cvtepi32_ps(i_noise);
     }
+    // Use random number to index points on a sphere.
     for(u32 i = 0; i < 8; i++)
     {
         const __m256 noise = v_noise[i];
@@ -1207,10 +1218,13 @@ static inline __m256 pnoise8(__m256 x, __m256 y, __m256 z)
         dot_product[i] = _mm256_fmadd_ps(dx[i], gx[i], _mm256_fmadd_ps(dy[i], gy[i], _mm256_mul_ps(dz[i], gz[i])));
     }
 
-    // TODO(mfritz) smooth
     __m256 tx = dx[0];
+    // Smooth t.
+    tx = _mm256_mul_ps(tx, _mm256_mul_ps(tx, _mm256_sub_ps(_mm256_set1_ps(3.0f), _mm256_mul_ps(tx, _mm256_set1_ps(2.0f)))));
     __m256 ty = dy[0];
+    ty = _mm256_mul_ps(ty, _mm256_mul_ps(ty, _mm256_sub_ps(_mm256_set1_ps(3.0f), _mm256_mul_ps(ty, _mm256_set1_ps(2.0f)))));
     __m256 tz = dz[0];
+    tz = _mm256_mul_ps(tz, _mm256_mul_ps(tz, _mm256_sub_ps(_mm256_set1_ps(3.0f), _mm256_mul_ps(tz, _mm256_set1_ps(2.0f)))));
 
     __m256 result = 
         lerp8(

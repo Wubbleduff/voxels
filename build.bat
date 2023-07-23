@@ -35,5 +35,6 @@ xcopy /Y /E assets %DEBUG_RUN_TREE%\assets\
 echo.
 echo %DEBUG_RUN_TREE%\%EXE%
 echo.
-REM %DEBUG_RUN_TREE%\%EXE%
+
+%DEBUG_RUN_TREE%\%EXE%
 

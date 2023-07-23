@@ -1614,8 +1614,8 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
 
         glGenTextures(1, &G_graphics_state->imgui_debug_texture);
         glBindTexture(GL_TEXTURE_2D, G_graphics_state->imgui_debug_texture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         
@@ -2051,24 +2051,26 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 }
                 */
 
-                static f32 x_off = 0.0f;
+                static f32 x_off = 4.0f;
                 static f32 y_off = 0.0f;
                 static f32 z_off = 0.0f;
-                static f32 scale = 0.05f;
+                static f32 scale = 0.08f;
                 ImGui::DragFloat("x_off", &x_off);
                 ImGui::DragFloat("y_off", &y_off);
                 ImGui::DragFloat("z_off", &z_off);
                 ImGui::DragFloat("scale", &scale, 0.01f);
                 ASSERT((G_graphics_state->imgui_debug_texture_width & 0b111) == 0, "Texture width must be divisible by 8");
+                const __m256 x_base = _mm256_mul_ps(_mm256_add_ps(_mm256_set1_ps(x_off), _mm256_setr_ps(0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f)), _mm256_set1_ps(scale));
+                __m256 z = _mm256_mul_ps(_mm256_add_ps(_mm256_set1_ps(z_off), _mm256_set1_ps(0.0f)), _mm256_set1_ps(scale));
                 for(u32 zi = 0; zi < 1; zi++)
                 {
+                    __m256 y = _mm256_mul_ps(_mm256_add_ps(_mm256_set1_ps(y_off), _mm256_set1_ps(0.0f)), _mm256_set1_ps(scale));
                     for(u32 yi = 0; yi < G_graphics_state->imgui_debug_texture_height; yi++)
                     {
+                        __m256 x_accum = _mm256_set1_ps(0.0f);
                         for(u32 xi = 0; xi < G_graphics_state->imgui_debug_texture_width; xi += 8)
                         {
-                            __m256 x = _mm256_fmadd_ps(_mm256_add_ps(_mm256_set1_ps(f32(xi)), _mm256_setr_ps(0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f)), _mm256_set1_ps(scale), _mm256_set1_ps(x_off));
-                            __m256 y = _mm256_fmadd_ps(_mm256_add_ps(_mm256_set1_ps(f32(yi)), _mm256_setr_ps(0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f)), _mm256_set1_ps(scale), _mm256_set1_ps(y_off));
-                            __m256 z = _mm256_fmadd_ps(_mm256_add_ps(_mm256_set1_ps(f32(zi)), _mm256_setr_ps(0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f)), _mm256_set1_ps(scale), _mm256_set1_ps(z_off));
+                            __m256 x = _mm256_add_ps(x_base, x_accum);
                             __m256 n = pnoise8(x, y, z);
                             n = _mm256_fmadd_ps(n, _mm256_set1_ps(0.5f), _mm256_set1_ps(0.5f));
                             n = _mm256_max_ps(n, _mm256_set1_ps(0.0f));
@@ -2083,8 +2085,12 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                                 u32 c = (0xFF << 24) | (pc << 16) | (pc << 8) | pc;
                                 G_graphics_state->imgui_debug_texture_data[yi*G_graphics_state->imgui_debug_texture_width + xi + pi] = c;
                             }
+
+                            x_accum = _mm256_add_ps(x_accum, _mm256_set1_ps(8.0f * scale));
                         }
+                        y = _mm256_add_ps(y, _mm256_set1_ps(scale));
                     }
+                    z = _mm256_add_ps(z, _mm256_set1_ps(scale));
                 }
                 
 
