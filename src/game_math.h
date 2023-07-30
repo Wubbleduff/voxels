@@ -10,159 +10,207 @@
 
 struct v2
 {
-    union
-    {
-        struct { float x, y; };
-        float v[2];
-    };
-    
-    v2() : x(0.0f), y(0.0f) { }
-    v2(const v2 &v) : x(v.x), y(v.y) { }
-    v2(float in_x, float in_y) : x(in_x), y(in_y) { }
-    v2(float c[2]) : x(c[0]), y(c[1]) { }
+  union
+  {
+    struct { float x, y; };
+    float v[2];
+  };
+
+  v2() : x(0.0f), y(0.0f) { }
+  v2(const v2 &v) : x(v.x), y(v.y) { }
+  v2(float in_x, float in_y) : x(in_x), y(in_y) { }
+  v2(float c[2]) : x(c[0]), y(c[1]) { }
 };
 
 struct v3
 {
-    union
-    {
-        struct { float x; float y; float z; };
-        struct { float r; float g; float b; };
-        struct { float h; float s; float v; };
-        float m[3];
-    };
-    v3() : x(0.0f), y(0.0f), z(0.0f) { }
-    v3(const v3 &v) : x(v.x), y(v.y), z(v.z) { }
-    v3(float in_x, float in_y, float in_z) : x(in_x), y(in_y), z(in_z) { }
-    v3(v2 v, float a) : x(v.x), y(v.y), z(a)   { }
-    v3(float a, v2 v) : x(a),   y(v.x), z(v.y) { }
+  union
+  {
+    struct { float x; float y; float z; };
+    struct { float r; float g; float b; };
+    struct { float h; float s; float v; };
+    float m[3];
+  };
+  v3() : x(0.0f), y(0.0f), z(0.0f) { }
+  v3(const v3 &v) : x(v.x), y(v.y), z(v.z) { }
+  v3(float in_x, float in_y, float in_z) : x(in_x), y(in_y), z(in_z) { }
+  v3(v2 v, float a) : x(v.x), y(v.y), z(a)   { }
+  v3(float a, v2 v) : x(a),   y(v.x), z(v.y) { }
 };
 
 struct v4
 {
-    union
-    {
-        struct { float x, y, z, w; };
-        struct { float r, g, b, a; };
-        struct { float h, s, v, aa; };
-        float m[4];
-    };
-    v4() : x(0.0f), y(0.0f), z(0.0f), w(0.0f) { }
-    v4(const v4 &v) : x(v.x), y(v.y), z(v.z), w(v.w) { }
-    v4(float in_x, float in_y, float in_z, float in_w) : x(in_x), y(in_y), z(in_z), w(in_w) { }
-    v4(v2 v, float a, float b) : x(v.x), y(v.y), z(a),   w(b)   { }
-    v4(float a, v2 v, float b) : x(a),   y(v.x), z(v.y), w(b)   { }
-    v4(float a, float b, v2 v) : x(a),   y(b),   z(v.x), w(v.y) { }
-    v4(v3 v, float a)          : x(v.x), y(v.y), z(v.z), w(a)   { }
-    v4(float a, v3 v)          : x(a),   y(v.x), z(v.y), w(v.z) { }
+  union
+  {
+    struct { float x, y, z, w; };
+    struct { float r, g, b, a; };
+    struct { float h, s, v, aa; };
+    float m[4];
+  };
+  v4() : x(0.0f), y(0.0f), z(0.0f), w(0.0f) { }
+  v4(const v4 &v) : x(v.x), y(v.y), z(v.z), w(v.w) { }
+  v4(float in_x, float in_y, float in_z, float in_w) : x(in_x), y(in_y), z(in_z), w(in_w) { }
+  v4(v2 v, float a, float b) : x(v.x), y(v.y), z(a),   w(b)   { }
+  v4(float a, v2 v, float b) : x(a),   y(v.x), z(v.y), w(b)   { }
+  v4(float a, float b, v2 v) : x(a),   y(b),   z(v.x), w(v.y) { }
+  v4(v3 v, float a)          : x(v.x), y(v.y), z(v.z), w(a)   { }
+  v4(float a, v3 v)          : x(a),   y(v.x), z(v.y), w(v.z) { }
 
-    v3 xyz()
-    {
-        return v3(x,y,z);
-    }
+  v3 xyz()
+  {
+    return v3(x,y,z);
+  }
 };
 
 struct v2i
 {
-    union
-    {
-        struct { int x, y; };
-        int v[2];
-    };
-    int operator[](unsigned i) const
-    {
-        return v[i];
-    }
+  union
+  {
+    struct { int x, y; };
+    int v[2];
+  };
+  int operator[](unsigned i) const
+  {
+    return v[i];
+  }
 };
 
 struct mat3
 {
-    float m[3][3];
-    
-    mat3() : m {
-        {1.0f, 0.0f, 0.0f},
-        {0.0f, 1.0f, 0.0f},
-        {0.0f, 0.0f, 0.0f} }
-    {}
-    
-    mat3(float aa, float ab, float ac,
-         float ba, float bb, float bc,
-         float ca, float cb, float cc) :
+  float m[3][3];
+
+  mat3() : m {
+    {1.0f, 0.0f, 0.0f},
+      {0.0f, 1.0f, 0.0f},
+      {0.0f, 0.0f, 0.0f} }
+  {}
+
+  mat3(float aa, float ab, float ac,
+      float ba, float bb, float bc,
+      float ca, float cb, float cc) :
     m { {aa, ab, ac},
-        {ba, bb, bc},
-        {ca, cb, cc} }
-    {}
-    
-    const float *operator[](unsigned i) const
-    {
-        return m[i];
-    }
-    float *operator[](unsigned i)
-    {
-        return m[i];
-    }
+      {ba, bb, bc},
+      {ca, cb, cc} }
+  {}
+
+  const float *operator[](unsigned i) const
+  {
+    return m[i];
+  }
+  float *operator[](unsigned i)
+  {
+    return m[i];
+  }
 };
 
 struct mat4
 {
-    float m[4][4];
-    
-    mat4() : m {
-        {1.0f, 0.0f, 0.0f, 0.0f},
-        {0.0f, 1.0f, 0.0f, 0.0f},
-        {0.0f, 0.0f, 1.0f, 0.0f},
-        {0.0f, 0.0f, 0.0f, 1.0f} }
-    {}
-    
-    mat4(float aa, float ab, float ac, float ad,
-         float ba, float bb, float bc, float bd,
-         float ca, float cb, float cc, float cd,
-         float da, float db, float dc, float dd) :
+  float m[4][4];
+
+  mat4() : m {
+    {1.0f, 0.0f, 0.0f, 0.0f},
+      {0.0f, 1.0f, 0.0f, 0.0f},
+      {0.0f, 0.0f, 1.0f, 0.0f},
+      {0.0f, 0.0f, 0.0f, 1.0f} }
+  {}
+
+  mat4(float aa, float ab, float ac, float ad,
+      float ba, float bb, float bc, float bd,
+      float ca, float cb, float cc, float cd,
+      float da, float db, float dc, float dd) :
     m { {aa, ab, ac, ad},
-        {ba, bb, bc, bd},
-        {ca, cb, cc, cd},
-        {da, db, dc, dd} }
-    {}
-    
-    const float *operator[](unsigned i) const
+      {ba, bb, bc, bd},
+      {ca, cb, cc, cd},
+      {da, db, dc, dd} }
+  {}
+
+  const float *operator[](unsigned i) const
+  {
+    return m[i];
+  }
+  float *operator[](unsigned i)
+  {
+    return m[i];
+  }
+};
+
+template<u64 W, u64 H, u64 D>
+struct BitCube
+{
+  static constexpr u64 N = W*H*D;
+  static_assert(N % 8 == 0);
+  u8 m_v[N/8] = {};
+
+  void assign_bit(u64 n, bool v)
+  {
+    const u64 chunk = n >> 3;
+    const u64 pos = n & 7;
+    m_v[chunk] &= ~(1 << pos);
+    m_v[chunk] |= (v << pos);
+  }
+
+  void set_bit(u64 n)
+  {
+    const u64 chunk = n >> 3;
+    const u64 pos = n & 7;
+    m_v[chunk] |= (1 << pos);
+  }
+
+  bool is_bit_set(u64 x, u64 y, u64 z)
+  {
+    const u64 n = z*W*H + y*W + x;
+    const u64 chunk = n >> 3;
+    const u64 pos = n & 7;
+    return m_v[chunk] & (1 << pos);
+  }
+
+  bool is_bit_set(u64 n)
+  {
+    const u64 chunk = n >> 3;
+    const u64 pos = n & 7;
+    return m_v[chunk] & (1 << pos);
+  }
+
+  bool all_bits_set()
+  {
+    // Assuming divisible by 8
+    for(u32 i = 0; i < N/8; i++)
     {
-        return m[i];
+      if(m_v[i] != 0xFF) return false;
     }
-    float *operator[](unsigned i)
-    {
-        return m[i];
-    }
+    return true;
+  }
 };
 
 template<u64 N>
 struct BitArray
 {
-    static_assert(N % 8 == 0);
-    u8 v[N/8] = {};
+  static_assert(N % 8 == 0);
+  u8 v[N/8] = {};
 
-    void set_bit(u64 n)
-    {
-        u64 chunk = n >> 3;
-        u64 pos = n & 7;
-        v[chunk] |= (1 << pos);
-    }
+  void set_bit(u64 n)
+  {
+    const u64 chunk = n >> 3;
+    const u64 pos = n & 7;
+    v[chunk] |= (1 << pos);
+  }
 
-    bool is_bit_set(u64 n)
-    {
-        u64 chunk = n >> 3;
-        u64 pos = n & 7;
-        return v[chunk] & (1 << pos);
-    }
+  bool is_bit_set(u64 n)
+  {
+    const u64 chunk = n >> 3;
+    const u64 pos = n & 7;
+    return v[chunk] & (1 << pos);
+  }
 
-    bool all_bits_set()
+  bool all_bits_set()
+  {
+    // Assuming divisible by 8
+    for(u32 i = 0; i < N/8; i++)
     {
-        // Assuming divisible by 8
-        for(u32 i = 0; i < N/8; i++)
-        {
-            if(v[i] != 0xFF) return false;
-        }
-        return true;
+      if(v[i] != 0xFF) return false;
     }
+    return true;
+  }
 };
 
 float squared(float a) { return a * a; }
@@ -174,60 +222,60 @@ float rad_to_deg(float a) { return a * (180.0f / M_PI); }
 //float ceil(float a) { return ceilf(a); }
 inline void swap(s32& a, s32& b)
 {
-    s32 tmp = a;
-    a = b;
-    b = tmp;
+  s32 tmp = a;
+  a = b;
+  b = tmp;
 }
 inline void swap(u32& a, u32& b)
 {
-    u32 tmp = a;
-    a = b;
-    b = tmp;
+  u32 tmp = a;
+  a = b;
+  b = tmp;
 }
 inline void swap(f32& a, f32& b)
 {
-    u32 tmp = a;
-    a = b;
-    b = tmp;
+  u32 tmp = a;
+  a = b;
+  b = tmp;
 }
 inline bool is_power_of_2(s32 n)
 {
-    return (n & (n - 1)) == 0;
+  return (n & (n - 1)) == 0;
 }
 float inv_lerp(float a, float b, float t) { return (t - a) / (b - a); }
 float remap(float a, float from_min, float from_max, float to_min, float to_max)
 {
-    float from_percent = inv_lerp(from_min, from_max, a);
-    return lerp(to_min, to_max, from_percent);
+  float from_percent = inv_lerp(from_min, from_max, a);
+  return lerp(to_min, to_max, from_percent);
 }
 /*
-float cos(float a) { return cosf(a); }
-float sin(float a) { return sinf(a); }
-float sqrt(float a) { return sqrtf(a); }
-float to_power(float base, float exponent) { return (float)pow(base, exponent); }
-int min(int a, int b) { return (a < b) ? a : b; }
-int min(int a, int b, int c) { return min(a, min(b, c)); }
-int max(int a, int b) { return (a > b) ? a : b; }
-int max(int a, int b, int c) { return max(a, max(b, c)); }
-float min(float a, float b) { return (a < b) ? a : b; }
-float min(float a, float b, float c) { return min(a, min(b, c)); }
-float max(float a, float b) { return (a > b) ? a : b; }
-float max(float a, float b, float c) { return max(a, max(b, c)); }
-int clamp(int a, int min, int max) { if(a < min) return min; if(a > max) return max; return a; }
-float clamp(float a, float min, float max) { if(a < min) return min; if(a > max) return max; return a; }
-int floor(float a) { return (int)a; }
-float abs(float a) { return (a < 0.0f) ? -a : a; } 
-float average(float *values, int num)
-{
-    float sum = 0.0f;
-    for(int i = 0; i < num; i++) sum += values[i];
-    return sum / (float)num;
-}
-float infinity()
-{
-    return INFINITY;
-}
-*/
+   float cos(float a) { return cosf(a); }
+   float sin(float a) { return sinf(a); }
+   float sqrt(float a) { return sqrtf(a); }
+   float to_power(float base, float exponent) { return (float)pow(base, exponent); }
+   int min(int a, int b) { return (a < b) ? a : b; }
+   int min(int a, int b, int c) { return min(a, min(b, c)); }
+   int max(int a, int b) { return (a > b) ? a : b; }
+   int max(int a, int b, int c) { return max(a, max(b, c)); }
+   float min(float a, float b) { return (a < b) ? a : b; }
+   float min(float a, float b, float c) { return min(a, min(b, c)); }
+   float max(float a, float b) { return (a > b) ? a : b; }
+   float max(float a, float b, float c) { return max(a, max(b, c)); }
+   int clamp(int a, int min, int max) { if(a < min) return min; if(a > max) return max; return a; }
+   float clamp(float a, float min, float max) { if(a < min) return min; if(a > max) return max; return a; }
+   int floor(float a) { return (int)a; }
+   float abs(float a) { return (a < 0.0f) ? -a : a; } 
+   float average(float *values, int num)
+   {
+   float sum = 0.0f;
+   for(int i = 0; i < num; i++) sum += values[i];
+   return sum / (float)num;
+   }
+   float infinity()
+   {
+   return INFINITY;
+   }
+   */
 
 
 
@@ -248,7 +296,7 @@ static v4 operator-(v4 a) { return v4(-a.x, -a.y, -a.z, -a.w); }
 
 static bool operator==(v2 a, v2 b)
 {
-    return (a.x == b.x) && (a.y == b.y);
+  return (a.x == b.x) && (a.y == b.y);
 }
 
 static float dot(v2 a, v2 b) { return (a.x * b.x) + (a.y * b.y); }
@@ -301,17 +349,17 @@ static v4 lerp(v4 a, v4 b, float t) { return ((1.0f - t) * a) + (t * b); }
 
 static v2 lerp_components(v2 a, v2 b, v2 t)
 {
-    return multiply_components(v2(1.0f, 1.0f) - t, a) + multiply_components(t, b);
+  return multiply_components(v2(1.0f, 1.0f) - t, a) + multiply_components(t, b);
 }
 
 static v3 lerp_components(v3 a, v3 b, v3 t)
 {
-    return multiply_components(v3(1.0f, 1.0f, 1.0f) - t, a) + multiply_components(t, b);
+  return multiply_components(v3(1.0f, 1.0f, 1.0f) - t, a) + multiply_components(t, b);
 }
 
 static v4 lerp_components(v4 a, v4 b, v4 t)
 {
-    return multiply_components(v4(1.0f, 1.0f, 1.0f, 1.0f) - t, a) + multiply_components(t, b);
+  return multiply_components(v4(1.0f, 1.0f, 1.0f, 1.0f) - t, a) + multiply_components(t, b);
 }
 
 static v2 inv_lerp_components(v2 a, v2 b, v2 t) { return divide_components((t - a), (b - a)); }
@@ -326,48 +374,48 @@ static v4 remap(v4 a, v4 from_min, v4 from_max, v4 to_min, v4 to_max) { return l
 // Gets the length of the vector
 static float length(v2 v)
 {
-    return sqrtf(squared(v.x) + squared(v.y));
+  return sqrtf(squared(v.x) + squared(v.y));
 }
 static float length(v3 v)
 {
-    return sqrtf(squared(v.x) + squared(v.y) + squared(v.z));
+  return sqrtf(squared(v.x) + squared(v.y) + squared(v.z));
 }
 static float length(v4 v)
 {
-    return sqrtf(squared(v.x) + squared(v.y) + squared(v.z) + squared(v.w));
+  return sqrtf(squared(v.x) + squared(v.y) + squared(v.z) + squared(v.w));
 }
 
 // Gets the squared length of this vector
 static float length_squared(v2 v)
 {
-    return squared(v.x) + squared(v.y);
+  return squared(v.x) + squared(v.y);
 }
 static float length_squared(v3 v)
 {
-    return squared(v.x) + squared(v.y) + squared(v.z);
+  return squared(v.x) + squared(v.y) + squared(v.z);
 }
 static float length_squared(v4 v)
 {
-    return squared(v.x) + squared(v.y) + squared(v.z) + squared(v.w);
+  return squared(v.x) + squared(v.y) + squared(v.z) + squared(v.w);
 }
 
 static v2 normalize(v2 v)
 {
-    float l = length(v);
-    if(l == 0.0f) return v2();
-    return v / l;
+  float l = length(v);
+  if(l == 0.0f) return v2();
+  return v / l;
 }
 static v3 normalize(v3 v)
 {
-    float l = length(v);
-    if(l == 0.0f) return v3();
-    return v / l;
+  float l = length(v);
+  if(l == 0.0f) return v3();
+  return v / l;
 }
 static v4 normalize(v4 v)
 {
-    float l = length(v);
-    if(l == 0.0f) return v4();
-    return v / l;
+  float l = length(v);
+  if(l == 0.0f) return v4();
+  return v / l;
 }
 
 static v2 normalize_nonzero(v2 v) { return v / length(v); }
@@ -376,13 +424,13 @@ static v4 normalize_nonzero(v4 v) { return v / length(v); }
 
 static float signed_distance_to_plane(v2 a, v2 p, v2 n)
 {
-    n = normalize(n);
-    return dot(a, n) - dot(p, n);
+  n = normalize(n);
+  return dot(a, n) - dot(p, n);
 }
 static float signed_distance_to_plane(v3 a, v3 p, v3 n)
 {
-    n = normalize(n);
-    return dot(a, n) - dot(p, n);
+  n = normalize(n);
+  return dot(a, n) - dot(p, n);
 }
 
 static float angle_between(v2 a, v2 b) { return (float)acos(dot(normalize(a), normalize(b))); }
@@ -392,42 +440,42 @@ static float angle_between(v4 a, v4 b) { return (float)acos(dot(normalize(a), no
 // Returns this vector clamped by max length
 static v2 clamp_length(v2 v, float max_length)
 {
-    float len = length(v);
-    if(len > max_length)
-    {
-        v = v / len;
-        v = v * max_length;
-    }
+  float len = length(v);
+  if(len > max_length)
+  {
+    v = v / len;
+    v = v * max_length;
+  }
 
-    return v;
+  return v;
 }
 static v3 clamp_length(v3 v, float max_length)
 {
-    float len = length(v);
-    if(len > max_length)
-    {
-        v = v / len;
-        v = v * max_length;
-    }
+  float len = length(v);
+  if(len > max_length)
+  {
+    v = v / len;
+    v = v * max_length;
+  }
 
-    return v;
+  return v;
 }
 static v4 clamp_length(v4 v, float max_length)
 {
-    float len = length(v);
-    if(len > max_length)
-    {
-        v = v / len;
-        v = v * max_length;
-    }
+  float len = length(v);
+  if(len > max_length)
+  {
+    v = v / len;
+    v = v * max_length;
+  }
 
-    return v;
+  return v;
 }
 
 static v2 project_onto_plane(v2 a, v2 p, v2 n)
 {
-    float dist_from_plane = signed_distance_to_plane(a, p, n);
-    return a - n * dist_from_plane;
+  float dist_from_plane = signed_distance_to_plane(a, p, n);
+  return a - n * dist_from_plane;
 }
 
 
@@ -436,33 +484,33 @@ static v2 project_onto_plane(v2 a, v2 p, v2 n)
 // Returns a counter-clockwise normal to the given vector with the same length
 static v2 find_ccw_normal(v2 a)
 {
-    return v2(-a.y, a.x);
+  return v2(-a.y, a.x);
 }
 
 static bool is_ccw(v2 a, v2 b, v2 c)
 {
-    float cross_p = (b.x - a.x)*(c.y - a.y) - (b.y - a.y)*(c.x - a.x);
-    return cross_p > 0.0f;
+  float cross_p = (b.x - a.x)*(c.y - a.y) - (b.y - a.y)*(c.x - a.x);
+  return cross_p > 0.0f;
 }
 
 
 // Returns this vector rotated by the angle in radians
 static v2 rotate_vector(v2 a, float angle)
 {
-    v2 v;
+  v2 v;
 
-    v.x = a.x * (float)cos(angle) - a.y * (float)sin(angle);
-    v.y = a.x * (float)sin(angle) + a.y * (float)cos(angle);
+  v.x = a.x * (float)cos(angle) - a.y * (float)sin(angle);
+  v.y = a.x * (float)sin(angle) + a.y * (float)cos(angle);
 
-    return v;
+  return v;
 }
 
 static v2 slerp(v2 a, v2 b, float t)
 {
-    float angle = angle_between(a, b);
-    v2 t1 = (sinf((1.0f - t) * angle) / sinf(angle)) * a;
-    v2 t2 = (sinf(t * angle) / sinf(angle)) * b;
-    return t1 + t2;
+  float angle = angle_between(a, b);
+  v2 t1 = (sinf((1.0f - t) * angle) / sinf(angle)) * a;
+  v2 t2 = (sinf(t * angle) / sinf(angle)) * b;
+  return t1 + t2;
 }
 
 // Returns the angle this vector is pointing at in radians. If the vector is
@@ -475,78 +523,78 @@ static v2 slerp(v2 a, v2 b, float t)
 //         -PI/2
 static float angle(v2 a)
 {
-    return atan2f(a.y, a.x);
+  return atan2f(a.y, a.x);
 }
 
 
 
 static v3 cross(v3 a, v3 b)
 {
-    v3 v;
-    v.x = (a.y * b.z) - (a.z * b.y);
-    v.y = (a.z * b.x) - (a.x * b.z);
-    v.z = (a.x * b.y) - (a.y * b.x);
-    return v;
+  v3 v;
+  v.x = (a.y * b.z) - (a.z * b.y);
+  v.y = (a.z * b.x) - (a.x * b.z);
+  v.z = (a.x * b.y) - (a.y * b.x);
+  return v;
 }
 
 static v3 hsv_to_rgb(v3 hsv)
 {
-    float hh, p, q, t, ff;
-    int i;
-    v3 rgb;
+  float hh, p, q, t, ff;
+  int i;
+  v3 rgb;
 
-    if(hsv.s <= 0.0)
-    {
-        rgb.r = hsv.v;
-        rgb.g = hsv.v;
-        rgb.b = hsv.v;
-        return rgb;
-    }
-    hh = hsv.h;
-    if(hh >= 360.0f) hh = 0.0f;
-    hh /= 60.0f;
-    i = (int)hh;
-    ff = hh - i;
-    p = hsv.v * (1.0f - hsv.s);
-    q = hsv.v * (1.0f - (hsv.s * ff));
-    t = hsv.v * (1.0f - (hsv.s * (1.0f - ff)));
+  if(hsv.s <= 0.0)
+  {
+    rgb.r = hsv.v;
+    rgb.g = hsv.v;
+    rgb.b = hsv.v;
+    return rgb;
+  }
+  hh = hsv.h;
+  if(hh >= 360.0f) hh = 0.0f;
+  hh /= 60.0f;
+  i = (int)hh;
+  ff = hh - i;
+  p = hsv.v * (1.0f - hsv.s);
+  q = hsv.v * (1.0f - (hsv.s * ff));
+  t = hsv.v * (1.0f - (hsv.s * (1.0f - ff)));
 
-    switch(i)
-    {
-        case 0:
-            rgb.r = hsv.v;
-            rgb.g = t;
-            rgb.b = p;
-            break;
-        case 1:
-            rgb.r = q;
-            rgb.g = hsv.v;
-            rgb.b = p;
-            break;
-        case 2:
-            rgb.r = p;
-            rgb.g = hsv.v;
-            rgb.b = t;
-            break;
+  switch(i)
+  {
+    case 0:
+      rgb.r = hsv.v;
+      rgb.g = t;
+      rgb.b = p;
+      break;
+    case 1:
+      rgb.r = q;
+      rgb.g = hsv.v;
+      rgb.b = p;
+      break;
+    case 2:
+      rgb.r = p;
+      rgb.g = hsv.v;
+      rgb.b = t;
+      break;
 
-        case 3:
-            rgb.r = p;
-            rgb.g = q;
-            rgb.b = hsv.v;
-            break;
-        case 4:
-            rgb.r = t;
-            rgb.g = p;
-            rgb.b = hsv.v;
-            break;
-        case 5:
-        default:
-            rgb.r = hsv.v;
-            rgb.g = p;
-            rgb.b = q;
-            break;
-    }
-    return rgb;     
+    case 3:
+      rgb.r = p;
+      rgb.g = q;
+      rgb.b = hsv.v;
+      break;
+    case 4:
+      rgb.r = t;
+      rgb.g = p;
+      rgb.b = hsv.v;
+      break;
+    case 5:
+    default:
+      rgb.r = hsv.v;
+      rgb.g = p;
+      rgb.b = q;
+      break;
+  }
+  return rgb;     
 }
 
 
@@ -555,71 +603,71 @@ static v3 hsv_to_rgb(v3 hsv)
 // This function was made only for the matrix-vector multiplication
 static float dot3v(const float *a, v3 b)
 {
-    return (a[0] * b.x) + (a[1] * b.y) + (a[2] * b.z);
+  return (a[0] * b.x) + (a[1] * b.y) + (a[2] * b.z);
 }
 static v3 operator*(const mat3 &lhs, v3 rhs)
 {
-    v3 result;
-    result.x = dot3v(lhs[0], rhs);
-    result.y = dot3v(lhs[1], rhs);
-    result.z = dot3v(lhs[2], rhs);
-    return result;
+  v3 result;
+  result.x = dot3v(lhs[0], rhs);
+  result.y = dot3v(lhs[1], rhs);
+  result.z = dot3v(lhs[2], rhs);
+  return result;
 }
 static mat3 operator*(const mat3 &lhs, const mat3 &rhs)
 {
-    mat3 product;
-    for(unsigned row = 0; row < 3; row++)
+  mat3 product;
+  for(unsigned row = 0; row < 3; row++)
+  {
+    for(unsigned col = 0; col < 3; col++)
     {
-        for(unsigned col = 0; col < 3; col++)
-        {
-            float dot = 0.0f;
-            for(unsigned i = 0; i < 3; i++)
-            {
-                dot += lhs.m[row][i] * rhs.m[i][col];
-            }
-            product[row][col] = dot;
-        }
+      float dot = 0.0f;
+      for(unsigned i = 0; i < 3; i++)
+      {
+        dot += lhs.m[row][i] * rhs.m[i][col];
+      }
+      product[row][col] = dot;
     }
-    return product;
+  }
+  return product;
 }
 // This function was made only for the matrix-vector multiplication
 static float dot4v(const float *a, v4 b)
 {
-    return (a[0] * b.x) + (a[1] * b.y) + (a[2] * b.z) + (a[3] * b.w);
+  return (a[0] * b.x) + (a[1] * b.y) + (a[2] * b.z) + (a[3] * b.w);
 }
 static v4 operator*(const mat4 &lhs, v4 rhs)
 {
-    v4 result;
+  v4 result;
 
-    result.x = dot4v(lhs[0], rhs);
-    result.y = dot4v(lhs[1], rhs);
-    result.z = dot4v(lhs[2], rhs);
-    result.w = dot4v(lhs[3], rhs);
+  result.x = dot4v(lhs[0], rhs);
+  result.y = dot4v(lhs[1], rhs);
+  result.z = dot4v(lhs[2], rhs);
+  result.w = dot4v(lhs[3], rhs);
 
-    return result;
+  return result;
 }
 
 static mat4 operator*(const mat4 &lhs, const mat4 &rhs)
 {
-    mat4 product;
+  mat4 product;
 
-    // Loop through each spot in the resulting matrix
-    for(unsigned row = 0; row < 4; row++)
+  // Loop through each spot in the resulting matrix
+  for(unsigned row = 0; row < 4; row++)
+  {
+    for(unsigned col = 0; col < 4; col++)
     {
-        for(unsigned col = 0; col < 4; col++)
-        {
-            // Dot the row and column for the given slot
-            float dot = 0.0f;
-            for(unsigned i = 0; i < 4; i++)
-            {
-                dot += lhs.m[row][i] * rhs.m[i][col];
-            }
+      // Dot the row and column for the given slot
+      float dot = 0.0f;
+      for(unsigned i = 0; i < 4; i++)
+      {
+        dot += lhs.m[row][i] * rhs.m[i][col];
+      }
 
-            product[row][col] = dot;
-        }
+      product[row][col] = dot;
     }
+  }
 
-    return product;
+  return product;
 }
 
 
@@ -646,103 +694,103 @@ static mat4 operator*(const mat4 &lhs, const mat4 &rhs)
 // https://www.geeksforgeeks.org/adjoint-inverse-matrix/
 static void get_cofactor(mat4 &a, mat4 &temp, int p, int q, int n) 
 { 
-    int i = 0, j = 0; 
+  int i = 0, j = 0; 
 
-    // Looping for each element of the matrix 
-    for(int row = 0; row < n; row++) 
+  // Looping for each element of the matrix 
+  for(int row = 0; row < n; row++) 
+  { 
+    for(int col = 0; col < n; col++) 
     { 
-        for(int col = 0; col < n; col++) 
-        { 
-            //  Copying into temporary matrix only those element 
-            //  which are not in given row and column 
-            if(row != p && col != q) 
-            { 
-                temp[i][j++] = a[row][col]; 
+      //  Copying into temporary matrix only those element 
+      //  which are not in given row and column 
+      if(row != p && col != q) 
+      { 
+        temp[i][j++] = a[row][col]; 
 
-                // Row is filled, so increase row index and 
-                // reset col index 
-                if(j == n - 1) 
-                { 
-                    j = 0; 
-                    i++; 
-                } 
-            } 
+        // Row is filled, so increase row index and 
+        // reset col index 
+        if(j == n - 1) 
+        { 
+          j = 0; 
+          i++; 
         } 
+      } 
     } 
+  } 
 } 
 
 // Recursive function for finding determinant of matrix. 
 // n is current dimension of a[][]
 static float determinant(mat4 &A, int n) 
 { 
-    if(n == 1) return A[0][0];
+  if(n == 1) return A[0][0];
 
-    float D = 0; // Initialize result 
-    mat4 temp; // To store cofactors 
-    float sign = 1;  // To store sign multiplier 
+  float D = 0; // Initialize result 
+  mat4 temp; // To store cofactors 
+  float sign = 1;  // To store sign multiplier 
 
-    // Iterate for each element of first row 
-    for(int f = 0; f < n; f++) 
-    { 
-        // Getting Cofactor of A[0][f] 
-        get_cofactor(A, temp, 0, f, n); 
-        D += sign * A[0][f] * determinant(temp, n - 1); 
+  // Iterate for each element of first row 
+  for(int f = 0; f < n; f++) 
+  { 
+    // Getting Cofactor of A[0][f] 
+    get_cofactor(A, temp, 0, f, n); 
+    D += sign * A[0][f] * determinant(temp, n - 1); 
 
-        // terms are to be added with alternate sign 
-        sign = -sign; 
-    } 
+    // terms are to be added with alternate sign 
+    sign = -sign; 
+  } 
 
-    return D; 
+  return D; 
 } 
 
 // Function to get adjoint of A[N][N] in adj[N][N]. 
 static void adjoint(mat4 &A, mat4 &adj) 
 { 
-    // temp is used to store cofactors of A[][] 
-    int sign = 1;
-    mat4 temp; 
+  // temp is used to store cofactors of A[][] 
+  int sign = 1;
+  mat4 temp; 
 
-    for(int i = 0; i < 4; i++) 
+  for(int i = 0; i < 4; i++) 
+  { 
+    for(int j = 0; j < 4; j++) 
     { 
-        for(int j = 0; j < 4; j++) 
-        { 
-            // Get cofactor of A[i][j] 
-            get_cofactor(A, temp, i, j, 4); 
+      // Get cofactor of A[i][j] 
+      get_cofactor(A, temp, i, j, 4); 
 
-            // sign of adj[j][i] positive if sum of row 
-            // and column indexes is even. 
-            sign = ((i + j) % 2 == 0) ? 1 : -1; 
+      // sign of adj[j][i] positive if sum of row 
+      // and column indexes is even. 
+      sign = ((i + j) % 2 == 0) ? 1 : -1; 
 
-            // Interchanging rows and columns to get the 
-            // transpose of the cofactor matrix 
-            adj[j][i] = sign * determinant(temp, 4-1); 
-        } 
+      // Interchanging rows and columns to get the 
+      // transpose of the cofactor matrix 
+      adj[j][i] = sign * determinant(temp, 4-1); 
     } 
+  } 
 } 
 
 // Function to calculate and store inverse, returns false if 
 // matrix is singular 
 static mat4 inverse(mat4 A) 
 {
-    mat4 inverse;
+  mat4 inverse;
 
-    // Find determinant of A[][] 
-    float det = determinant(A, 4); 
-    if (det == 0) 
-    { 
-        return mat4(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f); 
-    } 
+  // Find determinant of A[][] 
+  float det = determinant(A, 4); 
+  if (det == 0) 
+  { 
+    return mat4(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f); 
+  } 
 
-    // Find adjoint 
-    mat4 adj; 
-    adjoint(A, adj); 
+  // Find adjoint 
+  mat4 adj; 
+  adjoint(A, adj); 
 
-    // Find Inverse using formula "inverse(A) = adj(A)/det(A)" 
-    for(int i = 0; i < 4; i++) 
-        for(int j = 0; j < 4; j++) 
-            inverse[i][j] = adj[i][j] / det; 
+  // Find Inverse using formula "inverse(A) = adj(A)/det(A)" 
+  for(int i = 0; i < 4; i++) 
+    for(int j = 0; j < 4; j++) 
+      inverse[i][j] = adj[i][j] / det; 
 
-    return inverse; 
+  return inverse; 
 }
 
 
@@ -756,181 +804,181 @@ static mat4 inverse(mat4 A)
 
 static mat4 make_translation_matrix(v3 offset)
 {
-    mat4 result = 
-    {
-        1.0f, 0.0f, 0.0f, offset.x,
-        0.0f, 1.0f, 0.0f, offset.y,
-        0.0f, 0.0f, 1.0f, offset.z,
-        0.0f, 0.0f, 0.0f, 1.0f
-    };
+  mat4 result = 
+  {
+    1.0f, 0.0f, 0.0f, offset.x,
+    0.0f, 1.0f, 0.0f, offset.y,
+    0.0f, 0.0f, 1.0f, offset.z,
+    0.0f, 0.0f, 0.0f, 1.0f
+  };
 
-    return result;
+  return result;
 }
 
 static mat4 make_scale_matrix(v3 scale)
 {
-    mat4 result = 
-    {
-        scale.x, 0.0f, 0.0f, 0.0f,
-        0.0f, scale.y, 0.0f, 0.0f,
-        0.0f, 0.0f, scale.z, 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f
-    };
+  mat4 result = 
+  {
+    scale.x, 0.0f, 0.0f, 0.0f,
+    0.0f, scale.y, 0.0f, 0.0f,
+    0.0f, 0.0f, scale.z, 0.0f,
+    0.0f, 0.0f, 0.0f, 1.0f
+  };
 
-    return result;
+  return result;
 }
 
 static mat4 make_x_axis_rotation_matrix(float radians)
 {
-    mat4 result = 
-    {
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, (float)cos(radians), (float)-sin(radians), 0.0f,
-        0.0f, (float)sin(radians), (float)cos(radians), 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f
-    };
+  mat4 result = 
+  {
+    1.0f, 0.0f, 0.0f, 0.0f,
+    0.0f, (float)cos(radians), (float)-sin(radians), 0.0f,
+    0.0f, (float)sin(radians), (float)cos(radians), 0.0f,
+    0.0f, 0.0f, 0.0f, 1.0f
+  };
 
-    return result;
+  return result;
 }
 
 static mat4 make_y_axis_rotation_matrix(float radians)
 {
-    mat4 result = 
-    {
-        (float)cos(radians), 0.0f, (float)sin(radians), 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        (float)-sin(radians), 0.0f, (float)cos(radians), 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f
-    };
+  mat4 result = 
+  {
+    (float)cos(radians), 0.0f, (float)sin(radians), 0.0f,
+    0.0f, 1.0f, 0.0f, 0.0f,
+    (float)-sin(radians), 0.0f, (float)cos(radians), 0.0f,
+    0.0f, 0.0f, 0.0f, 1.0f
+  };
 
-    return result;
+  return result;
 }
 
 static mat4 make_z_axis_rotation_matrix(float radians)
 {
-    mat4 result = 
-    {
-        (float)cos(radians), (float)-sin(radians), 0.0f, 0.0f,
-        (float)sin(radians), (float)cos(radians), 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f
-    };
+  mat4 result = 
+  {
+    (float)cos(radians), (float)-sin(radians), 0.0f, 0.0f,
+    (float)sin(radians), (float)cos(radians), 0.0f, 0.0f,
+    0.0f, 0.0f, 1.0f, 0.0f,
+    0.0f, 0.0f, 0.0f, 1.0f
+  };
 
-    return result;
+  return result;
 }
 
 static mat3 make_axis_rotation_matrix(float rad, v3 u)
 {
-    float c = cosf(rad);
-    float s = sinf(rad);
-    mat3 result =
-    {
-        c + u.x*u.x*(1.0f - c),      u.x*u.y*(1.0f - c) - u.z*s,  u.x*u.z*(1.0f - c) + u.y*s,
-        u.y*u.x*(1.0f - c) + u.z*s,  c + u.y*u.y*(1.0f - c),      u.y*u.z*(1.0f - c) - u.x*s,
-        u.z*u.x*(1.0f - c) - u.y*s,  u.z*u.y*(1.0f - c) + u.x*s,  c + u.z*u.z*(1.0f - c)
-    };
-    return result;
+  float c = cosf(rad);
+  float s = sinf(rad);
+  mat3 result =
+  {
+    c + u.x*u.x*(1.0f - c),      u.x*u.y*(1.0f - c) - u.z*s,  u.x*u.z*(1.0f - c) + u.y*s,
+    u.y*u.x*(1.0f - c) + u.z*s,  c + u.y*u.y*(1.0f - c),      u.y*u.z*(1.0f - c) - u.x*s,
+    u.z*u.x*(1.0f - c) - u.y*s,  u.z*u.y*(1.0f - c) + u.x*s,  c + u.z*u.z*(1.0f - c)
+  };
+  return result;
 }
 
 
 
 static void seed_random(unsigned int n)
 {
-    srand(n);
+  srand(n);
 }
 
 static float random_01()
 {
-    return (float)rand() / (float)RAND_MAX;
+  return (float)rand() / (float)RAND_MAX;
 }
 
 static int random_range(int min, int max)
 {
-    int random_number = rand();
+  int random_number = rand();
 
-    int diff = max - min;
-    int range = random_number % (diff + 1);
-    int result = range + min;
-    return result;
+  int diff = max - min;
+  int range = random_number % (diff + 1);
+  int result = range + min;
+  return result;
 }
 
 static float random_range(float min, float max)
 {
-    return lerp(min, max, random_01());
+  return lerp(min, max, random_01());
 }
 
 static v4 random_color()
 {
-    float hue = random_range(0.0f, 360.0f);
-    float sat = 1.0f;
-    float value = 1.0f;
-    v3 hsv = { hue, sat, value };
-    return v4( hsv_to_rgb(hsv), 1.0f);
+  float hue = random_range(0.0f, 360.0f);
+  float sat = 1.0f;
+  float value = 1.0f;
+  v3 hsv = { hue, sat, value };
+  return v4( hsv_to_rgb(hsv), 1.0f);
 }
 
 
 static u32 random(u32 x)
 {
-    x ^= x << 13;
-    x *= 182376581;
-    x ^= x >> 17;
-    x *= 783456103;
-    x ^= x << 5;
-    x *= 53523;
-    return x;
+  x ^= x << 13;
+  x *= 182376581;
+  x ^= x >> 17;
+  x *= 783456103;
+  x ^= x << 5;
+  x *= 53523;
+  return x;
 }
 
 static __m256i rand8(__m256i x)
 {
-    x = _mm256_xor_si256(x, _mm256_slli_epi32(x, 13));
-    x = _mm256_mullo_epi32(x, _mm256_set1_epi32(182376581));
-    x = _mm256_xor_si256(x, _mm256_srli_epi32(x, 17));
-    x = _mm256_mullo_epi32(x, _mm256_set1_epi32(783456103));
-    x = _mm256_xor_si256(x, _mm256_slli_epi32(x, 5));
-    x = _mm256_mullo_epi32(x, _mm256_set1_epi32(53523));
-    return x;
+  x = _mm256_xor_si256(x, _mm256_slli_epi32(x, 13));
+  x = _mm256_mullo_epi32(x, _mm256_set1_epi32(182376581));
+  x = _mm256_xor_si256(x, _mm256_srli_epi32(x, 17));
+  x = _mm256_mullo_epi32(x, _mm256_set1_epi32(783456103));
+  x = _mm256_xor_si256(x, _mm256_slli_epi32(x, 5));
+  x = _mm256_mullo_epi32(x, _mm256_set1_epi32(53523));
+  return x;
 }
 
 static v2 random_gradient(s32 x, s32 y)
 {
-    u32 w = 8 * sizeof(unsigned);
-    u32 s = w / 2;
-    u32 a = x, b = y;
-    a *= 3284157443;
-    b ^= a << s | a >> w-s;
-    b *= 1911520717;
-    a ^= b << s | b >> w-s;
-    a *= 2048419325;
-    float random = a * (3.14159265 / ~(~0u >> 1));
-    return v2(cosf(random), sinf(random));
+  u32 w = 8 * sizeof(unsigned);
+  u32 s = w / 2;
+  u32 a = x, b = y;
+  a *= 3284157443;
+  b ^= a << s | a >> w-s;
+  b *= 1911520717;
+  a ^= b << s | b >> w-s;
+  a *= 2048419325;
+  float random = a * (3.14159265 / ~(~0u >> 1));
+  return v2(cosf(random), sinf(random));
 }
 static float smoothstep(float a0, float a1, float w)
 {
-    return (a1 - a0) * (3.0 - w * 2.0) * w * w + a0;
+  return (a1 - a0) * (3.0 - w * 2.0) * w * w + a0;
 }
 static float perlin_noise(float x, float y)
 {
-    v2 p = v2(x, y);
+  v2 p = v2(x, y);
 
-    float x0 = x > 0.0f ? (s32)x : (s32)(x - 1.0f);
-    float x1 = x0 + 1;
-    float y0 = y > 0.0f ? (s32)y : (s32)(y - 1.0f);
-    float y1 = y0 + 1;
+  float x0 = x > 0.0f ? (s32)x : (s32)(x - 1.0f);
+  float x1 = x0 + 1;
+  float y0 = y > 0.0f ? (s32)y : (s32)(y - 1.0f);
+  float y1 = y0 + 1;
 
-    v2 d0 = p - v2(x0, y0);
-    v2 d1 = p - v2(x1, y0);
-    v2 d2 = p - v2(x0, y1);
-    v2 d3 = p - v2(x1, y1);
+  v2 d0 = p - v2(x0, y0);
+  v2 d1 = p - v2(x1, y0);
+  v2 d2 = p - v2(x0, y1);
+  v2 d3 = p - v2(x1, y1);
 
-    v2 g0 = random_gradient(x0, y0);
-    v2 g1 = random_gradient(x1, y0);
-    v2 g2 = random_gradient(x0, y1);
-    v2 g3 = random_gradient(x1, y1);
+  v2 g0 = random_gradient(x0, y0);
+  v2 g1 = random_gradient(x1, y0);
+  v2 g2 = random_gradient(x0, y1);
+  v2 g3 = random_gradient(x1, y1);
 
-    float i0 = smoothstep(dot(d0, g0), dot(d1, g1), x - x0);
-    float i1 = smoothstep(dot(d2, g2), dot(d3, g3), x - x0);
-    float i2 = smoothstep(i0, i1, y - y0);
-    return i2;
+  float i0 = smoothstep(dot(d0, g0), dot(d1, g1), x - x0);
+  float i1 = smoothstep(dot(d2, g2), dot(d3, g3), x - x0);
+  float i2 = smoothstep(i0, i1, y - y0);
+  return i2;
 }
 
 
@@ -938,137 +986,137 @@ static float perlin_noise(float x, float y)
 
 float pnoise(float x, float y, float z)
 {
-    const auto& get_gradient = [](s32 px, s32 py, s32 pz)
-    {
-        int kNumPoints = 100000;
-        //f32 v = fract(sinf(dot(intPos, v3(12.9898, 78.233, 1234.5678))));
-        f32 v = sinf( f32(px)*12.9898 + f32(py)*78.233 + f32(pz)*1234.5678);
-        float i = (v - floor(v)) * 43758.5453;
+  const auto& get_gradient = [](s32 px, s32 py, s32 pz)
+  {
+    int kNumPoints = 100000;
+    //f32 v = fract(sinf(dot(intPos, v3(12.9898, 78.233, 1234.5678))));
+    f32 v = sinf( f32(px)*12.9898 + f32(py)*78.233 + f32(pz)*1234.5678);
+    float i = (v - floor(v)) * 43758.5453;
 
-        float kGoldenFactor = 10.166640738;
-        float u = (2.0f / float(kNumPoints-1)) * float(i) - 1.0f;
-        float t = kGoldenFactor * float(i);
-        float up = sqrt(max(0.0f, 1.0f - u*u));
-        return v3(up*cos(t), up*sin(t), u);
-    };
+    float kGoldenFactor = 10.166640738;
+    float u = (2.0f / float(kNumPoints-1)) * float(i) - 1.0f;
+    float t = kGoldenFactor * float(i);
+    float up = sqrt(max(0.0f, 1.0f - u*u));
+    return v3(up*cos(t), up*sin(t), u);
+  };
 
-    s32 x0 = s32(floor(x));
-    s32 y0 = s32(floor(y));
-    s32 z0 = s32(floor(z));
-    s32 x1 = s32(ceil(x));
-    s32 y1 = s32(ceil(y));
-    s32 z1 = s32(ceil(z));
-    
-    v3 p = v3(x,y,z);
-    
-    v3 v[8];
-    v[0] = v3(x0, y0, z0);
-    v[1] = v3(x1, y0, z0);
-    v[2] = v3(x0, y1, z0);
-    v[3] = v3(x1, y1, z0);
-    v[4] = v3(x0, y0, z1);
-    v[5] = v3(x1, y0, z1);
-    v[6] = v3(x0, y1, z1);
-    v[7] = v3(x1, y1, z1);
-    
-    v3 d[8];
-    d[0] = p - v[0];
-    d[1] = p - v[1];
-    d[2] = p - v[2];
-    d[3] = p - v[3];
-    d[4] = p - v[4];
-    d[5] = p - v[5];
-    d[6] = p - v[6];
-    d[7] = p - v[7];
-    
-    f32 dx = x-f32(x0);
-    f32 dy = y-f32(y0);
-    f32 dz = z-f32(z0);
+  s32 x0 = s32(floor(x));
+  s32 y0 = s32(floor(y));
+  s32 z0 = s32(floor(z));
+  s32 x1 = s32(ceil(x));
+  s32 y1 = s32(ceil(y));
+  s32 z1 = s32(ceil(z));
 
-    f32 tx = dx * dx * (3.0 - 2.0 * dx);
-    f32 ty = dy * dy * (3.0 - 2.0 * dy);
-    f32 tz = dz * dz * (3.0 - 2.0 * dz);
-    
-    f32 noiseVal = 
+  v3 p = v3(x,y,z);
+
+  v3 v[8];
+  v[0] = v3(x0, y0, z0);
+  v[1] = v3(x1, y0, z0);
+  v[2] = v3(x0, y1, z0);
+  v[3] = v3(x1, y1, z0);
+  v[4] = v3(x0, y0, z1);
+  v[5] = v3(x1, y0, z1);
+  v[6] = v3(x0, y1, z1);
+  v[7] = v3(x1, y1, z1);
+
+  v3 d[8];
+  d[0] = p - v[0];
+  d[1] = p - v[1];
+  d[2] = p - v[2];
+  d[3] = p - v[3];
+  d[4] = p - v[4];
+  d[5] = p - v[5];
+  d[6] = p - v[6];
+  d[7] = p - v[7];
+
+  f32 dx = x-f32(x0);
+  f32 dy = y-f32(y0);
+  f32 dz = z-f32(z0);
+
+  f32 tx = dx * dx * (3.0 - 2.0 * dx);
+  f32 ty = dy * dy * (3.0 - 2.0 * dy);
+  f32 tz = dz * dz * (3.0 - 2.0 * dz);
+
+  f32 noiseVal = 
+    lerp(
         lerp(
-            lerp(
-                lerp(
-                    dot(get_gradient(v[0].x, v[0].y, v[0].z), d[0]),
-                    dot(get_gradient(v[1].x, v[1].y, v[1].z), d[1]),
-                    tx),
-                lerp(
-                    dot(get_gradient(v[2].x, v[2].y, v[2].z), d[2]),
-                    dot(get_gradient(v[3].x, v[3].y, v[3].z), d[3]),
-                    tx),
-                ty
-            ),
-            lerp(
-                lerp(
-                    dot(get_gradient(v[4].x, v[4].y, v[4].z), d[4]),
-                    dot(get_gradient(v[5].x, v[5].y, v[5].z), d[5]),
-                    tx),
-                lerp(
-                    dot(get_gradient(v[6].x, v[6].y, v[6].z), d[6]),
-                    dot(get_gradient(v[7].x, v[7].y, v[7].z), d[7]),
-                    tx),
-                ty
-            ),
-            tz
-        );
-    return noiseVal / 0.7; // normalize to about [-1..1];
+          lerp(
+            dot(get_gradient(v[0].x, v[0].y, v[0].z), d[0]),
+            dot(get_gradient(v[1].x, v[1].y, v[1].z), d[1]),
+            tx),
+          lerp(
+            dot(get_gradient(v[2].x, v[2].y, v[2].z), d[2]),
+            dot(get_gradient(v[3].x, v[3].y, v[3].z), d[3]),
+            tx),
+          ty
+          ),
+        lerp(
+          lerp(
+            dot(get_gradient(v[4].x, v[4].y, v[4].z), d[4]),
+            dot(get_gradient(v[5].x, v[5].y, v[5].z), d[5]),
+            tx),
+          lerp(
+            dot(get_gradient(v[6].x, v[6].y, v[6].z), d[6]),
+            dot(get_gradient(v[7].x, v[7].y, v[7].z), d[7]),
+            tx),
+          ty
+          ),
+        tz
+          );
+  return noiseVal / 0.7; // normalize to about [-1..1];
 }
 #endif
 
 f32 fract(f32 x)
 {
-    f32 f = std::floor(x);
-    return x - f;
+  f32 f = std::floor(x);
+  return x - f;
 }
 
 f32 approx_sin(f32 x)
 {
-    constexpr f32 pi = f32(M_PI);
+  constexpr f32 pi = f32(M_PI);
 
-    //f32 sign = x < 0 ? -1.0f : 1.0f;
+  //f32 sign = x < 0 ? -1.0f : 1.0f;
 
-    f32 sign = 1.0f;
-    {
-        f32 xx = x / (pi*2.0f);
-        xx = fract(xx);
-        sign = xx >= 0.5f ? -1.0f : 1.0f;
-    }
-    
-    bool flip = false;
-    {
-        f32 xx = std::abs(x);
-        xx = xx / pi;
-        xx = fract(xx);
-        flip = xx >= 0.5f;
-    }
+  f32 sign = 1.0f;
+  {
+    f32 xx = x / (pi*2.0f);
+    xx = fract(xx);
+    sign = xx >= 0.5f ? -1.0f : 1.0f;
+  }
 
-    x = std::abs(x);
-    x = x / (pi*0.5f);
-    x = fract(x);
-    x *= pi*0.5f;
+  bool flip = false;
+  {
+    f32 xx = std::abs(x);
+    xx = xx / pi;
+    xx = fract(xx);
+    flip = xx >= 0.5f;
+  }
 
-    if(flip)
-    {
-        x = pi*0.5f - x;
-    }
+  x = std::abs(x);
+  x = x / (pi*0.5f);
+  x = fract(x);
+  x *= pi*0.5f;
 
-    // [0, pi/2]  : x
-    // [pi/2, pi] : 1.0f - x
+  if(flip)
+  {
+    x = pi*0.5f - x;
+  }
 
-    // [0, pi]    :  x
-    // [pi, 2*pi] : -x
+  // [0, pi/2]  : x
+  // [pi/2, pi] : 1.0f - x
+
+  // [0, pi]    :  x
+  // [pi, 2*pi] : -x
 
 #define POW2(n) ((n)*(n))
 #define POW3(n) ((n)*(n)*(n))
 #define POW4(n) ((n)*(n)*(n)*(n))
-    f32 eval_1 = x - POW3(x) / 6.0f;
-    f32 eval_2 = (1.0f / 384.0f) * POW4(pi - 2.0f*x) - (1.0f/8.0f) * POW2(pi - 2.0f * x) + 1.0f;
-    f32 eval = x < 0.6403 ? eval_1 : eval_2;
-    return eval * sign;
+  f32 eval_1 = x - POW3(x) / 6.0f;
+  f32 eval_2 = (1.0f / 384.0f) * POW4(pi - 2.0f*x) - (1.0f/8.0f) * POW2(pi - 2.0f * x) + 1.0f;
+  f32 eval = x < 0.6403 ? eval_1 : eval_2;
+  return eval * sign;
 #undef POW2
 #undef POW3
 #undef POW4
@@ -1076,182 +1124,182 @@ f32 approx_sin(f32 x)
 
 static inline __m256 approx_sin8(__m256 x)
 {
-    const __m256 pi       = _mm256_set1_ps(3.14159265f);
-    const __m256 h_pi     = _mm256_set1_ps(0.5f * 3.14159265f);
-    const __m256 inv_pi   = _mm256_set1_ps(1.0f / 3.14159265f);
-    const __m256 inv_h_pi = _mm256_set1_ps(1.0f / (0.5f * 3.14159265f));
-    const __m256 inv_2_pi = _mm256_set1_ps(1.0f / (2.0f * 3.14159265f));
+  const __m256 pi       = _mm256_set1_ps(3.14159265f);
+  const __m256 h_pi     = _mm256_set1_ps(0.5f * 3.14159265f);
+  const __m256 inv_pi   = _mm256_set1_ps(1.0f / 3.14159265f);
+  const __m256 inv_h_pi = _mm256_set1_ps(1.0f / (0.5f * 3.14159265f));
+  const __m256 inv_2_pi = _mm256_set1_ps(1.0f / (2.0f * 3.14159265f));
 
-    // Range reduce to [0, 2*pi] to check if we need to negate result.
-    __m256 sign;
-    {
-        __m256 xx = _mm256_mul_ps(x, inv_2_pi);
-        xx = _mm256_sub_ps(xx, _mm256_round_ps(xx, _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
-        __m256 mask = _mm256_cmp_ps(xx, _mm256_set1_ps(0.5f), _CMP_NLT_UQ);
-        sign = _mm256_and_ps(mask, _mm256_castsi256_ps(_mm256_set1_epi32(0x80000000)));
-    }
+  // Range reduce to [0, 2*pi] to check if we need to negate result.
+  __m256 sign;
+  {
+    __m256 xx = _mm256_mul_ps(x, inv_2_pi);
+    xx = _mm256_sub_ps(xx, _mm256_round_ps(xx, _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+    __m256 mask = _mm256_cmp_ps(xx, _mm256_set1_ps(0.5f), _CMP_NLT_UQ);
+    sign = _mm256_and_ps(mask, _mm256_castsi256_ps(_mm256_set1_epi32(0x80000000)));
+  }
 
-    // From now on x is positive
-    x = _mm256_and_ps(x, _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF)));
+  // From now on x is positive
+  x = _mm256_and_ps(x, _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF)));
 
-    // Range reduce to [0, pi] to check if we need to flip X.
-    __m256 flip_mask;
-    {
-        __m256 xx = _mm256_mul_ps(x, inv_pi);
-        xx = _mm256_sub_ps(xx, _mm256_round_ps(xx, _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC));
-        flip_mask = _mm256_cmp_ps(xx, _mm256_set1_ps(0.5f), _CMP_NLT_UQ);
-    }
+  // Range reduce to [0, pi] to check if we need to flip X.
+  __m256 flip_mask;
+  {
+    __m256 xx = _mm256_mul_ps(x, inv_pi);
+    xx = _mm256_sub_ps(xx, _mm256_round_ps(xx, _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC));
+    flip_mask = _mm256_cmp_ps(xx, _mm256_set1_ps(0.5f), _CMP_NLT_UQ);
+  }
 
-    // Range reduce to [0, pi/2] for evaluation
-    x = _mm256_mul_ps(x, inv_h_pi);
-    x = _mm256_sub_ps(x, _mm256_round_ps(x, _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC));
-    x = _mm256_mul_ps(x,  h_pi);
+  // Range reduce to [0, pi/2] for evaluation
+  x = _mm256_mul_ps(x, inv_h_pi);
+  x = _mm256_sub_ps(x, _mm256_round_ps(x, _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC));
+  x = _mm256_mul_ps(x,  h_pi);
 
-    __m256 flip_x = _mm256_fmadd_ps(x, _mm256_set1_ps(-1.0f), h_pi);
-    x = _mm256_blendv_ps(x, flip_x, flip_mask);
+  __m256 flip_x = _mm256_fmadd_ps(x, _mm256_set1_ps(-1.0f), h_pi);
+  x = _mm256_blendv_ps(x, flip_x, flip_mask);
 
-    // x = x - x^3 / 6
-    __m256 eval0 =  _mm256_fnmadd_ps(_mm256_mul_ps(_mm256_mul_ps(x, x), x), _mm256_set1_ps(1.0f / 6.0f), x);
+  // x = x - x^3 / 6
+  __m256 eval0 =  _mm256_fnmadd_ps(_mm256_mul_ps(_mm256_mul_ps(x, x), x), _mm256_set1_ps(1.0f / 6.0f), x);
 
-    // x = 1/384*(pi - 2*x)^4 - 1/8*(pi - 2x)^2 + 1
-    __m256 t = _mm256_fnmadd_ps(x, _mm256_set1_ps(2.0f), pi);
-    __m256 t2 = _mm256_mul_ps(t, t);
-    __m256 t4 = _mm256_mul_ps(t2, t2);
-    __m256 eval1 = _mm256_mul_ps(_mm256_set1_ps(1.0f/384.0f), t4);
-    eval1 = _mm256_fnmadd_ps(_mm256_set1_ps(1.0f/8.0f), t2, eval1);
-    eval1 = _mm256_add_ps(eval1, _mm256_set1_ps(1.0f));
+  // x = 1/384*(pi - 2*x)^4 - 1/8*(pi - 2x)^2 + 1
+  __m256 t = _mm256_fnmadd_ps(x, _mm256_set1_ps(2.0f), pi);
+  __m256 t2 = _mm256_mul_ps(t, t);
+  __m256 t4 = _mm256_mul_ps(t2, t2);
+  __m256 eval1 = _mm256_mul_ps(_mm256_set1_ps(1.0f/384.0f), t4);
+  eval1 = _mm256_fnmadd_ps(_mm256_set1_ps(1.0f/8.0f), t2, eval1);
+  eval1 = _mm256_add_ps(eval1, _mm256_set1_ps(1.0f));
 
-    __m256 eval_blend_mask = _mm256_cmp_ps(x, _mm256_set1_ps(0.6403f), _CMP_LT_OQ);
-    __m256 eval = _mm256_blendv_ps(eval1, eval0, eval_blend_mask);
+  __m256 eval_blend_mask = _mm256_cmp_ps(x, _mm256_set1_ps(0.6403f), _CMP_LT_OQ);
+  __m256 eval = _mm256_blendv_ps(eval1, eval0, eval_blend_mask);
 
-    eval = _mm256_or_ps(eval, sign);
+  eval = _mm256_or_ps(eval, sign);
 
-    return eval;
+  return eval;
 }
 
 static inline __m256 approx_cos8(__m256 x)
 {
-    const __m256 h_pi = _mm256_set1_ps(0.5f * 3.14159265f);
-    return approx_sin8(_mm256_sub_ps(x, h_pi));
+  const __m256 h_pi = _mm256_set1_ps(0.5f * 3.14159265f);
+  return approx_sin8(_mm256_sub_ps(x, h_pi));
 }
 
 
 static inline __m256 lerp8(__m256 a, __m256 b, __m256 t)
 {
-    return _mm256_add_ps(
-        _mm256_mul_ps(_mm256_sub_ps(_mm256_set1_ps(1.0f), t), a),
-        _mm256_mul_ps(t, b)
-    );
+  return _mm256_add_ps(
+      _mm256_mul_ps(_mm256_sub_ps(_mm256_set1_ps(1.0f), t), a),
+      _mm256_mul_ps(t, b)
+      );
 }
 static inline __m256 pnoise8(__m256 x, __m256 y, __m256 z)
 {
-    __m256 x0 = _mm256_round_ps(x, (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
-    __m256 x1 = _mm256_round_ps(_mm256_add_ps(x, _mm256_set1_ps(1.0f)), (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
-    __m256 y0 = _mm256_round_ps(y, (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
-    __m256 y1 = _mm256_round_ps(_mm256_add_ps(y, _mm256_set1_ps(1.0f)), (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
-    __m256 z0 = _mm256_round_ps(z, (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
-    __m256 z1 = _mm256_round_ps(_mm256_add_ps(z, _mm256_set1_ps(1.0f)), (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+  __m256 x0 = _mm256_round_ps(x, (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+  __m256 x1 = _mm256_round_ps(_mm256_add_ps(x, _mm256_set1_ps(1.0f)), (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+  __m256 y0 = _mm256_round_ps(y, (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+  __m256 y1 = _mm256_round_ps(_mm256_add_ps(y, _mm256_set1_ps(1.0f)), (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+  __m256 z0 = _mm256_round_ps(z, (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+  __m256 z1 = _mm256_round_ps(_mm256_add_ps(z, _mm256_set1_ps(1.0f)), (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
 
-    // Handle the case where e.g. x is 1.99999988. x0 will be 1 and x1 will be 3 (1.99999988f + 1.0f = 3.0f).
-    // If x1 - x0 > 1, x1--
-    __m256 sub_mask = _mm256_cmp_ps(_mm256_sub_ps(x1, x0), _mm256_set1_ps(1.0f), _CMP_GT_OQ);
-    x1 = _mm256_sub_ps(x1, _mm256_and_ps(_mm256_set1_ps(1.0f), sub_mask));
-    sub_mask = _mm256_cmp_ps(_mm256_sub_ps(y1, y0), _mm256_set1_ps(1.0f), _CMP_GT_OQ);
-    y1 = _mm256_sub_ps(y1, _mm256_and_ps(_mm256_set1_ps(1.0f), sub_mask));
-    sub_mask = _mm256_cmp_ps(_mm256_sub_ps(z1, z0), _mm256_set1_ps(1.0f), _CMP_GT_OQ);
-    z1 = _mm256_sub_ps(z1, _mm256_and_ps(_mm256_set1_ps(1.0f), sub_mask));
+  // Handle the case where e.g. x is 1.99999988. x0 will be 1 and x1 will be 3 (1.99999988f + 1.0f = 3.0f).
+  // If x1 - x0 > 1, x1--
+  __m256 sub_mask = _mm256_cmp_ps(_mm256_sub_ps(x1, x0), _mm256_set1_ps(1.0f), _CMP_GT_OQ);
+  x1 = _mm256_sub_ps(x1, _mm256_and_ps(_mm256_set1_ps(1.0f), sub_mask));
+  sub_mask = _mm256_cmp_ps(_mm256_sub_ps(y1, y0), _mm256_set1_ps(1.0f), _CMP_GT_OQ);
+  y1 = _mm256_sub_ps(y1, _mm256_and_ps(_mm256_set1_ps(1.0f), sub_mask));
+  sub_mask = _mm256_cmp_ps(_mm256_sub_ps(z1, z0), _mm256_set1_ps(1.0f), _CMP_GT_OQ);
+  z1 = _mm256_sub_ps(z1, _mm256_and_ps(_mm256_set1_ps(1.0f), sub_mask));
 
-    __m256 vx[8];
-    __m256 vy[8];
-    __m256 vz[8];
-    vx[0] = x0; vy[0] = y0; vz[0] = z0;
-    vx[1] = x1; vy[1] = y0; vz[1] = z0;
-    vx[2] = x0; vy[2] = y1; vz[2] = z0;
-    vx[3] = x1; vy[3] = y1; vz[3] = z0;
-    vx[4] = x0; vy[4] = y0; vz[4] = z1;
-    vx[5] = x1; vy[5] = y0; vz[5] = z1;
-    vx[6] = x0; vy[6] = y1; vz[6] = z1;
-    vx[7] = x1; vy[7] = y1; vz[7] = z1;
+  __m256 vx[8];
+  __m256 vy[8];
+  __m256 vz[8];
+  vx[0] = x0; vy[0] = y0; vz[0] = z0;
+  vx[1] = x1; vy[1] = y0; vz[1] = z0;
+  vx[2] = x0; vy[2] = y1; vz[2] = z0;
+  vx[3] = x1; vy[3] = y1; vz[3] = z0;
+  vx[4] = x0; vy[4] = y0; vz[4] = z1;
+  vx[5] = x1; vy[5] = y0; vz[5] = z1;
+  vx[6] = x0; vy[6] = y1; vz[6] = z1;
+  vx[7] = x1; vy[7] = y1; vz[7] = z1;
 
-    __m256 dx[8];
-    __m256 dy[8];
-    __m256 dz[8];
-    for(u32 i = 0; i < 8; i++)
-    {
-        dx[i] = _mm256_sub_ps(x, vx[i]);
-        dy[i] = _mm256_sub_ps(y, vy[i]);
-        dz[i] = _mm256_sub_ps(z, vz[i]);
-    }
+  __m256 dx[8];
+  __m256 dy[8];
+  __m256 dz[8];
+  for(u32 i = 0; i < 8; i++)
+  {
+    dx[i] = _mm256_sub_ps(x, vx[i]);
+    dy[i] = _mm256_sub_ps(y, vy[i]);
+    dz[i] = _mm256_sub_ps(z, vz[i]);
+  }
 
-    __m256 gx[8];
-    __m256 gy[8];
-    __m256 gz[8];
-    __m256 v_noise[8];
-    constexpr u32 num_sphere_points = 1 << 12;
-    // Create noise for each vertex.
-    for(u32 i = 0; i < 8; i++)
-    {
-        __m256i i_noise = rand8(_mm256_castps_si256(_mm256_xor_ps(_mm256_xor_ps(vx[i], vy[i]), vz[i])));
-        i_noise = _mm256_and_si256(i_noise, _mm256_set1_epi32(num_sphere_points - 1));
-        v_noise[i] = _mm256_cvtepi32_ps(i_noise);
-    }
-    // Use random number to index points on a sphere.
-    for(u32 i = 0; i < 8; i++)
-    {
-        const __m256 noise = v_noise[i];
-        __m256 u = _mm256_fmsub_ps(_mm256_set1_ps(2.0f / float(num_sphere_points - 1)), noise, _mm256_set1_ps(1.0f));
-        __m256 t = _mm256_mul_ps(_mm256_set1_ps(10.166640738f), noise);
-        __m256 up = _mm256_sqrt_ps(
-            _mm256_max_ps(
-                _mm256_set1_ps(0.0f),
-                _mm256_fnmadd_ps(u, u, _mm256_set1_ps(1.0f))
-            )
+  __m256 gx[8];
+  __m256 gy[8];
+  __m256 gz[8];
+  __m256 v_noise[8];
+  constexpr u32 num_sphere_points = 1 << 12;
+  // Create noise for each vertex.
+  for(u32 i = 0; i < 8; i++)
+  {
+    __m256i i_noise = rand8(_mm256_castps_si256(_mm256_xor_ps(_mm256_xor_ps(vx[i], vy[i]), vz[i])));
+    i_noise = _mm256_and_si256(i_noise, _mm256_set1_epi32(num_sphere_points - 1));
+    v_noise[i] = _mm256_cvtepi32_ps(i_noise);
+  }
+  // Use random number to index points on a sphere.
+  for(u32 i = 0; i < 8; i++)
+  {
+    const __m256 noise = v_noise[i];
+    __m256 u = _mm256_fmsub_ps(_mm256_set1_ps(2.0f / float(num_sphere_points - 1)), noise, _mm256_set1_ps(1.0f));
+    __m256 t = _mm256_mul_ps(_mm256_set1_ps(10.166640738f), noise);
+    __m256 up = _mm256_sqrt_ps(
+        _mm256_max_ps(
+          _mm256_set1_ps(0.0f),
+          _mm256_fnmadd_ps(u, u, _mm256_set1_ps(1.0f))
+          )
         );
-        gx[i] = _mm256_mul_ps(up, approx_cos8(t));
-        gy[i] = _mm256_mul_ps(up, approx_sin8(t));
-        gz[i] = u;
-    }
+    gx[i] = _mm256_mul_ps(up, approx_cos8(t));
+    gy[i] = _mm256_mul_ps(up, approx_sin8(t));
+    gz[i] = u;
+  }
 
-    __m256 dot_product[8];
-    for(u32 i = 0; i < 8; i++)
-    {
-        dot_product[i] = _mm256_fmadd_ps(dx[i], gx[i], _mm256_fmadd_ps(dy[i], gy[i], _mm256_mul_ps(dz[i], gz[i])));
-    }
+  __m256 dot_product[8];
+  for(u32 i = 0; i < 8; i++)
+  {
+    dot_product[i] = _mm256_fmadd_ps(dx[i], gx[i], _mm256_fmadd_ps(dy[i], gy[i], _mm256_mul_ps(dz[i], gz[i])));
+  }
 
-    __m256 tx = dx[0];
-    // Smooth t.
-    tx = _mm256_mul_ps(tx, _mm256_mul_ps(tx, _mm256_sub_ps(_mm256_set1_ps(3.0f), _mm256_mul_ps(tx, _mm256_set1_ps(2.0f)))));
-    __m256 ty = dy[0];
-    ty = _mm256_mul_ps(ty, _mm256_mul_ps(ty, _mm256_sub_ps(_mm256_set1_ps(3.0f), _mm256_mul_ps(ty, _mm256_set1_ps(2.0f)))));
-    __m256 tz = dz[0];
-    tz = _mm256_mul_ps(tz, _mm256_mul_ps(tz, _mm256_sub_ps(_mm256_set1_ps(3.0f), _mm256_mul_ps(tz, _mm256_set1_ps(2.0f)))));
+  __m256 tx = dx[0];
+  // Smooth t.
+  tx = _mm256_mul_ps(tx, _mm256_mul_ps(tx, _mm256_sub_ps(_mm256_set1_ps(3.0f), _mm256_mul_ps(tx, _mm256_set1_ps(2.0f)))));
+  __m256 ty = dy[0];
+  ty = _mm256_mul_ps(ty, _mm256_mul_ps(ty, _mm256_sub_ps(_mm256_set1_ps(3.0f), _mm256_mul_ps(ty, _mm256_set1_ps(2.0f)))));
+  __m256 tz = dz[0];
+  tz = _mm256_mul_ps(tz, _mm256_mul_ps(tz, _mm256_sub_ps(_mm256_set1_ps(3.0f), _mm256_mul_ps(tz, _mm256_set1_ps(2.0f)))));
 
-    __m256 result = 
+  __m256 result = 
+    lerp8(
         lerp8(
-            lerp8(
-                lerp8(
-                    dot_product[0],
-                    dot_product[1],
-                    tx),
-                lerp8(
-                    dot_product[2],
-                    dot_product[3],
-                    tx),
-                ty
-            ),
-            lerp8(
-                lerp8(
-                    dot_product[4],
-                    dot_product[5],
-                    tx),
-                lerp8(
-                    dot_product[6],
-                    dot_product[7],
-                    tx),
-                ty
-            ),
-            tz
-        );
-    return result;
+          lerp8(
+            dot_product[0],
+            dot_product[1],
+            tx),
+          lerp8(
+            dot_product[2],
+            dot_product[3],
+            tx),
+          ty
+          ),
+        lerp8(
+          lerp8(
+            dot_product[4],
+            dot_product[5],
+            tx),
+          lerp8(
+            dot_product[6],
+            dot_product[7],
+            tx),
+          ty
+          ),
+        tz
+          );
+  return result;
 }
 
