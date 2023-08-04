@@ -22,15 +22,15 @@
 // NOTE: This value must match the shader.
 static constexpr u32 SHADER_BUFFER_WIDTH = 1024*1024;
 static constexpr u32 NUM_VOXEL_DATA_FIELDS = 4;
-static constexpr s32 CHUNK_DIM = 16;
-static constexpr s32 CHUNK_POW = 4; // CHUNK_DIM = 2**CHUNK_POW
+static constexpr s32 CHUNK_DIM = 32;
+static constexpr s32 CHUNK_POW = 5; // CHUNK_DIM = 2**CHUNK_POW
 static_assert(1 << CHUNK_POW == CHUNK_DIM);
 static constexpr s32 CHUNK_MAX_VOXELS = CHUNK_DIM*CHUNK_DIM*CHUNK_DIM;
-static constexpr s32 VIEW_DIST = 256;
+static constexpr s32 VIEW_DIST = 1024;
 static constexpr s32 LOADED_REGION_CHUNKS_DIM = (VIEW_DIST/CHUNK_DIM)*2;
 static constexpr u32 MAX_CHUNKS = LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM;
 static constexpr u32 MAX_VOXELS = 50*1024*1024;
-static constexpr u32 MAX_CHUNKS_GEN_PER_FRAME = 64;
+static constexpr u32 MAX_CHUNKS_GEN_PER_FRAME = 2048;
 static constexpr u32 NUM_THREADS = 12;
 static s32 noise_data_width;
 static s32 noise_data_height;
@@ -895,11 +895,11 @@ __declspec(noinline) bool terrain_noise_3d(f32 x, f32 y, f32 z)
 
 __m256 sample_terrain(__m256 x, __m256 y, __m256 z)
 {
-    x = _mm256_mul_ps(x, _mm256_set1_ps(0.06f));
-    y = _mm256_mul_ps(y, _mm256_set1_ps(0.10f));
-    z = _mm256_mul_ps(z, _mm256_set1_ps(0.06f));
+    x = _mm256_mul_ps(x, _mm256_set1_ps(0.006f));
+    y = _mm256_mul_ps(y, _mm256_set1_ps(0.010f));
+    z = _mm256_mul_ps(z, _mm256_set1_ps(0.006f));
     __m256 n = pnoise8(x, y, z);
-    n = _mm256_sub_ps(n, _mm256_mul_ps(y, _mm256_set1_ps(0.7f)));
+    n = _mm256_sub_ps(n, _mm256_mul_ps(y, _mm256_set1_ps(0.8f)));
     return n;
 }
 
@@ -933,75 +933,98 @@ void allocate_and_gen_chunk_work(ThreadState* thread_state, void** out_data, con
     s32 chunk_z = data->chunk_z;
     u32 num_voxels = 0;
     
-    if(chunk_y*CHUNK_DIM >= -256 && chunk_y*CHUNK_DIM < 256)
+    if(chunk_y*CHUNK_DIM < -256 || chunk_y*CHUNK_DIM >= 256)
     {
-        
-        BitCube<CHUNK_DIM, CHUNK_DIM, CHUNK_DIM> bitcube;
-        static_assert(sizeof(BitCube<CHUNK_DIM, CHUNK_DIM, CHUNK_DIM>) < 1024*1024);
-        static_assert(sizeof(bitcube.m_v[0]) == 1);
-        
-        // Generate a bitcube of which voxels are terrain.
+        Chunk* result = allocate_chunk(0);
+        result->num = 0;
+        *out_data = result;
+        return;
+    }
+    
+    // Sample a subset of the chunk. If all samples are empty or filled, early out.
+    // We need to sample an area that is larger than the chunk. If we sampled the chunk exactly, a corner of the chunk
+    // could be on the surface, the chunk may be skipped, and we'd leave a hole in the ground.
+    
+    
+    // Generate a bitcube of which voxels are terrain.
+    BitCube<CHUNK_DIM + 16, CHUNK_DIM + 2, CHUNK_DIM + 2> bitcube;
+    static_assert(sizeof(BitCube<CHUNK_DIM, CHUNK_DIM, CHUNK_DIM>) < 1024*1024);
+    static_assert(sizeof(bitcube.m_v[0]) == 1);
+    {
+        const __m256 x_base = _mm256_add_ps(
+                                            _mm256_set1_ps(f32(chunk_x * CHUNK_DIM - 8)), _mm256_setr_ps(0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f));
+        __m256 z = _mm256_set1_ps(f32(chunk_z * CHUNK_DIM - 1));
+        for(s32 zi = 0; zi < CHUNK_DIM + 2; zi++)
         {
-            const __m256 x_base = _mm256_add_ps(_mm256_set1_ps(f32(chunk_x)), _mm256_setr_ps(0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f));
-            __m256 z = _mm256_set1_ps(f32(chunk_z * CHUNK_DIM));
-            for(s32 zi = chunk_z * CHUNK_DIM; zi < chunk_z * CHUNK_DIM + CHUNK_DIM; zi++)
+            __m256 y = _mm256_set1_ps(f32(chunk_y * CHUNK_DIM - 1));
+            for(s32 yi = 0; yi < CHUNK_DIM + 2; yi++)
             {
-                __m256 y = _mm256_set1_ps(f32(chunk_y * CHUNK_DIM));
-                for(s32 yi = chunk_y * CHUNK_DIM; yi < chunk_y * CHUNK_DIM + CHUNK_DIM; yi++)
+                __m256 x_accum = _mm256_set1_ps(0.0f);
+                for(s32 xi = 0; xi < CHUNK_DIM + 16; xi += 8)
                 {
-                    __m256 x_accum = _mm256_set1_ps(0.0f);
-                    for(s32 xi = chunk_x * CHUNK_DIM; xi < chunk_x * CHUNK_DIM + CHUNK_DIM; xi += 8)
-                    {
-                        __m256 x = _mm256_add_ps(x_base, x_accum);
-                        __m256 n = sample_terrain(x, y, z);
-                        __m256 n_mask = _mm256_cmp_ps(n, _mm256_set1_ps(0.0f), _CMP_NLT_UQ);
-                        u8 bits = u8(_mm256_movemask_ps(n_mask));
-                        s32 x_index = xi - chunk_x * CHUNK_DIM;
-                        s32 y_index = yi - chunk_y * CHUNK_DIM;
-                        s32 z_index = zi - chunk_z * CHUNK_DIM;
-                        s32 idx = z_index*CHUNK_DIM*CHUNK_DIM + y_index*CHUNK_DIM + x_index;
-                        bitcube.m_v[idx/8] = bits;
-                        
-                        x_accum = _mm256_add_ps(x_accum, _mm256_set1_ps(8.0f));
-                    }
-                    y = _mm256_add_ps(y, _mm256_set1_ps(1.0f));
+                    __m256 x = _mm256_add_ps(x_base, x_accum);
+                    __m256 n = sample_terrain(x, y, z);
+                    __m256 n_mask = _mm256_cmp_ps(n, _mm256_set1_ps(0.0f), _CMP_NLT_UQ);
+                    u8 bits = u8(_mm256_movemask_ps(n_mask));
+                    u32 idx = (zi*(CHUNK_DIM+2)*(CHUNK_DIM+16)) + (yi*(CHUNK_DIM+16)) + xi;
+                    bitcube.m_v[idx/8] = bits;
+                    
+                    x_accum = _mm256_add_ps(x_accum, _mm256_set1_ps(8.0f));
                 }
-                z = _mm256_add_ps(z, _mm256_set1_ps(1.0f));
+                y = _mm256_add_ps(y, _mm256_set1_ps(1.0f));
+            }
+            z = _mm256_add_ps(z, _mm256_set1_ps(1.0f));
+        }
+    }
+    
+    BitCube<CHUNK_DIM + 16, CHUNK_DIM + 2, CHUNK_DIM + 2> bitcube_copy;
+    memcpy(bitcube_copy.m_v, bitcube.m_v, ARRAY_COUNT(bitcube.m_v));
+    
+    // Turn off bits that are surrounded.
+    for(s32 bitcube_zi = 1; bitcube_zi < CHUNK_DIM + 1; bitcube_zi++)
+    {
+        for(s32 bitcube_yi = 1; bitcube_yi < CHUNK_DIM + 1; bitcube_yi++)
+        {
+            for(s32 bitcube_xi = 8; bitcube_xi < CHUNK_DIM + 8; bitcube_xi++)
+            {
+                s32 idx = (bitcube_zi*(CHUNK_DIM+2)*(CHUNK_DIM+16)) + (bitcube_yi*(CHUNK_DIM+16)) + bitcube_xi;
+                const u8 b0 = bitcube_copy.is_bit_set(bitcube_xi + 1, bitcube_yi + 0, bitcube_zi + 0);
+                const u8 b1 = bitcube_copy.is_bit_set(bitcube_xi - 1, bitcube_yi + 0, bitcube_zi + 0);
+                const u8 b2 = bitcube_copy.is_bit_set(bitcube_xi + 0, bitcube_yi + 1, bitcube_zi + 0);
+                const u8 b3 = bitcube_copy.is_bit_set(bitcube_xi + 0, bitcube_yi - 1, bitcube_zi + 0);
+                const u8 b4 = bitcube_copy.is_bit_set(bitcube_xi + 0, bitcube_yi + 0, bitcube_zi + 1);
+                const u8 b5 = bitcube_copy.is_bit_set(bitcube_xi + 0, bitcube_yi + 0, bitcube_zi - 1);
+                const u8 b6 = bitcube_copy.is_bit_set(bitcube_xi, bitcube_yi, bitcube_zi);
+                
+                const u8 mask = (b0<<0) | (b1<<1) | (b2<<2) | (b3<<3) | (b4<<4) | (b5<<5);
+                
+                bitcube.assign_bit(idx, (mask == 0b0011'1111) && b6 ? 0 : b6);
+                                         
             }
         }
-        
-        // Turn off bits that are surrounded.
-        /*
-        ITER_CUBE(CHUNK_DIM)
+    }
+    
+    
+    // Left pack and output.
+    {
+        const __m256 x_base = _mm256_add_ps(
+                                            _mm256_set1_ps(f32(chunk_x * CHUNK_DIM - 8)), _mm256_setr_ps(0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f));
+        for(s32 bitcube_zi = 1; bitcube_zi < CHUNK_DIM+1; bitcube_zi++)
         {
-          if(it.x >= 1 && it.x <= CHUNK_DIM - 2 &&
-             it.y >= 1 && it.y <= CHUNK_DIM - 2 &&
-             it.z >= 1 && it.z <= CHUNK_DIM - 2)
-          {
-            const u8 mask = 
-              (u8(bitcube.is_bit_set(it.x + 1, it.y + 0, it.z + 0)) << 0) &
-              (u8(bitcube.is_bit_set(it.x - 1, it.y + 0, it.z + 0)) << 1) &
-              (u8(bitcube.is_bit_set(it.x + 0, it.y + 1, it.z + 0)) << 2) &
-              (u8(bitcube.is_bit_set(it.x + 0, it.y - 1, it.z + 0)) << 3) &
-              (u8(bitcube.is_bit_set(it.x + 0, it.y + 0, it.z + 1)) << 4) &
-              (u8(bitcube.is_bit_set(it.x + 0, it.y + 0, it.z - 1)) << 5) &
-              (u8(bitcube.is_bit_set(it.x, it.y, it.z)) << 6);
-            bitcube.assign_bit(it.idx, mask == 0b0111'1111);
-          }
-        }
-        */
-        
-        // Left pack and output.
-        for(s32 zi = 0; zi < CHUNK_DIM; zi++)
-        {
-            for(s32 yi = 0; yi < CHUNK_DIM; yi++)
+            for(s32 bitcube_yi = 1; bitcube_yi < CHUNK_DIM+1; bitcube_yi++)
             {
-                for(s32 xi = 0; xi < CHUNK_DIM/8; xi++)
+                for(s32 bitcube_xi = 1; bitcube_xi < CHUNK_DIM/8 + 1; bitcube_xi++)
                 {
-                    u32 wbytes = (CHUNK_DIM/8);
-                    u8 bits = bitcube.m_v[zi*wbytes*CHUNK_DIM + yi*wbytes + xi];
+                    u32 row_bytes = (CHUNK_DIM/8) + 2;
+                    u32 frame_bytes = row_bytes*(CHUNK_DIM+2);
+                    u32 bitcube_idx = bitcube_zi*frame_bytes + bitcube_yi*row_bytes + bitcube_xi;
+                    u8 bits = bitcube.m_v[bitcube_idx];
                     
-                    __m256i x = _mm256_add_epi32(_mm256_set1_epi32(chunk_x*CHUNK_DIM + xi*8), _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7));
+                    u32 xi = (bitcube_xi - 1)*8;
+                    u32 yi = (bitcube_yi - 1);
+                    u32 zi = (bitcube_zi - 1);
+                    
+                    __m256i x = _mm256_add_epi32(_mm256_set1_epi32(chunk_x*CHUNK_DIM + xi), _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7));
                     __m256i y = _mm256_set1_epi32(chunk_y*CHUNK_DIM + yi);
                     __m256i z = _mm256_set1_epi32(chunk_z*CHUNK_DIM + zi);
                     __m256i v = _mm256_set1_epi32(0x22AA00FF);
@@ -1017,68 +1040,14 @@ void allocate_and_gen_chunk_work(ThreadState* thread_state, void** out_data, con
                 }
             }
         }
-        
-        
-        
-        
-        
-        /*
-        s32 all_empty  = true;
-        s32 all_filled = true;
-        bool n = terrain_noise_3d(x, y, z);
-
-        bool r;
-        r = terrain_noise_3d(x+1, y+0, z+0);
-        all_empty  *= s32(!r);
-        all_filled *= s32(r);
-        r = terrain_noise_3d(x-1, y+0, z+0);
-        all_empty  *= s32(!r);
-        all_filled *= s32(r);
-        r = terrain_noise_3d(x+0, y+1, z+0);
-        all_empty  *= s32(!r);
-        all_filled *= s32(r);
-        r = terrain_noise_3d(x+0, y-1, z+0);
-        all_empty  *= s32(!r);
-        all_filled *= s32(r);
-        r = terrain_noise_3d(x+0, y+0, z+1);
-        all_empty  *= s32(!r);
-        all_filled *= s32(r);
-        r = terrain_noise_3d(x+0, y+0, z-1);
-        all_empty  *= s32(!r);
-        all_filled *= s32(r);
-        bool surrounded = all_empty || all_filled;
-        if(n && !surrounded)
-        {
-          gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*0 + num_voxels] = x;
-          gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*1 + num_voxels] = y;
-          gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*2 + num_voxels] = z;
-          u32 r = u32(remap(perlin(x*4.0f, y, z*4.0f), -1.0f, 1.0f, 40.0f, 160.0f));
-          u32 g = u32(remap(perlin(x*4.0f, y, z*4.0f), -1.0f, 1.0f, 180.0f, 220.0f));
-          u32 b = 0;
-          u32 color =
-            (r << 24) | 
-            (g << 16) | 
-            (b <<  8) | 
-            (0xFF << 0);
-          gen_chunk_scratch->voxels[CHUNK_MAX_VOXELS*3 + num_voxels] = color;
-          ++num_voxels;
-        }
-      }
-    }
-  }
-  */
     }
     
     Chunk* result = allocate_chunk(num_voxels);
-#if 1
     result->num = num_voxels;
     memcpy(result->voxels + num_voxels*0, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*0, num_voxels * sizeof(result->voxels[0]));
     memcpy(result->voxels + num_voxels*1, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*1, num_voxels * sizeof(result->voxels[0]));
     memcpy(result->voxels + num_voxels*2, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*2, num_voxels * sizeof(result->voxels[0]));
     memcpy(result->voxels + num_voxels*3, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*3, num_voxels * sizeof(result->voxels[0]));
-#else
-    result->num = 0;
-#endif
     *out_data = result;
 }
 
@@ -1853,7 +1822,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 static f32 last_mouse_x, last_mouse_y;
                 f64 xpos, ypos;
                 glfwGetCursorPos(G_graphics_state->window, &xpos, &ypos);
-                if(glfwGetKey(G_graphics_state->window, GLFW_KEY_ENTER))
+                if(glfwGetKey(G_graphics_state->window, GLFW_KEY_SPACE))
                 {
                     v2 mouse_delta = v2((f32)xpos - last_mouse_x, (f32)ypos - last_mouse_y);
                     current_cam->rot_y -= mouse_delta.x * TIME_STEP * 0.2f;
@@ -1872,7 +1841,6 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 camera_vel +=  cam_k * glfwGetKey(G_graphics_state->window, GLFW_KEY_D);
                 camera_vel += -cam_k * glfwGetKey(G_graphics_state->window, GLFW_KEY_E);
                 static f32 camera_speed = 100.0f;
-                ImGui::DragFloat("camera speed", &camera_speed);
                 current_cam->pos += normalize(camera_vel) * TIME_STEP * camera_speed;
                 
             }
@@ -2152,49 +2120,43 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                    }
                    */
                 
-                static f32 x_off = 4.0f;
+                static f32 x_off = 0.0f;
                 static f32 y_off = 0.0f;
                 static f32 z_off = 0.0f;
-                static f32 scale = 0.08f;
-                static f32 y_scale_mag = 0.5f;
                 ImGui::DragFloat("x_off", &x_off);
                 ImGui::DragFloat("y_off", &y_off);
                 ImGui::DragFloat("z_off", &z_off);
-                ImGui::DragFloat("scale", &scale, 0.01f);
-                ImGui::DragFloat("y_scale_mag", &y_scale_mag, 0.01f);
                 ASSERT((G_graphics_state->imgui_debug_texture_width & 0b111) == 0, "Texture width must be divisible by 8");
-                const __m256 x_base = _mm256_mul_ps(_mm256_add_ps(_mm256_set1_ps(x_off), _mm256_setr_ps(0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f)), _mm256_set1_ps(scale));
-                __m256 z = _mm256_mul_ps(_mm256_add_ps(_mm256_set1_ps(z_off), _mm256_set1_ps(0.0f)), _mm256_set1_ps(scale));
-                for(u32 zi = 0; zi < 1; zi++)
+                
+                f32 texture_width = G_graphics_state->imgui_debug_texture_width;
+                f32 texture_height = G_graphics_state->imgui_debug_texture_height;
+                const __m256 x_base = _mm256_add_ps(
+                                                    _mm256_set1_ps(x_off - texture_width/2.0f), _mm256_setr_ps(0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f));
+                
+                __m256 z = _mm256_set1_ps(z_off);
+                __m256 y = _mm256_set1_ps(y_off - texture_height/2.0f);
+                for(u32 yi = 0; yi < G_graphics_state->imgui_debug_texture_height; yi++)
                 {
-                    __m256 y = _mm256_mul_ps(_mm256_add_ps(_mm256_set1_ps(y_off), _mm256_set1_ps(0.0f)), _mm256_set1_ps(scale));
-                    for(u32 yi = 0; yi < G_graphics_state->imgui_debug_texture_height; yi++)
+                    __m256 x_accum = _mm256_set1_ps(0.0f);
+                    for(u32 xi = 0; xi < G_graphics_state->imgui_debug_texture_width; xi += 8)
                     {
-                        __m256 x_accum = _mm256_set1_ps(0.0f);
-                        for(u32 xi = 0; xi < G_graphics_state->imgui_debug_texture_width; xi += 8)
+                        __m256 x = _mm256_add_ps(x_base, x_accum);
+                        
+                        __m256 n = sample_terrain(x, y, z);
+                        
+                        f32 n_array[8];
+                        _mm256_storeu_ps(n_array, n);
+                        for(u32 pi = 0; pi < 8; pi++)
                         {
-                            __m256 x = _mm256_add_ps(x_base, x_accum);
-                            
-                            __m256 n = pnoise8(x, y, z);
-                            
-                            n = _mm256_sub_ps(n, _mm256_mul_ps(y, _mm256_set1_ps(y_scale_mag*y_scale_mag)));
-                            f32 n_array[8];
-                            _mm256_storeu_ps(n_array, n);
-                            for(u32 pi = 0; pi < 8; pi++)
-                            {
-                                f32 pixel_noise = n_array[pi];
-                                u32 c = pixel_noise < 0 ? 0xFF222222: 0xFF888888;
-                                G_graphics_state->imgui_debug_texture_data[yi*G_graphics_state->imgui_debug_texture_width + xi + pi] = c;
-                            }
-                            
-                            x_accum = _mm256_add_ps(x_accum, _mm256_set1_ps(8.0f * scale));
+                            f32 pixel_noise = n_array[pi];
+                            u32 c = pixel_noise < 0 ? 0xFF222222: 0xFF888888;
+                            G_graphics_state->imgui_debug_texture_data[yi*G_graphics_state->imgui_debug_texture_width + xi + pi] = c;
                         }
-                        y = _mm256_add_ps(y, _mm256_set1_ps(scale));
+                        
+                        x_accum = _mm256_add_ps(x_accum, _mm256_set1_ps(8.0f));
                     }
-                    z = _mm256_add_ps(z, _mm256_set1_ps(scale));
+                    y = _mm256_add_ps(y, _mm256_set1_ps(1.0f));
                 }
-                
-                
                 
                 glBindTexture(GL_TEXTURE_2D, G_graphics_state->imgui_debug_texture);
                 glTexSubImage2D(
