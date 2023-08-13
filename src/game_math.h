@@ -255,6 +255,7 @@ float remap(float a, float from_min, float from_max, float to_min, float to_max)
     float from_percent = inv_lerp(from_min, from_max, a);
     return lerp(to_min, to_max, from_percent);
 }
+ int clamp(int a, int min, int max) { if(a < min) return min; if(a > max) return max; return a; }
 /*
    float cos(float a) { return cosf(a); }
    float sin(float a) { return sinf(a); }
@@ -268,7 +269,6 @@ float remap(float a, float from_min, float from_max, float to_min, float to_max)
    float min(float a, float b, float c) { return min(a, min(b, c)); }
    float max(float a, float b) { return (a > b) ? a : b; }
    float max(float a, float b, float c) { return max(a, max(b, c)); }
-   int clamp(int a, int min, int max) { if(a < min) return min; if(a > max) return max; return a; }
    float clamp(float a, float min, float max) { if(a < min) return min; if(a > max) return max; return a; }
    int floor(float a) { return (int)a; }
    float abs(float a) { return (a < 0.0f) ? -a : a; } 

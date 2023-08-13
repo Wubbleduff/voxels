@@ -10,10 +10,11 @@ layout (location = 2) in float a_z;
 
 layout(std430, binding = 0) buffer voxel_data
 {
-    float px[1024*1024];
-    float py[1024*1024];
-    float pz[1024*1024];
-    int color[1024*1024];
+    float b_px[1024*1024];
+    float b_py[1024*1024];
+    float b_pz[1024*1024];
+    float b_scale[1024*1024];
+    int b_color[1024*1024];
 };
 
 uniform mat4 m_view;
@@ -26,15 +27,16 @@ out vec4 model_color;
 
 void main()
 {
-    float offset_x = px[gl_InstanceID];
-    float offset_y = py[gl_InstanceID];
-    float offset_z = pz[gl_InstanceID];
+    float offset_x = b_px[gl_InstanceID];
+    float offset_y = b_py[gl_InstanceID];
+    float offset_z = b_pz[gl_InstanceID];
+    float scale = b_scale[gl_InstanceID];
 
     model_position = vec4(a_x, a_y, a_z, 1.0f);
-    world_position = vec4(a_x + offset_x, a_y + offset_y, a_z + offset_z, 1.0f);
+    world_position = vec4(a_x*scale + offset_x, a_y*scale + offset_y, a_z*scale + offset_z, 1.0f);
     view_position = m_view * world_position;
 
-    int color_tmp = color[gl_InstanceID];
+    int color_tmp = b_color[gl_InstanceID];
     int r = (color_tmp & 0xFF000000) >> 24;
     int g = (color_tmp & 0x00FF0000) >> 16;
     int b = (color_tmp & 0x0000FF00) >> 8;

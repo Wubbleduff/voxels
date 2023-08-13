@@ -22,8 +22,8 @@
 // NOTE: This value must match the shader.
 static constexpr u32 SHADER_BUFFER_WIDTH = 1024*1024;
 static constexpr u32 NUM_VOXEL_DATA_FIELDS = 4;
-static constexpr s32 CHUNK_DIM = 32;
-static constexpr s32 CHUNK_POW = 5; // CHUNK_DIM = 2**CHUNK_POW
+static constexpr s32 CHUNK_DIM = 64;
+static constexpr s32 CHUNK_POW = 6; // CHUNK_DIM = 2**CHUNK_POW
 static_assert(1 << CHUNK_POW == CHUNK_DIM);
 static constexpr s32 CHUNK_MAX_VOXELS = CHUNK_DIM*CHUNK_DIM*CHUNK_DIM;
 static constexpr s32 VIEW_DIST = 1024;
@@ -31,7 +31,7 @@ static constexpr s32 LOADED_REGION_CHUNKS_DIM = (VIEW_DIST/CHUNK_DIM)*2;
 static constexpr u32 MAX_CHUNKS = LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM;
 static constexpr u32 MAX_VOXELS = 50*1024*1024;
 static constexpr u32 MAX_CHUNKS_GEN_PER_FRAME = 2048;
-static constexpr u32 NUM_THREADS = 12;
+static constexpr u32 NUM_THREADS = 1;
 static s32 noise_data_width;
 static s32 noise_data_height;
 static s32 noise_data_depth;
@@ -71,6 +71,7 @@ struct VoxelRenderData
     u32 num = 0;
     // | xxxx yyyy zzz |
     f32 pos[MAX_VOXELS*3];
+    f32 scale[MAX_VOXELS];
     u32 color[MAX_VOXELS];
     
     static const u32 BATCH_SIZE = 10*1024;
@@ -174,6 +175,7 @@ static constexpr u32 EMPTY_VOXEL = u32(-1);
 struct Chunk
 {
     u32 num;
+    u32 lod;
     // VLA | xxxx yyyy zzzz cccc |
     s32 voxels[1];
 };
@@ -182,6 +184,8 @@ struct PackedVoxels
 {
     u32 num;
     s32 pos[MAX_VOXELS*3];
+    // TODO(mfritz) Does this need to be per voxel? Can we just group by chunks?
+    s32 scale[MAX_VOXELS];
     u32 voxel_id[MAX_VOXELS];
 };
 
@@ -620,10 +624,12 @@ static __m256i left_pack(__m256i a, u32 mask)
 void camera_cull(
                  u32* out_num_voxels,
                  f32* out_voxel_pos,
+                 f32* out_voxel_scale,
                  u32* out_voxel_id,
                  
                  const u32 in_num_voxels,
                  const s32* in_voxel_pos,
+                 const s32* in_voxel_scale,
                  const u32* in_voxel_id,
                  const Camera* cam)
 {
@@ -658,6 +664,7 @@ void camera_cull(
         __m256 vx = _mm256_cvtepi32_ps(_mm256_loadu_si256((__m256i*)(in_voxel_pos + MAX_VOXELS*0 + i)));
         __m256 vy = _mm256_cvtepi32_ps(_mm256_loadu_si256((__m256i*)(in_voxel_pos + MAX_VOXELS*1 + i)));
         __m256 vz = _mm256_cvtepi32_ps(_mm256_loadu_si256((__m256i*)(in_voxel_pos + MAX_VOXELS*2 + i)));
+        __m256 vs = _mm256_cvtepi32_ps(_mm256_loadu_si256((__m256i*)(in_voxel_scale + i)));
         __m256i vc = _mm256_loadu_si256((__m256i*)(in_voxel_id + i));
         
         __m256 mask = _mm256_cvtepi32_ps(_mm256_set1_epi8(0xFF));
@@ -675,6 +682,7 @@ void camera_cull(
         _mm256_storeu_ps(out_voxel_pos + MAX_VOXELS*0 + num_voxels,   left_pack(vx, pack_index));
         _mm256_storeu_ps(out_voxel_pos + MAX_VOXELS*1 + num_voxels,   left_pack(vy, pack_index));
         _mm256_storeu_ps(out_voxel_pos + MAX_VOXELS*2 + num_voxels,   left_pack(vz, pack_index));
+        _mm256_storeu_ps(out_voxel_scale + num_voxels, left_pack(vs, pack_index));
         _mm256_storeu_si256((__m256i*)(out_voxel_id + num_voxels), left_pack(vc, pack_index));
         num_voxels += _mm_popcnt_u32(pack_index);
     }
@@ -921,6 +929,9 @@ struct GenChunkWork
     s32 chunk_x;
     s32 chunk_y;
     s32 chunk_z;
+    s32 player_x;
+    s32 player_y;
+    s32 player_z;
 };
 void allocate_and_gen_chunk_work(ThreadState* thread_state, void** out_data, const void* in_data)
 {
@@ -931,6 +942,9 @@ void allocate_and_gen_chunk_work(ThreadState* thread_state, void** out_data, con
     s32 chunk_x = data->chunk_x;
     s32 chunk_y = data->chunk_y;
     s32 chunk_z = data->chunk_z;
+    s32 player_x = data->player_x;
+    s32 player_y = data->player_y;
+    s32 player_z = data->player_z;
     u32 num_voxels = 0;
     
     if(chunk_y*CHUNK_DIM < -256 || chunk_y*CHUNK_DIM >= 256)
@@ -941,10 +955,14 @@ void allocate_and_gen_chunk_work(ThreadState* thread_state, void** out_data, con
         return;
     }
     
-    // Sample a subset of the chunk. If all samples are empty or filled, early out.
-    // We need to sample an area that is larger than the chunk. If we sampled the chunk exactly, a corner of the chunk
-    // could be on the surface, the chunk may be skipped, and we'd leave a hole in the ground.
-    
+    s32 dx = chunk_x*CHUNK_DIM - player_x;
+    s32 dy = chunk_y*CHUNK_DIM - player_y;
+    s32 dz = chunk_z*CHUNK_DIM - player_z;
+    s32 dist = s32(sqrtf(dx*dx + dy*dy + dz*dz));
+    s32 lod = remap(dist, 0.0f, 1024.0f, 1.0f, 7.0f);
+    lod = clamp(lod, 1, 7);
+    s32 lod_scale = 1 << (lod - 1);
+    s32 lod_chunk_dim = CHUNK_DIM >> (lod - 1);
     
     // Generate a bitcube of which voxels are terrain.
     BitCube<CHUNK_DIM + 16, CHUNK_DIM + 2, CHUNK_DIM + 2> bitcube;
@@ -952,15 +970,17 @@ void allocate_and_gen_chunk_work(ThreadState* thread_state, void** out_data, con
     static_assert(sizeof(bitcube.m_v[0]) == 1);
     {
         const __m256 x_base = _mm256_add_ps(
-                                            _mm256_set1_ps(f32(chunk_x * CHUNK_DIM - 8)), _mm256_setr_ps(0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f));
-        __m256 z = _mm256_set1_ps(f32(chunk_z * CHUNK_DIM - 1));
-        for(s32 zi = 0; zi < CHUNK_DIM + 2; zi++)
+          _mm256_set1_ps(f32(chunk_x * CHUNK_DIM - 8*lod_scale)),
+          _mm256_mul_ps(_mm256_setr_ps(0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f), _mm256_set1_ps(f32(lod_scale)))
+        );
+        __m256 z = _mm256_set1_ps(f32(chunk_z * CHUNK_DIM - f32(lod_scale)));
+        for(s32 zi = 0; zi < lod_chunk_dim + 2; zi++)
         {
-            __m256 y = _mm256_set1_ps(f32(chunk_y * CHUNK_DIM - 1));
-            for(s32 yi = 0; yi < CHUNK_DIM + 2; yi++)
+            __m256 y = _mm256_set1_ps(f32(chunk_y * CHUNK_DIM - lod_scale));
+            for(s32 yi = 0; yi < lod_chunk_dim + 2; yi++)
             {
                 __m256 x_accum = _mm256_set1_ps(0.0f);
-                for(s32 xi = 0; xi < CHUNK_DIM + 16; xi += 8)
+                for(s32 xi = 0; xi < lod_chunk_dim + 16; xi += 8)
                 {
                     __m256 x = _mm256_add_ps(x_base, x_accum);
                     __m256 n = sample_terrain(x, y, z);
@@ -969,11 +989,11 @@ void allocate_and_gen_chunk_work(ThreadState* thread_state, void** out_data, con
                     u32 idx = (zi*(CHUNK_DIM+2)*(CHUNK_DIM+16)) + (yi*(CHUNK_DIM+16)) + xi;
                     bitcube.m_v[idx/8] = bits;
                     
-                    x_accum = _mm256_add_ps(x_accum, _mm256_set1_ps(8.0f));
+                    x_accum = _mm256_add_ps(x_accum, _mm256_set1_ps(8.0f*f32(lod_scale)));
                 }
-                y = _mm256_add_ps(y, _mm256_set1_ps(1.0f));
+                y = _mm256_add_ps(y, _mm256_set1_ps(f32(lod_scale)));
             }
-            z = _mm256_add_ps(z, _mm256_set1_ps(1.0f));
+            z = _mm256_add_ps(z, _mm256_set1_ps(f32(lod_scale)));
         }
     }
     
@@ -981,11 +1001,11 @@ void allocate_and_gen_chunk_work(ThreadState* thread_state, void** out_data, con
     memcpy(bitcube_copy.m_v, bitcube.m_v, ARRAY_COUNT(bitcube.m_v));
     
     // Turn off bits that are surrounded.
-    for(s32 bitcube_zi = 1; bitcube_zi < CHUNK_DIM + 1; bitcube_zi++)
+    for(s32 bitcube_zi = 1; bitcube_zi < lod_chunk_dim + 1; bitcube_zi++)
     {
-        for(s32 bitcube_yi = 1; bitcube_yi < CHUNK_DIM + 1; bitcube_yi++)
+        for(s32 bitcube_yi = 1; bitcube_yi < lod_chunk_dim + 1; bitcube_yi++)
         {
-            for(s32 bitcube_xi = 8; bitcube_xi < CHUNK_DIM + 8; bitcube_xi++)
+            for(s32 bitcube_xi = 8; bitcube_xi < lod_chunk_dim + 8; bitcube_xi++)
             {
                 s32 idx = (bitcube_zi*(CHUNK_DIM+2)*(CHUNK_DIM+16)) + (bitcube_yi*(CHUNK_DIM+16)) + bitcube_xi;
                 const u8 b0 = bitcube_copy.is_bit_set(bitcube_xi + 1, bitcube_yi + 0, bitcube_zi + 0);
@@ -1008,12 +1028,14 @@ void allocate_and_gen_chunk_work(ThreadState* thread_state, void** out_data, con
     // Left pack and output.
     {
         const __m256 x_base = _mm256_add_ps(
-                                            _mm256_set1_ps(f32(chunk_x * CHUNK_DIM - 8)), _mm256_setr_ps(0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f));
-        for(s32 bitcube_zi = 1; bitcube_zi < CHUNK_DIM+1; bitcube_zi++)
+          _mm256_set1_ps(f32(chunk_x * CHUNK_DIM - 8)),
+          _mm256_mul_ps(_mm256_setr_ps(0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f), _mm256_set1_ps(f32(lod_scale)))
+        );
+        for(s32 bitcube_zi = 1; bitcube_zi < lod_chunk_dim+1; bitcube_zi++)
         {
-            for(s32 bitcube_yi = 1; bitcube_yi < CHUNK_DIM+1; bitcube_yi++)
+            for(s32 bitcube_yi = 1; bitcube_yi < lod_chunk_dim+1; bitcube_yi++)
             {
-                for(s32 bitcube_xi = 1; bitcube_xi < CHUNK_DIM/8 + 1; bitcube_xi++)
+                for(s32 bitcube_xi = 1; bitcube_xi < lod_chunk_dim/8 + 1; bitcube_xi++)
                 {
                     u32 row_bytes = (CHUNK_DIM/8) + 2;
                     u32 frame_bytes = row_bytes*(CHUNK_DIM+2);
@@ -1024,9 +1046,12 @@ void allocate_and_gen_chunk_work(ThreadState* thread_state, void** out_data, con
                     u32 yi = (bitcube_yi - 1);
                     u32 zi = (bitcube_zi - 1);
                     
-                    __m256i x = _mm256_add_epi32(_mm256_set1_epi32(chunk_x*CHUNK_DIM + xi), _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7));
-                    __m256i y = _mm256_set1_epi32(chunk_y*CHUNK_DIM + yi);
-                    __m256i z = _mm256_set1_epi32(chunk_z*CHUNK_DIM + zi);
+                    __m256i x = _mm256_add_epi32(
+                      _mm256_set1_epi32(chunk_x*CHUNK_DIM + xi*lod_scale),
+                      _mm256_mullo_epi32(_mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7), _mm256_set1_epi32(lod_scale))
+                    );
+                    __m256i y = _mm256_set1_epi32(chunk_y*CHUNK_DIM + yi*lod_scale);
+                    __m256i z = _mm256_set1_epi32(chunk_z*CHUNK_DIM + zi*lod_scale);
                     __m256i v = _mm256_set1_epi32(0x22AA00FF);
                     __m256i x_packed = left_pack(x, bits);
                     __m256i y_packed = left_pack(y, bits);
@@ -1044,6 +1069,7 @@ void allocate_and_gen_chunk_work(ThreadState* thread_state, void** out_data, con
     
     Chunk* result = allocate_chunk(num_voxels);
     result->num = num_voxels;
+    result->lod = lod;
     memcpy(result->voxels + num_voxels*0, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*0, num_voxels * sizeof(result->voxels[0]));
     memcpy(result->voxels + num_voxels*1, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*1, num_voxels * sizeof(result->voxels[0]));
     memcpy(result->voxels + num_voxels*2, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*2, num_voxels * sizeof(result->voxels[0]));
@@ -1059,6 +1085,9 @@ bool maybe_gen_new_terrain(
                            const s32 new_chunk_x,
                            const s32 new_chunk_y,
                            const s32 new_chunk_z,
+                           const s32 player_x,
+                           const s32 player_y,
+                           const s32 player_z,
                            const u32 num_trees,
                            const TreeBuffer* const* tree_buffers,
                            const f32* xtree_pos)
@@ -1119,8 +1148,10 @@ bool maybe_gen_new_terrain(
         }
     }
     
-    // With view distance of 1024, will be 262.1 kb.
     BitArray<MAX_CHUNKS> chunks_generated;
+
+    ThreadState* thread_state = new ThreadState();
+    thread_state->gen_chunk_scratch = allocate_chunk(CHUNK_MAX_VOXELS);
     
     // NOTE(mfritz): We don't want to have jobs generating terrain across frames. This would
     // introduce the possibility of having 2 jobs in flight for a single chunk. Generating a
@@ -1140,7 +1171,11 @@ bool maybe_gen_new_terrain(
             work->chunk_x = new_chunk_x;
             work->chunk_y = new_chunk_y;
             work->chunk_z = new_chunk_z;
-            add_work(reinterpret_cast<void**>(&new_chunks[it.idx]), JobId::load_terrain, allocate_and_gen_chunk_work, work);
+            work->player_x = player_x;
+            work->player_y = player_y;
+            work->player_z = player_z;
+            //add_work(reinterpret_cast<void**>(&new_chunks[it.idx]), JobId::load_terrain, allocate_and_gen_chunk_work, work);
+            allocate_and_gen_chunk_work(thread_state, (void**)&new_chunks[it.idx], work);
             gen_count++;
             chunks_generated.set_bit(it.idx);
             if(gen_count >= MAX_CHUNKS_GEN_PER_FRAME)
@@ -1149,7 +1184,9 @@ bool maybe_gen_new_terrain(
             }
         }
     }
-    wait_for_job(JobId::load_terrain);
+
+    delete thread_state;
+    //wait_for_job(JobId::load_terrain);
     
     constexpr u32 max_trees = 128;
     u32 num_gen_trees = 0;
@@ -1618,7 +1655,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             check_gl_errors("vertex attrib pointer");
             
             // https://www.khronos.org/opengl/wiki/Shader_Storage_Buffer_Object
-            const u32 voxel_buffer_size = SHADER_BUFFER_WIDTH * NUM_VOXEL_DATA_FIELDS * 4;
+            const u32 voxel_buffer_size = SHADER_BUFFER_WIDTH * NUM_VOXEL_DATA_FIELDS * 5;
             glGenBuffers(1, &G_graphics_state->batch_voxel_ssbo);
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, G_graphics_state->batch_voxel_ssbo);
             glBufferData(GL_SHADER_STORAGE_BUFFER, voxel_buffer_size, nullptr, GL_DYNAMIC_DRAW);
@@ -1782,7 +1819,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             const bool imgui_tab_bar = ImGui::BeginTabBar("MyTabBar", imgui_tab_bar_flags);
             
             running = !glfwGetKey(G_graphics_state->window, GLFW_KEY_ESCAPE) && !glfwWindowShouldClose(G_graphics_state->window);
-            
+
             static f32 camera_speed = 100.0f;
             if(imgui_tab_bar && ImGui::BeginTabItem("Debug Camera"))
             {
@@ -1840,7 +1877,6 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 camera_vel +=  cam_i * glfwGetKey(G_graphics_state->window, GLFW_KEY_F);
                 camera_vel +=  cam_k * glfwGetKey(G_graphics_state->window, GLFW_KEY_D);
                 camera_vel += -cam_k * glfwGetKey(G_graphics_state->window, GLFW_KEY_E);
-                static f32 camera_speed = 100.0f;
                 current_cam->pos += normalize(camera_vel) * TIME_STEP * camera_speed;
                 
             }
@@ -1871,6 +1907,9 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                                                             camera_chunk_x,
                                                             camera_chunk_y,
                                                             camera_chunk_z,
+                                                            camera_x,
+                                                            camera_y,
+                                                            camera_z,
                                                             num_trees,
                                                             tree_buffers,
                                                             tree_pos
@@ -1896,7 +1935,13 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                         memcpy(packed_voxels->pos + MAX_VOXELS*0 + num_voxels, chunk->voxels + chunk->num*0, chunk->num * sizeof(chunk->voxels[0]));
                         memcpy(packed_voxels->pos + MAX_VOXELS*1 + num_voxels, chunk->voxels + chunk->num*1, chunk->num * sizeof(chunk->voxels[0]));
                         memcpy(packed_voxels->pos + MAX_VOXELS*2 + num_voxels, chunk->voxels + chunk->num*2, chunk->num * sizeof(chunk->voxels[0]));
-                        memcpy(packed_voxels->voxel_id + num_voxels,              chunk->voxels + chunk->num*3, chunk->num * sizeof(chunk->voxels[0]));
+                        memcpy(packed_voxels->voxel_id + num_voxels, chunk->voxels + chunk->num*3, chunk->num * sizeof(chunk->voxels[0]));
+
+                        for(u32 i = num_voxels; i < num_voxels + chunk->num; i++)
+                        {
+                          packed_voxels->scale[i] = 1 << chunk->lod;
+                        }
+                        
                         num_voxels += chunk->num;
                     }
                 }
@@ -1931,12 +1976,15 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
 #endif
                 
                 // TODO(mfritz) Pad to nearest next 8 voxels with 0xFFFFFFFF
+                // TODO(mfritz) Do LOD
                 camera_cull(
                             &voxel_render_data->num,
                             voxel_render_data->pos,
+                            voxel_render_data->scale,
                             voxel_render_data->color,
                             packed_voxels->num,
                             packed_voxels->pos,
+                            packed_voxels->scale,
                             packed_voxels->voxel_id,
                             &G_graphics_state->cam
                             );
@@ -1953,7 +2001,9 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                     f32 *batch_x = voxel_render_data->pos + MAX_VOXELS*0 + batch_i;
                     f32 *batch_y = voxel_render_data->pos + MAX_VOXELS*1 + batch_i;
                     f32 *batch_z = voxel_render_data->pos + MAX_VOXELS*2 + batch_i;
+                    f32 *batch_scale = voxel_render_data->scale + batch_i;
                     u32 *batch_color = voxel_render_data->color + batch_i;
+
                     u32 batch_size = min(voxel_render_data->num - batch_i, VoxelRenderData::BATCH_SIZE);
                     
                     assert(VoxelRenderData::BATCH_SIZE <= SHADER_BUFFER_WIDTH);
@@ -1982,12 +2032,14 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                     u32 offset_x = 0 * SHADER_BUFFER_WIDTH*sizeof(f32);
                     u32 offset_y = 1 * SHADER_BUFFER_WIDTH*sizeof(f32);
                     u32 offset_z = 2 * SHADER_BUFFER_WIDTH*sizeof(f32);
-                    u32 offset_color = 3 * SHADER_BUFFER_WIDTH*sizeof(u32);
+                    u32 offset_scale = 3 * SHADER_BUFFER_WIDTH*sizeof(f32);
+                    u32 offset_color = 4 * SHADER_BUFFER_WIDTH*sizeof(u32);
                     u32 size = sizeof(f32) * batch_size;
                     glBindBuffer(GL_SHADER_STORAGE_BUFFER, G_graphics_state->batch_voxel_ssbo);
                     glBufferSubData(GL_SHADER_STORAGE_BUFFER, offset_x, size, batch_x);
                     glBufferSubData(GL_SHADER_STORAGE_BUFFER, offset_y, size, batch_y);
                     glBufferSubData(GL_SHADER_STORAGE_BUFFER, offset_z, size, batch_z);
+                    glBufferSubData(GL_SHADER_STORAGE_BUFFER, offset_scale, size, batch_scale);
                     glBufferSubData(GL_SHADER_STORAGE_BUFFER, offset_color, size, batch_color);
                     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, G_graphics_state->batch_voxel_ssbo);
                     
@@ -2224,4 +2276,5 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
     
     return 0;
 }
+
 
