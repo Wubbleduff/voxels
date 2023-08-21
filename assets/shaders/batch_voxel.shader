@@ -10,11 +10,11 @@ layout (location = 2) in float a_z;
 
 layout(std430, binding = 0) buffer voxel_data
 {
-    float b_px[1024*1024];
-    float b_py[1024*1024];
-    float b_pz[1024*1024];
-    float b_scale[1024*1024];
-    int b_color[1024*1024];
+    float b_px[10*1024];
+    float b_py[10*1024];
+    float b_pz[10*1024];
+    float b_scale[10*1024];
+    int b_color[10*1024];
 };
 
 uniform mat4 m_view;

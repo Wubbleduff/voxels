@@ -6,6 +6,9 @@
 #include <cstdlib>
 #include <cmath>
 
+#pragma warning(disable:4201)
+#pragma warning(disable:4505)
+
 #define M_PI 3.14159265f
 
 struct v2
@@ -64,15 +67,23 @@ struct v4
 
 struct v2i
 {
-    union
-    {
-        struct { int x, y; };
-        int v[2];
-    };
-    int operator[](unsigned i) const
-    {
-        return v[i];
-    }
+    __m128i v;
+    v2i() : v(_mm_set1_epi32(0)) {}
+    v2i(int x, int y) : v(_mm_setr_epi32(x, y, 0, 0)) {}
+    v2i(__m128i r) : v(r) {}
+    int x() const { return _mm_extract_epi32(v, 0); }
+    int y() const { return _mm_extract_epi32(v, 1); }
+};
+
+struct v3i
+{
+    __m128i v;
+    v3i() : v(_mm_set1_epi32(0)) {}
+    v3i(int x, int y, int z) : v(_mm_setr_epi32(x, y, z, 0)) {}
+    v3i(__m128i r) : v(r) {}
+    int x() const { return _mm_extract_epi32(v, 0); }
+    int y() const { return _mm_extract_epi32(v, 1); }
+    int z() const { return _mm_extract_epi32(v, 2); }
 };
 
 struct mat3
@@ -241,7 +252,7 @@ inline void swap(u32& a, u32& b)
 }
 inline void swap(f32& a, f32& b)
 {
-    u32 tmp = a;
+    f32 tmp = a;
     a = b;
     b = tmp;
 }
@@ -255,7 +266,7 @@ float remap(float a, float from_min, float from_max, float to_min, float to_max)
     float from_percent = inv_lerp(from_min, from_max, a);
     return lerp(to_min, to_max, from_percent);
 }
- int clamp(int a, int min, int max) { if(a < min) return min; if(a > max) return max; return a; }
+int clamp(int a, int min, int max) { if(a < min) return min; if(a > max) return max; return a; }
 /*
    float cos(float a) { return cosf(a); }
    float sin(float a) { return sinf(a); }
@@ -292,14 +303,20 @@ float remap(float a, float from_min, float from_max, float to_min, float to_max)
 static v2 operator+(v2 a, v2 b) { return v2(a.x + b.x, a.y + b.y); }
 static v3 operator+(v3 a, v3 b) { return v3(a.x + b.x, a.y + b.y, a.z + b.z); }
 static v4 operator+(v4 a, v4 b) { return v4(a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w); }
+static v2i operator+(v2i a, v2i b) { return _mm_add_epi32(a.v, b.v); }
+static v3i operator+(v3i a, v3i b) { return _mm_add_epi32(a.v, b.v); }
 
 static v2 operator-(v2 a, v2 b) { return v2(a.x - b.x, a.y - b.y); }
 static v3 operator-(v3 a, v3 b) { return v3(a.x - b.x, a.y - b.y, a.z - b.z); }
 static v4 operator-(v4 a, v4 b) { return v4(a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w); }
+static v2i operator-(v2i a, v2i b) { return _mm_sub_epi32(a.v, b.v); }
+static v3i operator-(v3i a, v3i b) { return _mm_sub_epi32(a.v, b.v); }
 
 static v2 operator-(v2 a) { return v2(-a.x, -a.y); }
 static v3 operator-(v3 a) { return v3(-a.x, -a.y, -a.z); }
 static v4 operator-(v4 a) { return v4(-a.x, -a.y, -a.z, -a.w); }
+static v2i operator-(v2i a) { return _mm_sub_epi32(_mm_set1_epi32(0), a.v); }
+static v3i operator-(v3i a) { return _mm_sub_epi32(_mm_set1_epi32(0), a.v); }
 
 static bool operator==(v2 a, v2 b)
 {
@@ -353,6 +370,18 @@ static v4 reflect(v4 v, v4 n) { return v - 2.0f * dot(v, n) * n; }
 static v2 lerp(v2 a, v2 b, float t) { return ((1.0f - t) * a) + (t * b); }
 static v3 lerp(v3 a, v3 b, float t) { return ((1.0f - t) * a) + (t * b); }
 static v4 lerp(v4 a, v4 b, float t) { return ((1.0f - t) * a) + (t * b); }
+
+static int cube_idx(v3i a, int dim)
+{
+    // a.z*dim*dim + a.y*dim + a.x
+    __m128i d = _mm_setr_epi32(1, dim, dim*dim, 0);
+    __m128i r = _mm_mullo_epi32(a.v, d);
+    __m128i r_shuf0 = _mm_shuffle_epi32(r, 0b00'11'10'01);
+                                        __m128i r_shuf1 = _mm_shuffle_epi32(r, 0b01'00'11'10);
+                                                                            r = _mm_add_epi32(r, r_shuf0);
+                                                                            r = _mm_add_epi32(r, r_shuf1);
+                                                                            return _mm_cvtsi128_si32(r);
+}
 
 static v2 lerp_components(v2 a, v2 b, v2 t)
 {
@@ -952,24 +981,24 @@ static v2 random_gradient(s32 x, s32 y)
     u32 s = w / 2;
     u32 a = x, b = y;
     a *= 3284157443;
-    b ^= a << s | a >> w-s;
+    b ^= (a << s) | (a >> (w-s));
     b *= 1911520717;
-    a ^= b << s | b >> w-s;
+    a ^= (b << s) | (b >> (w-s));
     a *= 2048419325;
-    float random = a * (3.14159265 / ~(~0u >> 1));
+    float random = a * (3.14159265f / ~(~0u >> 1));
     return v2(cosf(random), sinf(random));
 }
 static float smoothstep(float a0, float a1, float w)
 {
-    return (a1 - a0) * (3.0 - w * 2.0) * w * w + a0;
+    return (a1 - a0) * (3.0f - w * 2.0f) * w * w + a0;
 }
 static float perlin_noise(float x, float y)
 {
     v2 p = v2(x, y);
     
-    float x0 = x > 0.0f ? (s32)x : (s32)(x - 1.0f);
+    float x0 = x > 0.0f ? float(s32(x)) : float(s32(x - 1.0f));
     float x1 = x0 + 1;
-    float y0 = y > 0.0f ? (s32)y : (s32)(y - 1.0f);
+    float y0 = y > 0.0f ? float(s32(y)) : float(s32(y - 1.0f));
     float y1 = y0 + 1;
     
     v2 d0 = p - v2(x0, y0);
@@ -977,102 +1006,16 @@ static float perlin_noise(float x, float y)
     v2 d2 = p - v2(x0, y1);
     v2 d3 = p - v2(x1, y1);
     
-    v2 g0 = random_gradient(x0, y0);
-    v2 g1 = random_gradient(x1, y0);
-    v2 g2 = random_gradient(x0, y1);
-    v2 g3 = random_gradient(x1, y1);
+    v2 g0 = random_gradient(s32(x0), s32(y0));
+    v2 g1 = random_gradient(s32(x1), s32(y0));
+    v2 g2 = random_gradient(s32(x0), s32(y1));
+    v2 g3 = random_gradient(s32(x1), s32(y1));
     
     float i0 = smoothstep(dot(d0, g0), dot(d1, g1), x - x0);
     float i1 = smoothstep(dot(d2, g2), dot(d3, g3), x - x0);
     float i2 = smoothstep(i0, i1, y - y0);
     return i2;
 }
-
-
-#if 1
-
-float pnoise(float x, float y, float z)
-{
-    const auto& get_gradient = [](s32 px, s32 py, s32 pz)
-    {
-        int kNumPoints = 100000;
-        //f32 v = fract(sinf(dot(intPos, v3(12.9898, 78.233, 1234.5678))));
-        f32 v = sinf( f32(px)*12.9898 + f32(py)*78.233 + f32(pz)*1234.5678);
-        float i = (v - floor(v)) * 43758.5453;
-        
-        float kGoldenFactor = 10.166640738;
-        float u = (2.0f / float(kNumPoints-1)) * float(i) - 1.0f;
-        float t = kGoldenFactor * float(i);
-        float up = sqrt(max(0.0f, 1.0f - u*u));
-        return v3(up*cos(t), up*sin(t), u);
-    };
-    
-    s32 x0 = s32(floor(x));
-    s32 y0 = s32(floor(y));
-    s32 z0 = s32(floor(z));
-    s32 x1 = s32(ceil(x));
-    s32 y1 = s32(ceil(y));
-    s32 z1 = s32(ceil(z));
-    
-    v3 p = v3(x,y,z);
-    
-    v3 v[8];
-    v[0] = v3(x0, y0, z0);
-    v[1] = v3(x1, y0, z0);
-    v[2] = v3(x0, y1, z0);
-    v[3] = v3(x1, y1, z0);
-    v[4] = v3(x0, y0, z1);
-    v[5] = v3(x1, y0, z1);
-    v[6] = v3(x0, y1, z1);
-    v[7] = v3(x1, y1, z1);
-    
-    v3 d[8];
-    d[0] = p - v[0];
-    d[1] = p - v[1];
-    d[2] = p - v[2];
-    d[3] = p - v[3];
-    d[4] = p - v[4];
-    d[5] = p - v[5];
-    d[6] = p - v[6];
-    d[7] = p - v[7];
-    
-    f32 dx = x-f32(x0);
-    f32 dy = y-f32(y0);
-    f32 dz = z-f32(z0);
-    
-    f32 tx = dx * dx * (3.0 - 2.0 * dx);
-    f32 ty = dy * dy * (3.0 - 2.0 * dy);
-    f32 tz = dz * dz * (3.0 - 2.0 * dz);
-    
-    f32 noiseVal = 
-        lerp(
-             lerp(
-                  lerp(
-                       dot(get_gradient(v[0].x, v[0].y, v[0].z), d[0]),
-                       dot(get_gradient(v[1].x, v[1].y, v[1].z), d[1]),
-                       tx),
-                  lerp(
-                       dot(get_gradient(v[2].x, v[2].y, v[2].z), d[2]),
-                       dot(get_gradient(v[3].x, v[3].y, v[3].z), d[3]),
-                       tx),
-                  ty
-                  ),
-             lerp(
-                  lerp(
-                       dot(get_gradient(v[4].x, v[4].y, v[4].z), d[4]),
-                       dot(get_gradient(v[5].x, v[5].y, v[5].z), d[5]),
-                       tx),
-                  lerp(
-                       dot(get_gradient(v[6].x, v[6].y, v[6].z), d[6]),
-                       dot(get_gradient(v[7].x, v[7].y, v[7].z), d[7]),
-                       tx),
-                  ty
-                  ),
-             tz
-             );
-    return noiseVal / 0.7; // normalize to about [-1..1];
-}
-#endif
 
 f32 fract(f32 x)
 {
@@ -1309,4 +1252,7 @@ static inline __m256 pnoise8(__m256 x, __m256 y, __m256 z)
               );
     return result;
 }
+
+#pragma warning(default:4201)
+#pragma warning(default:4505)
 
