@@ -323,6 +323,16 @@ static bool operator==(v2 a, v2 b)
     return (a.x == b.x) && (a.y == b.y);
 }
 
+static bool operator==(v3i a, v3i b)
+{
+    assert(_mm_extract_epi32(a.v, 3) == 0);
+    assert(_mm_extract_epi32(b.v, 3) == 0);
+    __m128i m = _mm_xor_si128(a.v, b.v);
+    m = _mm_cmpeq_epi32(m, _mm_set1_epi32(0));
+    m = _mm_andnot_si128(m, _mm_set1_epi32(u32(-1)));
+    return !bool(_mm_movemask_epi8(m));
+}
+
 static float dot(v2 a, v2 b) { return (a.x * b.x) + (a.y * b.y); }
 static float dot(v3 a, v3 b) { return (a.x * b.x) + (a.y * b.y) + (a.z * b.z); }
 static float dot(v4 a, v4 b) { return (a.x * b.x) + (a.y * b.y) + (a.z * b.z) + (a.w * b.w); }

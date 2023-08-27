@@ -23,15 +23,15 @@
 // Globals
 // NOTE: This value must match the shader.
 static constexpr u32 SHADER_BUFFER_WIDTH = 10*1024;
-static constexpr u32 NUM_VOXEL_DATA_FIELDS = 4;
 static constexpr s32 CHUNK_DIM = 64;
 static constexpr s32 CHUNK_POW = 6; // CHUNK_DIM = 2**CHUNK_POW
 static_assert(1 << CHUNK_POW == CHUNK_DIM);
 static constexpr s32 CHUNK_MAX_VOXELS = CHUNK_DIM*CHUNK_DIM*CHUNK_DIM;
-static constexpr s32 VIEW_DIST = 2048;
+static constexpr s32 VIEW_DIST = 1024;
 static constexpr s32 LOADED_REGION_CHUNKS_DIM = (VIEW_DIST/CHUNK_DIM)*2;
 static constexpr u32 MAX_CHUNKS = LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM;
-static constexpr u32 MAX_VOXELS = 50*1024*1024;
+static constexpr u64 MAX_POSSIBLE_VOXELS = u64(MAX_CHUNKS) * u64(CHUNK_MAX_VOXELS); 
+static constexpr u64 MAX_VOXELS = 50*1024*1024;
 static constexpr u32 MAX_CHUNKS_GEN_PER_FRAME = 1024;
 //static constexpr u32 MAX_CHUNKS_GEN_PER_FRAME = 64;
 static constexpr u32 NUM_THREADS = 1;
@@ -178,6 +178,7 @@ struct Chunk
     u32 num;
     u32 lod;
     // VLA | xxxx yyyy zzzz cccc |
+    static constexpr u32 INTS_PER_VOXEL = 4;
     s32 voxels[1];
 };
 
@@ -284,12 +285,19 @@ struct ScopeTimer
         LARGE_INTEGER freq;
         QueryPerformanceFrequency(&freq);
         
-        LARGE_INTEGER ms;
-        ms.QuadPart = (end.QuadPart - start.QuadPart) * 1000000;
-        ms.QuadPart /= freq.QuadPart;
+        LARGE_INTEGER ns;
+        ns.QuadPart = (end.QuadPart - start.QuadPart) * 1'000'000'000;
+        ns.QuadPart /= freq.QuadPart;
         
         //ImGui::Text("TIME - %s: %ius", m_name, ms.QuadPart);
-        record_profile_data(m_name, ms.QuadPart);
+        record_profile_data(m_name, ns.QuadPart / 1'000);
+
+        fprintf(G_log_file, "Gen time %llu ms\n", ns.QuadPart / 1'000'000);
+        fprintf(G_log_file, "MAX_CHUNKS: %i\n", MAX_CHUNKS);
+        fprintf(G_log_file, "MAX_VOXELS: %llu\n", MAX_POSSIBLE_VOXELS);
+        fprintf(G_log_file, "voxels / sec: %f\n: ", double(MAX_POSSIBLE_VOXELS) / (double(ns.QuadPart) / 1000000000.0));
+        fprintf(G_log_file, "ns / voxel: %f\n: ", double(ns.QuadPart) / double(MAX_POSSIBLE_VOXELS));
+        fprintf(G_log_file, "\n\n\n");
     }
     const char *m_name;
     LARGE_INTEGER start;
@@ -878,6 +886,26 @@ bool cube_cube_intersect(v3i bl0, v3i bl1, s32 dim)
     return result;
 }
 
+static v3i point_to_voxel(v3 p)
+{
+    __m128 q = _mm_setr_ps(p.x, p.y, p.z, 0.0f);
+    q = _mm_round_ps(q, _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC);
+    v3i r(_mm_cvtps_epi32(q));
+    return r;
+}
+
+static v3i voxel_to_chunk(v3i p)
+{
+    return v3i(_mm_srai_epi32(p.v, CHUNK_POW));
+}
+
+static v3i point_to_chunk(v3 p)
+{
+    v3i v = point_to_voxel(p);
+    return voxel_to_chunk(v);
+}
+
+
 __m256 sample_terrain(__m256 x, __m256 y, __m256 z)
 {
     x = _mm256_mul_ps(x, _mm256_set1_ps(0.006f));
@@ -892,14 +920,15 @@ __m256 sample_terrain(__m256 x, __m256 y, __m256 z)
 Chunk* allocate_chunk(u32 cap_voxels)
 {
     assert(offsetof(Chunk, voxels) == 8);
-    u32* m = new u32[2 + cap_voxels*4];
-    Chunk* result = reinterpret_cast<Chunk*>(m);
+
+    u64 bytes = sizeof(Chunk) * cap_voxels * sizeof(s32) * Chunk::INTS_PER_VOXEL;
+    Chunk* result = reinterpret_cast<Chunk*>(_mm_malloc(bytes, 4096));
     return result;
 }
 
 void deallocate_chunk(Chunk* chunk)
 {
-    delete chunk;
+    _mm_free(chunk);
 }
 
 s32 calculate_chunk_lod(v3i chunk, v3i player_pos)
@@ -908,9 +937,13 @@ s32 calculate_chunk_lod(v3i chunk, v3i player_pos)
     s32 dy = (chunk.y()*CHUNK_DIM + CHUNK_DIM/2) - player_pos.y();
     s32 dz = (chunk.z()*CHUNK_DIM + CHUNK_DIM/2) - player_pos.z();
     s32 dist = s32(sqrtf(float(dx*dx + dy*dy + dz*dz)));
-    s32 lod = s32(remap(f32(dist), 0.0f, 1024.0f, 1.0f, 6.0f));
-    lod = clamp(lod, 1, 6);
-    assert(CHUNK_DIM >> (lod - 1) >= 1);
+    constexpr s32 MAX_LOD = 4;
+    // lod_chunk_dim must be a minimum of 8. If we have less than 8, we will not output any voxels because we left pack and output 8 voxels at a time
+    // along the x axis.
+    // We can make this lower, but we would have to special case having chunks < 8 in each dimension (not loop 8 in x each iteration).
+    static_assert(CHUNK_DIM >> (MAX_LOD - 1) >= 8);
+    s32 lod = s32(remap(f32(dist), 0.0f, 1024.0f, 1.0f, f32(MAX_LOD)));
+    lod = clamp(lod, 1, MAX_LOD);
     return lod;
 }
 
@@ -1083,6 +1116,15 @@ bool maybe_gen_new_terrain(
     (void)xtree_pos;
     (void)num_trees;
     (void)tree_buffers;
+
+    const v3i old_chunk = v3i(old_chunk_x, old_chunk_y, old_chunk_z);
+    const v3i new_chunk = v3i(new_chunk_x, new_chunk_y, new_chunk_z);
+    const v3i chunk_delta = new_chunk - old_chunk;
+    
+    if(old_chunk == new_chunk)
+    {
+        return false;
+    }
     
     // Assume all chunks need to get generated.
     Chunk** old_chunks = new Chunk*[LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM];
@@ -1093,9 +1135,6 @@ bool maybe_gen_new_terrain(
         new_chunks[it.idx] = nullptr;
     }
     
-    const v3i old_chunk = v3i(old_chunk_x, old_chunk_y, old_chunk_z);
-    const v3i new_chunk = v3i(new_chunk_x, new_chunk_y, new_chunk_z);
-    const v3i chunk_delta = new_chunk - old_chunk;
     
     const v3i old_region_chunks_min = v3i(
                                           old_chunk_x - LOADED_REGION_CHUNKS_DIM/2,
@@ -1155,13 +1194,14 @@ bool maybe_gen_new_terrain(
             delete work;
             gen_count++;
             chunks_generated.set_bit(it.idx);
-            if(gen_count >= MAX_CHUNKS_GEN_PER_FRAME)
-            {
-                break;
-            }
+            //if(gen_count >= MAX_CHUNKS_GEN_PER_FRAME)
+            //{
+            //    break;
+            //}
         }
     }
     
+    deallocate_chunk(thread_state->gen_chunk_scratch);
     delete thread_state;
     //wait_for_job(JobId::load_terrain);
     
@@ -1307,6 +1347,8 @@ bool maybe_gen_new_terrain(
     delete[] tree_pos;
     tree_pos = nullptr;
 #endif
+
+    delete[] old_chunks;
     
     return true;
 }
@@ -1641,7 +1683,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             check_gl_errors("vertex attrib pointer");
             
             // https://www.khronos.org/opengl/wiki/Shader_Storage_Buffer_Object
-            const u32 voxel_buffer_size = SHADER_BUFFER_WIDTH * NUM_VOXEL_DATA_FIELDS * 5;
+            const u32 voxel_buffer_size = SHADER_BUFFER_WIDTH * Chunk::INTS_PER_VOXEL * 5;
             glGenBuffers(1, &G_graphics_state->batch_voxel_ssbo);
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, G_graphics_state->batch_voxel_ssbo);
             glBufferData(GL_SHADER_STORAGE_BUFFER, voxel_buffer_size, nullptr, GL_DYNAMIC_DRAW);
@@ -1808,6 +1850,10 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 ImGui::InputFloat("debug camera x", &G_graphics_state->debug_cam.pos.x, 1.0f, 10.0f, 3, ImGuiInputTextFlags_EnterReturnsTrue);
                 ImGui::InputFloat("debug camera y", &G_graphics_state->debug_cam.pos.y, 1.0f, 10.0f, 3, ImGuiInputTextFlags_EnterReturnsTrue);
                 ImGui::InputFloat("debug camera z", &G_graphics_state->debug_cam.pos.z, 1.0f, 10.0f, 3, ImGuiInputTextFlags_EnterReturnsTrue);
+                v3i debug_cam_chunk = point_to_chunk(v3(G_graphics_state->debug_cam.pos.x, G_graphics_state->debug_cam.pos.y, G_graphics_state->debug_cam.pos.z));
+                ImGui::Text("debug camera chunk x: %i", debug_cam_chunk.x());
+                ImGui::Text("debug camera chunk y: %i", debug_cam_chunk.y());
+                ImGui::Text("debug camera chunk z: %i", debug_cam_chunk.z());
                 ImGui::DragFloat("camera near_plane_dist", &G_graphics_state->cam.near_plane_dist);
                 ImGui::DragFloat("camera view_dist", &G_graphics_state->cam.view_dist);
                 ImGui::Checkbox("debug cam", &G_graphics_state->use_debug_cam);
@@ -1858,42 +1904,29 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 
             }
             
-            s32 camera_x = (s32)G_graphics_state->cam.pos.x;
-            s32 camera_y = (s32)G_graphics_state->cam.pos.y;
-            s32 camera_z = (s32)G_graphics_state->cam.pos.z;
-            s32 camera_chunk_x = camera_x >> CHUNK_POW;
-            s32 camera_chunk_y = camera_y >> CHUNK_POW;
-            s32 camera_chunk_z = camera_z >> CHUNK_POW;
-            s32 region_chunks_bl_x = camera_chunk_x - LOADED_REGION_CHUNKS_DIM/2;
-            s32 region_chunks_bl_y = camera_chunk_y - LOADED_REGION_CHUNKS_DIM/2;
-            s32 region_chunks_bl_z = camera_chunk_z - LOADED_REGION_CHUNKS_DIM/2;
-            s32 region_chunks_tr_x = camera_chunk_x + LOADED_REGION_CHUNKS_DIM/2;
-            s32 region_chunks_tr_y = camera_chunk_y + LOADED_REGION_CHUNKS_DIM/2;
-            s32 region_chunks_tr_z = camera_chunk_z + LOADED_REGION_CHUNKS_DIM/2;
+            const v3i camera_pos = point_to_voxel(v3(G_graphics_state->cam.pos.x, G_graphics_state->cam.pos.y, G_graphics_state->cam.pos.z));
+            const v3i camera_chunk = voxel_to_chunk(camera_pos);
             {
                 TIME_SCOPE("gen terrain");
-                static s32 last_camera_chunk_x = 0x7FFFFFFF;
-                static s32 last_camera_chunk_y = 0x7FFFFFFF;
-                static s32 last_camera_chunk_z = 0x7FFFFFFF;
+
+                static v3i last_camera_chunk = v3i(0x7FFFFFFF, 0x7FFFFFFF, 0x7FFFFFFF);
                 maybe_gen_new_terrain(
                         chunks,
-                        last_camera_chunk_x,
-                        last_camera_chunk_y,
-                        last_camera_chunk_z,
-                        camera_chunk_x,
-                        camera_chunk_y,
-                        camera_chunk_z,
-                        camera_x,
-                        camera_y,
-                        camera_z,
+                        last_camera_chunk.x(),
+                        last_camera_chunk.y(),
+                        last_camera_chunk.z(),
+                        camera_chunk.x(),
+                        camera_chunk.y(),
+                        camera_chunk.z(),
+                        camera_pos.x(),
+                        camera_pos.y(),
+                        camera_pos.z(),
                         num_trees,
                         tree_buffers,
                         tree_pos
                         );
                 
-                last_camera_chunk_x = camera_chunk_x;
-                last_camera_chunk_y = camera_chunk_y;
-                last_camera_chunk_z = camera_chunk_z;
+                last_camera_chunk = camera_chunk;
             }
             
             
@@ -2066,6 +2099,13 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 if(show_chunk_lines)
                 {
                     TIME_SCOPE("debug draw chunk lines");
+
+                    const s32 region_chunks_bl_x = camera_chunk.x() - LOADED_REGION_CHUNKS_DIM/2;
+                    const s32 region_chunks_bl_y = camera_chunk.y() - LOADED_REGION_CHUNKS_DIM/2;
+                    const s32 region_chunks_bl_z = camera_chunk.z() - LOADED_REGION_CHUNKS_DIM/2;
+                    const s32 region_chunks_tr_x = camera_chunk.x() + LOADED_REGION_CHUNKS_DIM/2;
+                    const s32 region_chunks_tr_y = camera_chunk.y() + LOADED_REGION_CHUNKS_DIM/2;
+                    const s32 region_chunks_tr_z = camera_chunk.z() + LOADED_REGION_CHUNKS_DIM/2;
                     
                     for(s32 z = region_chunks_bl_z; z < region_chunks_tr_z; ++z)
                     {
