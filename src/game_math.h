@@ -1143,13 +1143,12 @@ static inline __m256 approx_cos8(__m256 x)
     return approx_sin8(_mm256_sub_ps(x, h_pi));
 }
 
-
 static inline __m256 lerp8(__m256 a, __m256 b, __m256 t)
 {
     return _mm256_add_ps(
-                         _mm256_mul_ps(_mm256_sub_ps(_mm256_set1_ps(1.0f), t), a),
-                         _mm256_mul_ps(t, b)
-                         );
+            _mm256_mul_ps(_mm256_sub_ps(_mm256_set1_ps(1.0f), t), a),
+            _mm256_mul_ps(t, b)
+            );
 }
 static inline __m256 pnoise8(__m256 x, __m256 y, __m256 z)
 {
@@ -1159,7 +1158,7 @@ static inline __m256 pnoise8(__m256 x, __m256 y, __m256 z)
     __m256 y1 = _mm256_round_ps(_mm256_add_ps(y, _mm256_set1_ps(1.0f)), (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
     __m256 z0 = _mm256_round_ps(z, (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
     __m256 z1 = _mm256_round_ps(_mm256_add_ps(z, _mm256_set1_ps(1.0f)), (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
-    
+
     // Handle the case where e.g. x is 1.99999988. x0 will be 1 and x1 will be 3 (1.99999988f + 1.0f = 3.0f).
     // If x1 - x0 > 1, x1--
     __m256 sub_mask = _mm256_cmp_ps(_mm256_sub_ps(x1, x0), _mm256_set1_ps(1.0f), _CMP_GT_OQ);
@@ -1168,7 +1167,7 @@ static inline __m256 pnoise8(__m256 x, __m256 y, __m256 z)
     y1 = _mm256_sub_ps(y1, _mm256_and_ps(_mm256_set1_ps(1.0f), sub_mask));
     sub_mask = _mm256_cmp_ps(_mm256_sub_ps(z1, z0), _mm256_set1_ps(1.0f), _CMP_GT_OQ);
     z1 = _mm256_sub_ps(z1, _mm256_and_ps(_mm256_set1_ps(1.0f), sub_mask));
-    
+
     __m256 vx[8];
     __m256 vy[8];
     __m256 vz[8];
@@ -1180,7 +1179,7 @@ static inline __m256 pnoise8(__m256 x, __m256 y, __m256 z)
     vx[5] = x1; vy[5] = y0; vz[5] = z1;
     vx[6] = x0; vy[6] = y1; vz[6] = z1;
     vx[7] = x1; vy[7] = y1; vz[7] = z1;
-    
+
     __m256 dx[8];
     __m256 dy[8];
     __m256 dz[8];
@@ -1190,10 +1189,12 @@ static inline __m256 pnoise8(__m256 x, __m256 y, __m256 z)
         dy[i] = _mm256_sub_ps(y, vy[i]);
         dz[i] = _mm256_sub_ps(z, vz[i]);
     }
-    
+
     __m256 gx[8];
     __m256 gy[8];
     __m256 gz[8];
+
+#if 0
     __m256 v_noise[8];
     constexpr u32 num_sphere_points = 1 << 12;
     // Create noise for each vertex.
@@ -1210,22 +1211,45 @@ static inline __m256 pnoise8(__m256 x, __m256 y, __m256 z)
         __m256 u = _mm256_fmsub_ps(_mm256_set1_ps(2.0f / float(num_sphere_points - 1)), noise, _mm256_set1_ps(1.0f));
         __m256 t = _mm256_mul_ps(_mm256_set1_ps(10.166640738f), noise);
         __m256 up = _mm256_sqrt_ps(
-                                   _mm256_max_ps(
-                                                 _mm256_set1_ps(0.0f),
-                                                 _mm256_fnmadd_ps(u, u, _mm256_set1_ps(1.0f))
-                                                 )
-                                   );
+                _mm256_max_ps(
+                    _mm256_set1_ps(0.0f),
+                    _mm256_fnmadd_ps(u, u, _mm256_set1_ps(1.0f))
+                    )
+                );
         gx[i] = _mm256_mul_ps(up, approx_cos8(t));
         gy[i] = _mm256_mul_ps(up, approx_sin8(t));
         gz[i] = u;
     }
-    
+#else
+    for(u32 i = 0; i < 8; i++)
+    {
+        __m256i gxi = rand8(_mm256_castps_si256(_mm256_xor_ps(_mm256_xor_ps(vx[i], vy[i]), vz[i])));
+        gxi = _mm256_and_si256(gxi, _mm256_set1_epi32(0xFFFF));
+        gx[i] = _mm256_mul_ps(_mm256_cvtepi32_ps(gxi), _mm256_set1_ps(1.0f/65535.0f));
+
+        __m256i gyi = rand8(
+                _mm256_mullo_epi32(
+                    _mm256_castps_si256(_mm256_xor_ps(_mm256_xor_ps(vx[i], vy[i]), vz[i])),
+                    _mm256_set1_epi32(100)));
+        gyi = _mm256_and_si256(gyi, _mm256_set1_epi32(0xFFFF));
+        gy[i] = _mm256_mul_ps(_mm256_cvtepi32_ps(gyi), _mm256_set1_ps(1.0f/65535.0f));
+
+        __m256i gzi = rand8(
+                _mm256_mullo_epi32(
+                    _mm256_castps_si256(_mm256_xor_ps(_mm256_xor_ps(vx[i], vy[i]), vz[i])),
+                    _mm256_set1_epi32(10000)));
+        gzi = _mm256_and_si256(gzi, _mm256_set1_epi32(0xFFFF));
+        gz[i] = _mm256_mul_ps(_mm256_cvtepi32_ps(gzi), _mm256_set1_ps(1.0f/65535.0f));
+
+    }
+#endif
+
     __m256 dot_product[8];
     for(u32 i = 0; i < 8; i++)
     {
         dot_product[i] = _mm256_fmadd_ps(dx[i], gx[i], _mm256_fmadd_ps(dy[i], gy[i], _mm256_mul_ps(dz[i], gz[i])));
     }
-    
+
     __m256 tx = dx[0];
     // Smooth t.
     tx = _mm256_mul_ps(tx, _mm256_mul_ps(tx, _mm256_sub_ps(_mm256_set1_ps(3.0f), _mm256_mul_ps(tx, _mm256_set1_ps(2.0f)))));
@@ -1233,33 +1257,33 @@ static inline __m256 pnoise8(__m256 x, __m256 y, __m256 z)
     ty = _mm256_mul_ps(ty, _mm256_mul_ps(ty, _mm256_sub_ps(_mm256_set1_ps(3.0f), _mm256_mul_ps(ty, _mm256_set1_ps(2.0f)))));
     __m256 tz = dz[0];
     tz = _mm256_mul_ps(tz, _mm256_mul_ps(tz, _mm256_sub_ps(_mm256_set1_ps(3.0f), _mm256_mul_ps(tz, _mm256_set1_ps(2.0f)))));
-    
+
     __m256 result = 
         lerp8(
-              lerp8(
+                lerp8(
                     lerp8(
-                          dot_product[0],
-                          dot_product[1],
-                          tx),
+                        dot_product[0],
+                        dot_product[1],
+                        tx),
                     lerp8(
-                          dot_product[2],
-                          dot_product[3],
-                          tx),
+                        dot_product[2],
+                        dot_product[3],
+                        tx),
                     ty
                     ),
-              lerp8(
+                lerp8(
                     lerp8(
-                          dot_product[4],
-                          dot_product[5],
-                          tx),
+                        dot_product[4],
+                        dot_product[5],
+                        tx),
                     lerp8(
-                          dot_product[6],
-                          dot_product[7],
-                          tx),
+                        dot_product[6],
+                        dot_product[7],
+                        tx),
                     ty
                     ),
-              tz
-              );
+                tz
+                    );
     return result;
 }
 

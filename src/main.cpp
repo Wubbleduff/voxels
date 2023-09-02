@@ -27,14 +27,15 @@ static constexpr s32 CHUNK_DIM = 64;
 static constexpr s32 CHUNK_POW = 6; // CHUNK_DIM = 2**CHUNK_POW
 static_assert(1 << CHUNK_POW == CHUNK_DIM);
 static constexpr s32 CHUNK_MAX_VOXELS = CHUNK_DIM*CHUNK_DIM*CHUNK_DIM;
-static constexpr s32 VIEW_DIST = 1024;
+static constexpr s32 VIEW_DIST = 512;
 static constexpr s32 LOADED_REGION_CHUNKS_DIM = (VIEW_DIST/CHUNK_DIM)*2;
 static constexpr u32 MAX_CHUNKS = LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM;
 static constexpr u64 MAX_POSSIBLE_VOXELS = u64(MAX_CHUNKS) * u64(CHUNK_MAX_VOXELS); 
 static constexpr u64 MAX_VOXELS = 50*1024*1024;
-static constexpr u32 MAX_CHUNKS_GEN_PER_FRAME = 1024;
+static constexpr u32 MAX_CHUNKS_GEN_PER_FRAME = MAX_CHUNKS;
+//static constexpr u32 MAX_CHUNKS_GEN_PER_FRAME = 16;
 //static constexpr u32 MAX_CHUNKS_GEN_PER_FRAME = 64;
-static constexpr u32 NUM_THREADS = 1;
+static constexpr u32 NUM_TOTAL_THREADS = 24;
 static struct GraphicsState *G_graphics_state = nullptr;
 static struct InputState *G_input_state = nullptr;
 static FILE* G_log_file = nullptr;
@@ -334,6 +335,9 @@ struct ThreadState
 {
     Chunk* gen_chunk_scratch = nullptr;
 };
+
+static ThreadState* main_thread_state;
+
 enum class JobId : u64
 {
     load_terrain,
@@ -908,12 +912,33 @@ static v3i point_to_chunk(v3 p)
 
 __m256 sample_terrain(__m256 x, __m256 y, __m256 z)
 {
-    x = _mm256_mul_ps(x, _mm256_set1_ps(0.006f));
-    y = _mm256_mul_ps(y, _mm256_set1_ps(0.010f));
-    z = _mm256_mul_ps(z, _mm256_set1_ps(0.006f));
-    __m256 n = pnoise8(x, y, z);
-    n = _mm256_sub_ps(n, _mm256_mul_ps(y, _mm256_set1_ps(0.4f)));
-    return n;
+    __m256 total_n = _mm256_set1_ps(0.0f);
+
+    {
+        __m256 sx = _mm256_mul_ps(x, _mm256_set1_ps(0.006f));
+        __m256 sy = _mm256_mul_ps(y, _mm256_set1_ps(0.040f));
+        __m256 sz = _mm256_mul_ps(z, _mm256_set1_ps(0.006f));
+        __m256 n = pnoise8(sx, sy, sz);
+
+        constexpr f32 squashing_factor = 1.0f;
+        n = _mm256_sub_ps(n, _mm256_mul_ps(sy, _mm256_set1_ps(squashing_factor)));
+
+        total_n = _mm256_add_ps(total_n, n);
+    }
+
+    {
+        __m256 sx = _mm256_mul_ps(x, _mm256_set1_ps(0.0008f));
+        __m256 sy = _mm256_mul_ps(y, _mm256_set1_ps(0.0008f));
+        __m256 sz = _mm256_mul_ps(z, _mm256_set1_ps(0.0008f));
+        __m256 n = pnoise8(sx, sy, sz);
+
+        n = _mm256_mul_ps(n, n);
+        n = _mm256_mul_ps(n, _mm256_set1_ps(80.0f));
+
+        total_n = _mm256_add_ps(total_n, n);
+    }
+
+    return total_n;
 }
 
 
@@ -934,7 +959,7 @@ void deallocate_chunk(Chunk* chunk)
 s32 calculate_chunk_lod(v3i chunk, v3i player_pos)
 {
     s32 dx = (chunk.x()*CHUNK_DIM + CHUNK_DIM/2) - player_pos.x();
-    s32 dy = (chunk.y()*CHUNK_DIM + CHUNK_DIM/2) - player_pos.y();
+    s32 dy = (chunk.y()*CHUNK_DIM + CHUNK_DIM/2) - player_pos.y();;
     s32 dz = (chunk.z()*CHUNK_DIM + CHUNK_DIM/2) - player_pos.z();
     s32 dist = s32(sqrtf(float(dx*dx + dy*dy + dz*dz)));
     constexpr s32 MAX_LOD = 4;
@@ -944,7 +969,8 @@ s32 calculate_chunk_lod(v3i chunk, v3i player_pos)
     static_assert(CHUNK_DIM >> (MAX_LOD - 1) >= 8);
     s32 lod = s32(remap(f32(dist), 0.0f, 1024.0f, 1.0f, f32(MAX_LOD)));
     lod = clamp(lod, 1, MAX_LOD);
-    return lod;
+    //return lod;
+    return 1;
 }
 
 struct GenChunkWork
@@ -986,7 +1012,8 @@ void allocate_and_gen_chunk_work(ThreadState* thread_state, void** out_data, con
     */
     
     // Generate a bitcube of which voxels are terrain.
-    BitCube<CHUNK_DIM + 16, CHUNK_DIM + 2, CHUNK_DIM + 2> bitcube;
+    using ChunkBitCube = BitCube<CHUNK_DIM + 16, CHUNK_DIM + 2, CHUNK_DIM + 2>;
+    ChunkBitCube bitcube;
     static_assert(sizeof(BitCube<CHUNK_DIM, CHUNK_DIM, CHUNK_DIM>) < 1024*1024);
     static_assert(sizeof(bitcube.m_v[0]) == 1);
     {
@@ -1018,7 +1045,7 @@ void allocate_and_gen_chunk_work(ThreadState* thread_state, void** out_data, con
         }
     }
     
-    BitCube<CHUNK_DIM + 16, CHUNK_DIM + 2, CHUNK_DIM + 2> bitcube_copy;
+    ChunkBitCube bitcube_copy;
     memcpy(bitcube_copy.m_v, bitcube.m_v, ARRAY_COUNT(bitcube.m_v));
     
     // Turn off bits that are surrounded.
@@ -1121,11 +1148,6 @@ bool maybe_gen_new_terrain(
     const v3i new_chunk = v3i(new_chunk_x, new_chunk_y, new_chunk_z);
     const v3i chunk_delta = new_chunk - old_chunk;
     
-    if(old_chunk == new_chunk)
-    {
-        return false;
-    }
-    
     // Assume all chunks need to get generated.
     Chunk** old_chunks = new Chunk*[LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM];
     ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
@@ -1137,13 +1159,13 @@ bool maybe_gen_new_terrain(
     
     
     const v3i old_region_chunks_min = v3i(
-                                          old_chunk_x - LOADED_REGION_CHUNKS_DIM/2,
-                                          old_chunk_y - LOADED_REGION_CHUNKS_DIM/2,
-                                          old_chunk_z - LOADED_REGION_CHUNKS_DIM/2);
+            old_chunk_x - LOADED_REGION_CHUNKS_DIM/2,
+            old_chunk_y - LOADED_REGION_CHUNKS_DIM/2,
+            old_chunk_z - LOADED_REGION_CHUNKS_DIM/2);
     const v3i new_region_chunks_min = v3i(
-                                          new_chunk_x - LOADED_REGION_CHUNKS_DIM/2,
-                                          new_chunk_y - LOADED_REGION_CHUNKS_DIM/2,
-                                          new_chunk_z - LOADED_REGION_CHUNKS_DIM/2);
+            new_chunk_x - LOADED_REGION_CHUNKS_DIM/2,
+            new_chunk_y - LOADED_REGION_CHUNKS_DIM/2,
+            new_chunk_z - LOADED_REGION_CHUNKS_DIM/2);
     
     // Dealloc chunks we've moved away from.
     ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
@@ -1152,37 +1174,45 @@ bool maybe_gen_new_terrain(
         const v3i world_chunk = old_region_chunks_min + v3i(it.x, it.y, it.z);
         const s32 new_chunks_idx = cube_idx(world_chunk - new_region_chunks_min, LOADED_REGION_CHUNKS_DIM);
         // If the old chunk is contained in the new region and is the same LOD, move the cached result. Otherwise, deallocate.
-        if(old_chunks[it.idx] &&
-           point_cube_intersect(world_chunk, new_region_chunks_min, LOADED_REGION_CHUNKS_DIM) &&
-           old_chunks[it.idx]->lod == u32(calculate_chunk_lod(world_chunk, v3i(player_x, player_y, player_z))))
+        const bool chunk_cached =
+            // Old chunk exists
+            old_chunks[it.idx] &&
+            // Old chunk in the already-generated region
+            point_cube_intersect(world_chunk, new_region_chunks_min, LOADED_REGION_CHUNKS_DIM) &&
+            // Old chunk same LOD as the new. Only need to recalc if crossed a chunk boundary
+            ((old_chunk == new_chunk) ||
+             (old_chunks[it.idx]->lod == u32(calculate_chunk_lod(world_chunk, v3i(player_x, player_y, player_z)))));
+        if(chunk_cached)
         {
             new_chunks[new_chunks_idx] = old_chunks[it.idx];
         }
         else
         {
             deallocate_chunk(old_chunks[it.idx]);
-            old_chunks[it.idx] = (Chunk*)(0x424242);
         }
     }
     
     BitArray<MAX_CHUNKS> chunks_generated;
     
-    ThreadState* thread_state = new ThreadState();
-    thread_state->gen_chunk_scratch = allocate_chunk(CHUNK_MAX_VOXELS);
     
     // NOTE(mfritz): We don't want to have jobs generating terrain across frames. This would
     // introduce the possibility of having 2 jobs in flight for a single chunk. Generating a
     // max number of chunks per frame avoids that issue and works nicer for single threaded
     // situations.
     u32 gen_count = 0;
+    u32 num_work_items = 0;
+    GenChunkWork work_list[MAX_CHUNKS_GEN_PER_FRAME];
+    void** work_outs[MAX_CHUNKS_GEN_PER_FRAME];
+    static_assert(sizeof(work_list) < 1024*1024);
     ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
     {
         // Iterating through new chunks
         if(new_chunks[it.idx] == nullptr)
         {
             const v3i new_region_chunk = new_region_chunks_min + v3i(it.x, it.y, it.z);
-            // TODO(mfritz) Dynamic allocation.
-            GenChunkWork* work = new GenChunkWork();
+            GenChunkWork* work = work_list + num_work_items;
+            work_outs[num_work_items] = reinterpret_cast<void**>(&new_chunks[it.idx]);
+            num_work_items++;
             work->chunk_x = new_region_chunk.x();
             work->chunk_y = new_region_chunk.y();
             work->chunk_z = new_region_chunk.z();
@@ -1190,20 +1220,25 @@ bool maybe_gen_new_terrain(
             work->player_y = player_y;
             work->player_z = player_z;
             //add_work(reinterpret_cast<void**>(&new_chunks[it.idx]), JobId::load_terrain, allocate_and_gen_chunk_work, work);
-            allocate_and_gen_chunk_work(thread_state, (void**)&new_chunks[it.idx], work);
-            delete work;
+            //allocate_and_gen_chunk_work(main_thread_state, reinterpret_cast<void**>(&new_chunks[it.idx]), work);
             gen_count++;
             chunks_generated.set_bit(it.idx);
-            //if(gen_count >= MAX_CHUNKS_GEN_PER_FRAME)
-            //{
-            //    break;
-            //}
+            if(gen_count >= MAX_CHUNKS_GEN_PER_FRAME)
+            {
+                break;
+            }
         }
     }
+    for(u32 i = 0; i < num_work_items - num_work_items/NUM_TOTAL_THREADS; i++)
+    {
+        add_work(work_outs[i], JobId::load_terrain, allocate_and_gen_chunk_work, &(work_list[i]));
+    }
+    for(u32 i = num_work_items - num_work_items/NUM_TOTAL_THREADS; i < num_work_items; i++)
+    {
+        allocate_and_gen_chunk_work(main_thread_state, work_outs[i], &(work_list[i]));
+    }
     
-    deallocate_chunk(thread_state->gen_chunk_scratch);
-    delete thread_state;
-    //wait_for_job(JobId::load_terrain);
+    wait_for_job(JobId::load_terrain);
     
 #if 0
     
@@ -1556,31 +1591,38 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
 
     G_log_file = fopen("log.txt", "wt");
     
-    HANDLE threads[NUM_THREADS];
-    u32 thread_ids[NUM_THREADS];
-    for(u32 i = 0; i < NUM_THREADS; i++)
+    main_thread_state = new ThreadState();
+    main_thread_state->gen_chunk_scratch = allocate_chunk(CHUNK_MAX_VOXELS);
+    if constexpr (NUM_TOTAL_THREADS > 1)
     {
-        ThreadState* thread_state = new ThreadState();
-        thread_state->gen_chunk_scratch = allocate_chunk(CHUNK_MAX_VOXELS);
-        threads[i] = CreateThread( 
-                                  NULL,                   // default security attributes
-                                  0,                      // use default stack size  
-                                  worker_main,            // thread function name
-                                  thread_state,           // argument to thread function 
-                                  0,                      // use default creation flags 
-                                  reinterpret_cast<DWORD*>(&thread_ids[i])); // returns the thread identifier 
-        if(threads[i] == NULL)
+        constexpr u32 NUM_NEW_THREADS = NUM_TOTAL_THREADS - 1;
+        // + 1 so the compiler won't complain when total thread count is 1
+        HANDLE threads[NUM_NEW_THREADS + 1];
+        u32 thread_ids[NUM_NEW_THREADS + 1];
+        for(u32 i = 0; i < NUM_NEW_THREADS; i++)
         {
-            return 1;
+            ThreadState* thread_state = new ThreadState();
+            thread_state->gen_chunk_scratch = allocate_chunk(CHUNK_MAX_VOXELS);
+            threads[i] = CreateThread( 
+                NULL,                   // default security attributes
+                0,                      // use default stack size  
+                worker_main,            // thread function name
+                thread_state,           // argument to thread function 
+                0,                      // use default creation flags 
+                reinterpret_cast<DWORD*>(&thread_ids[i])); // returns the thread identifier 
+            if(threads[i] == NULL)
+            {
+                return 1;
+            }
+            
+            u32 affinity_mask = 1 << i;
+            DWORD_PTR old_affinity_mask = SetThreadAffinityMask(threads[i], affinity_mask);
+            if(old_affinity_mask == 0)
+            {
+                return 1;
+            }
+            SetThreadDescription(threads[i], L"worker_thread");
         }
-        
-        u32 affinity_mask = 1 << i;
-        DWORD_PTR old_affinity_mask = SetThreadAffinityMask(threads[i], affinity_mask);
-        if(old_affinity_mask == 0)
-        {
-            return 1;
-        }
-        SetThreadDescription(threads[i], L"worker_thread");
     }
     
     // GLFW
@@ -1749,7 +1791,6 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         
-        /*
         G_graphics_state->imgui_debug_texture_width = 512;
         G_graphics_state->imgui_debug_texture_height = 512;
         G_graphics_state->imgui_debug_texture_data = new u32[G_graphics_state->imgui_debug_texture_width * G_graphics_state->imgui_debug_texture_height]{};
@@ -1763,7 +1804,6 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                      GL_RGBA,
                      GL_UNSIGNED_BYTE,
                      G_graphics_state->imgui_debug_texture_data);
-                     */
     }
     
     // ImGui
@@ -2136,54 +2176,6 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 TIME_SCOPE("debug draw texture");
                 memset(G_graphics_state->imgui_debug_texture_data, 0, G_graphics_state->imgui_debug_texture_width*G_graphics_state->imgui_debug_texture_height*sizeof(u32));
                 ASSERT((G_graphics_state->imgui_debug_texture_width*G_graphics_state->imgui_debug_texture_height & 0b111) == 0, "Texture must be divisible by 8");
-                /*
-                   for(s32 i = 0; i < G_graphics_state->imgui_debug_texture_width*G_graphics_state->imgui_debug_texture_height; i += 8)
-                   {
-                   __m256i in = _mm256_add_epi32(_mm256_set1_epi32(i), _mm256_setr_epi32(7, 6, 5, 4, 3, 2, 1, 0));
-                   __m256i n = rand8(in);
-                   _mm256_storeu_si256((__m256i*)(G_graphics_state->imgui_debug_texture_data + i), n);
-                   }
-                   */
-                
-                /*
-                   for(u32 x = 0; x < G_graphics_state->imgui_debug_texture_width; x++)
-                   {
-                   u32 y = G_graphics_state->imgui_debug_texture_height / 2;
-                   G_graphics_state->imgui_debug_texture_data[y*G_graphics_state->imgui_debug_texture_width + x] = 0xAAAAAAAA;
-                   }
-                   for(u32 y = 0; y < G_graphics_state->imgui_debug_texture_width; y++)
-                   {
-                   u32 x = G_graphics_state->imgui_debug_texture_height / 2;
-                   G_graphics_state->imgui_debug_texture_data[y*G_graphics_state->imgui_debug_texture_width + x] = 0xAAAAAAAA;
-                   }
-                   for(s32 xi = -s32(G_graphics_state->imgui_debug_texture_width)/2; xi < s32(G_graphics_state->imgui_debug_texture_width)/2; xi++)
-                   {
-                   f32 x = remap(f32(xi),
-                   -f32(G_graphics_state->imgui_debug_texture_width/2), f32(G_graphics_state->imgui_debug_texture_width/2),
-                   -2.0f*M_PI, 2.0f*M_PI);
-                   {
-                   __m256 y8 = approx_sin8(_mm256_set1_ps(x));
-                   f32 ya[8];
-                   _mm256_storeu_ps(ya, y8);
-                   f32 y = ya[0];
-                   s32 xx = xi + G_graphics_state->imgui_debug_texture_width/2;
-                   s32 yy = s32(-y * 40.0f) + G_graphics_state->imgui_debug_texture_height/2;
-                   yy = yy >= G_graphics_state->imgui_debug_texture_height ? G_graphics_state->imgui_debug_texture_height - 1 : yy;
-                   G_graphics_state->imgui_debug_texture_data[yy*G_graphics_state->imgui_debug_texture_width + xx] = 0xFF0000FF;
-                   }
-        
-                   {
-                   __m256 y8 = approx_cos8(_mm256_set1_ps(x));
-                   f32 ya[8];
-                   _mm256_storeu_ps(ya, y8);
-                   f32 y = ya[0];
-                   s32 xx = xi + G_graphics_state->imgui_debug_texture_width/2;
-                   s32 yy = s32(-y * 40.0f) + G_graphics_state->imgui_debug_texture_height/2;
-                   yy = yy >= G_graphics_state->imgui_debug_texture_height ? G_graphics_state->imgui_debug_texture_height - 1 : yy;
-                   G_graphics_state->imgui_debug_texture_data[yy*G_graphics_state->imgui_debug_texture_width + xx] = 0xFFFFFFFF;
-                   }
-                   }
-                   */
                 
                 static f32 x_off = 0.0f;
                 static f32 y_off = 0.0f;
@@ -2195,8 +2187,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 
                 f32 texture_width = f32(G_graphics_state->imgui_debug_texture_width);
                 f32 texture_height = f32(G_graphics_state->imgui_debug_texture_height);
-                const __m256 x_base = _mm256_add_ps(
-                                                    _mm256_set1_ps(x_off - texture_width/2.0f), _mm256_setr_ps(0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f));
+                const __m256 x_base = _mm256_add_ps(_mm256_set1_ps(x_off - texture_width/2.0f), _mm256_setr_ps(0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f));
                 
                 __m256 z = _mm256_set1_ps(z_off);
                 __m256 y = _mm256_set1_ps(y_off - texture_height/2.0f);
@@ -2269,8 +2260,6 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             {
                 ImGui::EndTabBar();
             }
-            
-            //ImGui::ShowDemoWindow();
             
             ImGui::Render();
             ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
