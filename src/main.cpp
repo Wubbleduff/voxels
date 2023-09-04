@@ -18,6 +18,9 @@
 #include "common.h"
 #include "game_math.h"
 
+// TODO(mfritz) delete
+#include <algorithm>
+
 #pragma warning(disable:4996)
 
 // Globals
@@ -958,6 +961,7 @@ void deallocate_chunk(Chunk* chunk)
 
 s32 calculate_chunk_lod(v3i chunk, v3i player_pos)
 {
+#if 0
     s32 dx = (chunk.x()*CHUNK_DIM + CHUNK_DIM/2) - player_pos.x();
     s32 dy = (chunk.y()*CHUNK_DIM + CHUNK_DIM/2) - player_pos.y();;
     s32 dz = (chunk.z()*CHUNK_DIM + CHUNK_DIM/2) - player_pos.z();
@@ -969,8 +973,12 @@ s32 calculate_chunk_lod(v3i chunk, v3i player_pos)
     static_assert(CHUNK_DIM >> (MAX_LOD - 1) >= 8);
     s32 lod = s32(remap(f32(dist), 0.0f, 1024.0f, 1.0f, f32(MAX_LOD)));
     lod = clamp(lod, 1, MAX_LOD);
-    //return lod;
+    return lod;
+#else
+    (void)chunk;
+    (void)player_pos;
     return 1;
+#endif
 }
 
 struct GenChunkWork
@@ -1199,11 +1207,10 @@ bool maybe_gen_new_terrain(
     // introduce the possibility of having 2 jobs in flight for a single chunk. Generating a
     // max number of chunks per frame avoids that issue and works nicer for single threaded
     // situations.
-    u32 gen_count = 0;
+    //u32 gen_count = 0;
     u32 num_work_items = 0;
-    GenChunkWork* work_list = new GenChunkWork[MAX_CHUNKS_GEN_PER_FRAME];
-    void*** work_outs = new void**[MAX_CHUNKS_GEN_PER_FRAME];
-    static_assert(sizeof(work_list) < 1024*1024);
+    GenChunkWork* work_list = new GenChunkWork[MAX_CHUNKS];
+    void*** work_outs = new void**[MAX_CHUNKS];
     ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
     {
         // Iterating through new chunks
@@ -1219,25 +1226,43 @@ bool maybe_gen_new_terrain(
             work->player_x = player_x;
             work->player_y = player_y;
             work->player_z = player_z;
-            gen_count++;
-            chunks_generated.set_bit(it.idx);
-            if(gen_count >= MAX_CHUNKS_GEN_PER_FRAME)
-            {
-                break;
-            }
+            //gen_count++;
+            //chunks_generated.set_bit(it.idx);
         }
     }
-    for(u32 i = 0; i < num_work_items - num_work_items/NUM_TOTAL_THREADS; i++)
+
+    u32* work_items_order = new u32[MAX_CHUNKS];
+    for(u32 i = 0; i < num_work_items; i++)
     {
-        add_work(work_outs[i], JobId::load_terrain, allocate_and_gen_chunk_work, &(work_list[i]));
+        work_items_order[i] = i;
     }
-    for(u32 i = num_work_items - num_work_items/NUM_TOTAL_THREADS; i < num_work_items; i++)
+    std::sort(work_items_order, work_items_order + num_work_items, [&work_list](const u32 a, const u32 b)
     {
-        allocate_and_gen_chunk_work(main_thread_state, work_outs[i], &(work_list[i]));
+        u32 a_dist = squared(work_list[a].chunk_x*CHUNK_DIM - work_list[a].player_x) +
+                     squared(work_list[a].chunk_y*CHUNK_DIM - work_list[a].player_y) +
+                     squared(work_list[a].chunk_z*CHUNK_DIM - work_list[a].player_z);
+        u32 b_dist = squared(work_list[b].chunk_x*CHUNK_DIM - work_list[b].player_x) +
+                     squared(work_list[b].chunk_y*CHUNK_DIM - work_list[b].player_y) +
+                     squared(work_list[b].chunk_z*CHUNK_DIM - work_list[b].player_z);
+        return a_dist < b_dist;
+    });
+
+    u32 num_work_items_trunc = min(num_work_items, MAX_CHUNKS_GEN_PER_FRAME);
+
+    for(u32 i = 0; i < num_work_items_trunc - num_work_items_trunc/NUM_TOTAL_THREADS; i++)
+    {
+        const u32 work_idx = work_items_order[i];
+        add_work(work_outs[work_idx], JobId::load_terrain, allocate_and_gen_chunk_work, &(work_list[work_idx]));
+    }
+    for(u32 i = num_work_items_trunc - num_work_items_trunc/NUM_TOTAL_THREADS; i < num_work_items_trunc; i++)
+    {
+        const u32 work_idx = work_items_order[i];
+        allocate_and_gen_chunk_work(main_thread_state, work_outs[work_idx], &(work_list[work_idx]));
     }
     
     wait_for_job(JobId::load_terrain);
 
+    delete[] work_items_order;
     delete[] work_outs;
     delete[] work_list;
     
@@ -2104,6 +2129,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 ImGui::Text("View dist: %i", VIEW_DIST);
                 ImGui::Text("Max chunks: %i", MAX_CHUNKS);
                 ImGui::Text("Chunks table mem: %iKB", KB(MAX_CHUNKS * sizeof(Chunk*)));
+                u32 num_generated_chunks = 0;
                 u32 num_populated_chunks = 0;
                 u32 avg_voxels_per_populated_chunk = 0;
                 u32 max_voxels_per_chunk = 0;
@@ -2112,12 +2138,14 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 {
                     if(chunks[i])
                     {
+                        num_generated_chunks++;
                         num_populated_chunks += chunks[i]->num > 0;
                         avg_voxels_per_populated_chunk += chunks[i]->num;
                         max_voxels_per_chunk = max(max_voxels_per_chunk, chunks[i]->num);
                         voxels_bytes += sizeof(chunks[i]->num) + chunks[i]->num * sizeof(chunks[i]->voxels[0]);
                     }
                 }
+                ImGui::Text("%i / %i (%.1f%%) chunks generated", num_generated_chunks, MAX_CHUNKS, (f32(num_generated_chunks) / f32(MAX_CHUNKS)) * 100.0f);
                 ImGui::Text("# populated chunks: %i", num_populated_chunks);
                 ImGui::Text("# avg voxels per populated chunk: %i", num_populated_chunks == 0 ? 0 : avg_voxels_per_populated_chunk / num_populated_chunks);
                 ImGui::Text("# max voxels per chunk: %i", max_voxels_per_chunk);

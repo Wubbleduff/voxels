@@ -231,7 +231,9 @@ struct BitArray
     }
 };
 
-float squared(float a) { return a * a; }
+inline float squared(float a) { return a * a; }
+inline u32 squared(u32 a) { return a * a; }
+inline s32 squared(s32 a) { return a * a; }
 float lerp(float a, float b, float t) { return ((1.0f - t) * a) + (t * b); }
 float deg_to_rad(float a) { return a * (M_PI / 180.0f); }
 float rad_to_deg(float a) { return a * (180.0f / M_PI); }
