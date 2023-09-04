@@ -1150,6 +1150,7 @@ static inline __m256 lerp8(__m256 a, __m256 b, __m256 t)
             _mm256_mul_ps(t, b)
             );
 }
+
 static inline __m256 pnoise8(__m256 x, __m256 y, __m256 z)
 {
     __m256 x0 = _mm256_round_ps(x, (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
@@ -1168,123 +1169,95 @@ static inline __m256 pnoise8(__m256 x, __m256 y, __m256 z)
     sub_mask = _mm256_cmp_ps(_mm256_sub_ps(z1, z0), _mm256_set1_ps(1.0f), _CMP_GT_OQ);
     z1 = _mm256_sub_ps(z1, _mm256_and_ps(_mm256_set1_ps(1.0f), sub_mask));
 
-    __m256 vx[8];
-    __m256 vy[8];
-    __m256 vz[8];
-    vx[0] = x0; vy[0] = y0; vz[0] = z0;
-    vx[1] = x1; vy[1] = y0; vz[1] = z0;
-    vx[2] = x0; vy[2] = y1; vz[2] = z0;
-    vx[3] = x1; vy[3] = y1; vz[3] = z0;
-    vx[4] = x0; vy[4] = y0; vz[4] = z1;
-    vx[5] = x1; vy[5] = y0; vz[5] = z1;
-    vx[6] = x0; vy[6] = y1; vz[6] = z1;
-    vx[7] = x1; vy[7] = y1; vz[7] = z1;
-
-    __m256 dx[8];
-    __m256 dy[8];
-    __m256 dz[8];
-    for(u32 i = 0; i < 8; i++)
+    const auto calc_dp = [x, y, z](const __m256 vx, const __m256 vy, const __m256 vz)
     {
-        dx[i] = _mm256_sub_ps(x, vx[i]);
-        dy[i] = _mm256_sub_ps(y, vy[i]);
-        dz[i] = _mm256_sub_ps(z, vz[i]);
-    }
-
-    __m256 gx[8];
-    __m256 gy[8];
-    __m256 gz[8];
-
 #if 0
-    __m256 v_noise[8];
-    constexpr u32 num_sphere_points = 1 << 12;
-    // Create noise for each vertex.
-    for(u32 i = 0; i < 8; i++)
-    {
-        __m256i i_noise = rand8(_mm256_castps_si256(_mm256_xor_ps(_mm256_xor_ps(vx[i], vy[i]), vz[i])));
+        // Alternate gradient function
+        constexpr u32 num_sphere_points = 1 << 12;
+        // Create noise
+        __m256i i_noise = rand8(_mm256_castps_si256(_mm256_xor_ps(_mm256_xor_ps(vx, vy), vz)));
         i_noise = _mm256_and_si256(i_noise, _mm256_set1_epi32(num_sphere_points - 1));
-        v_noise[i] = _mm256_cvtepi32_ps(i_noise);
-    }
-    // Use random number to index points on a sphere.
-    for(u32 i = 0; i < 8; i++)
-    {
-        const __m256 noise = v_noise[i];
-        __m256 u = _mm256_fmsub_ps(_mm256_set1_ps(2.0f / float(num_sphere_points - 1)), noise, _mm256_set1_ps(1.0f));
-        __m256 t = _mm256_mul_ps(_mm256_set1_ps(10.166640738f), noise);
-        __m256 up = _mm256_sqrt_ps(
+        // Use random number to index points on a sphere.
+        const __m256 noise = _mm256_cvtepi32_ps(i_noise);
+        const __m256 u = _mm256_fmsub_ps(_mm256_set1_ps(2.0f / float(num_sphere_points - 1)), noise, _mm256_set1_ps(1.0f));
+        const __m256 t = _mm256_mul_ps(_mm256_set1_ps(10.166640738f), noise);
+        const __m256 up = _mm256_sqrt_ps(
                 _mm256_max_ps(
                     _mm256_set1_ps(0.0f),
                     _mm256_fnmadd_ps(u, u, _mm256_set1_ps(1.0f))
                     )
                 );
-        gx[i] = _mm256_mul_ps(up, approx_cos8(t));
-        gy[i] = _mm256_mul_ps(up, approx_sin8(t));
-        gz[i] = u;
-    }
+        const __m256 gx = _mm256_mul_ps(up, approx_cos8(t));
+        const __m256 gy = _mm256_mul_ps(up, approx_sin8(t));
+        const __m256 gz = u;
+        const __m256 dx = _mm256_sub_ps(x, vx);
+        const __m256 dy = _mm256_sub_ps(y, vy);
+        const __m256 dz = _mm256_sub_ps(z, vz);
+        const __m256 result = _mm256_fmadd_ps(gx, dx, _mm256_fmadd_ps(gy, dy, _mm256_mul_ps(dz, gz)));
+
 #else
-    for(u32 i = 0; i < 8; i++)
-    {
-        __m256i gxi = rand8(_mm256_castps_si256(_mm256_xor_ps(_mm256_xor_ps(vx[i], vy[i]), vz[i])));
-        gxi = _mm256_and_si256(gxi, _mm256_set1_epi32(0xFFFF));
-        gx[i] = _mm256_mul_ps(_mm256_cvtepi32_ps(gxi), _mm256_set1_ps(1.0f/65535.0f));
+        __m256 result;
+        {
+            __m256i gxi = rand8(_mm256_castps_si256(_mm256_xor_ps(_mm256_xor_ps(vx, vy), vz)));
+            gxi = _mm256_and_si256(gxi, _mm256_set1_epi32(0xFFFF));
+            const __m256 gx = _mm256_mul_ps(_mm256_cvtepi32_ps(gxi), _mm256_set1_ps(1.0f/65535.0f));
+            const __m256 dx = _mm256_sub_ps(x, vx);
+            result = _mm256_mul_ps(dx, gx);
+        }
 
-        __m256i gyi = rand8(
-                _mm256_mullo_epi32(
-                    _mm256_castps_si256(_mm256_xor_ps(_mm256_xor_ps(vx[i], vy[i]), vz[i])),
-                    _mm256_set1_epi32(100)));
-        gyi = _mm256_and_si256(gyi, _mm256_set1_epi32(0xFFFF));
-        gy[i] = _mm256_mul_ps(_mm256_cvtepi32_ps(gyi), _mm256_set1_ps(1.0f/65535.0f));
+        {
+            __m256i gyi = rand8(
+                    _mm256_mullo_epi32(
+                        _mm256_castps_si256(_mm256_xor_ps(_mm256_xor_ps(vx, vy), vz)),
+                        _mm256_set1_epi32(100)));
+            gyi = _mm256_and_si256(gyi, _mm256_set1_epi32(0xFFFF));
+            const __m256 gy = _mm256_mul_ps(_mm256_cvtepi32_ps(gyi), _mm256_set1_ps(1.0f/65535.0f));
+            const __m256 dy = _mm256_sub_ps(y, vy);
+            result = _mm256_fmadd_ps(dy, gy, result);
+        }
 
-        __m256i gzi = rand8(
-                _mm256_mullo_epi32(
-                    _mm256_castps_si256(_mm256_xor_ps(_mm256_xor_ps(vx[i], vy[i]), vz[i])),
-                    _mm256_set1_epi32(10000)));
-        gzi = _mm256_and_si256(gzi, _mm256_set1_epi32(0xFFFF));
-        gz[i] = _mm256_mul_ps(_mm256_cvtepi32_ps(gzi), _mm256_set1_ps(1.0f/65535.0f));
-
-    }
+        {
+            const __m256 dz = _mm256_sub_ps(z, vz);
+            __m256i gzi = rand8(
+                    _mm256_mullo_epi32(
+                        _mm256_castps_si256(_mm256_xor_ps(_mm256_xor_ps(vx, vy), vz)),
+                        _mm256_set1_epi32(10000)));
+            gzi = _mm256_and_si256(gzi, _mm256_set1_epi32(0xFFFF));
+            const __m256 gz = _mm256_mul_ps(_mm256_cvtepi32_ps(gzi), _mm256_set1_ps(1.0f/65535.0f));
+            result = _mm256_fmadd_ps(dz, gz, result);
+        }
 #endif
 
-    __m256 dot_product[8];
-    for(u32 i = 0; i < 8; i++)
-    {
-        dot_product[i] = _mm256_fmadd_ps(dx[i], gx[i], _mm256_fmadd_ps(dy[i], gy[i], _mm256_mul_ps(dz[i], gz[i])));
-    }
+        return result;
+    };
 
-    __m256 tx = dx[0];
     // Smooth t.
-    tx = _mm256_mul_ps(tx, _mm256_mul_ps(tx, _mm256_sub_ps(_mm256_set1_ps(3.0f), _mm256_mul_ps(tx, _mm256_set1_ps(2.0f)))));
-    __m256 ty = dy[0];
-    ty = _mm256_mul_ps(ty, _mm256_mul_ps(ty, _mm256_sub_ps(_mm256_set1_ps(3.0f), _mm256_mul_ps(ty, _mm256_set1_ps(2.0f)))));
-    __m256 tz = dz[0];
-    tz = _mm256_mul_ps(tz, _mm256_mul_ps(tz, _mm256_sub_ps(_mm256_set1_ps(3.0f), _mm256_mul_ps(tz, _mm256_set1_ps(2.0f)))));
+    const __m256 dx0 = _mm256_sub_ps(x, x0);
+    const __m256 dy0 = _mm256_sub_ps(y, y0);
+    const __m256 dz0 = _mm256_sub_ps(z, z0);
+    __m256 tx = _mm256_mul_ps(dx0, _mm256_mul_ps(dx0, _mm256_sub_ps(_mm256_set1_ps(3.0f), _mm256_mul_ps(dx0, _mm256_set1_ps(2.0f)))));
+    __m256 ty = _mm256_mul_ps(dy0, _mm256_mul_ps(dy0, _mm256_sub_ps(_mm256_set1_ps(3.0f), _mm256_mul_ps(dy0, _mm256_set1_ps(2.0f)))));
+    __m256 tz = _mm256_mul_ps(dz0, _mm256_mul_ps(dz0, _mm256_sub_ps(_mm256_set1_ps(3.0f), _mm256_mul_ps(dz0, _mm256_set1_ps(2.0f)))));
 
-    __m256 result = 
-        lerp8(
-                lerp8(
-                    lerp8(
-                        dot_product[0],
-                        dot_product[1],
-                        tx),
-                    lerp8(
-                        dot_product[2],
-                        dot_product[3],
-                        tx),
-                    ty
-                    ),
-                lerp8(
-                    lerp8(
-                        dot_product[4],
-                        dot_product[5],
-                        tx),
-                    lerp8(
-                        dot_product[6],
-                        dot_product[7],
-                        tx),
-                    ty
-                    ),
-                tz
-                    );
-    return result;
+    __m256 p0 = calc_dp(x0, y0, z0);
+    __m256 p1 = calc_dp(x1, y0, z0);
+    __m256 r0 = lerp8(p0, p1, tx);
+    p0 = calc_dp(x0, y1, z0);
+    p1 = calc_dp(x1, y1, z0);
+    __m256 r1 = lerp8(p0, p1, tx);
+    __m256 r2 = lerp8(r0, r1, ty);
+
+    p0 = calc_dp(x0, y0, z1);
+    p1 = calc_dp(x1, y0, z1);
+    r0 = lerp8(p0, p1, tx);
+    p0 = calc_dp(x0, y1, z1);
+    p1 = calc_dp(x1, y1, z1);
+    r1 = lerp8(p0, p1, tx);
+    __m256 r3 = lerp8(r0, r1, ty);
+    
+    __m256 r4 = lerp8(r2, r3, tz);
+
+    return r4;
 }
 
 #pragma warning(default:4201)

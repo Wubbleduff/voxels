@@ -27,14 +27,14 @@ static constexpr s32 CHUNK_DIM = 64;
 static constexpr s32 CHUNK_POW = 6; // CHUNK_DIM = 2**CHUNK_POW
 static_assert(1 << CHUNK_POW == CHUNK_DIM);
 static constexpr s32 CHUNK_MAX_VOXELS = CHUNK_DIM*CHUNK_DIM*CHUNK_DIM;
-static constexpr s32 VIEW_DIST = 512;
+static constexpr s32 VIEW_DIST = 1024;
 static constexpr s32 LOADED_REGION_CHUNKS_DIM = (VIEW_DIST/CHUNK_DIM)*2;
 static constexpr u32 MAX_CHUNKS = LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM*LOADED_REGION_CHUNKS_DIM;
 static constexpr u64 MAX_POSSIBLE_VOXELS = u64(MAX_CHUNKS) * u64(CHUNK_MAX_VOXELS); 
 static constexpr u64 MAX_VOXELS = 50*1024*1024;
-static constexpr u32 MAX_CHUNKS_GEN_PER_FRAME = MAX_CHUNKS;
-//static constexpr u32 MAX_CHUNKS_GEN_PER_FRAME = 16;
-//static constexpr u32 MAX_CHUNKS_GEN_PER_FRAME = 64;
+//static constexpr u32 MAX_CHUNKS_GEN_PER_FRAME = MAX_CHUNKS;
+static constexpr u32 MAX_CHUNKS_GEN_PER_FRAME = 8;
+//static constexpr u32 MAX_CHUNKS_GEN_PER_FRAME = 256;
 static constexpr u32 NUM_TOTAL_THREADS = 24;
 static struct GraphicsState *G_graphics_state = nullptr;
 static struct InputState *G_input_state = nullptr;
@@ -42,12 +42,12 @@ static FILE* G_log_file = nullptr;
 
 #define ASSERT(exp, msg)                        \
 {                                           \
-if(!(exp))                              \
-{                                       \
-fprintf(G_log_file, "%s:%i @ %s @ %s", __FILE__, __LINE__, #exp, msg); \
-fflush(G_log_file);                 \
-DebugBreak();                       \
-}                                       \
+    if(!(exp))                              \
+    {                                       \
+        fprintf(G_log_file, "%s:%i @ %s @ %s", __FILE__, __LINE__, #exp, msg); \
+        fflush(G_log_file);                 \
+        DebugBreak();                       \
+    }                                       \
 }
 
 struct StringBuf
@@ -1201,8 +1201,8 @@ bool maybe_gen_new_terrain(
     // situations.
     u32 gen_count = 0;
     u32 num_work_items = 0;
-    GenChunkWork work_list[MAX_CHUNKS_GEN_PER_FRAME];
-    void** work_outs[MAX_CHUNKS_GEN_PER_FRAME];
+    GenChunkWork* work_list = new GenChunkWork[MAX_CHUNKS_GEN_PER_FRAME];
+    void*** work_outs = new void**[MAX_CHUNKS_GEN_PER_FRAME];
     static_assert(sizeof(work_list) < 1024*1024);
     ITER_CUBE(LOADED_REGION_CHUNKS_DIM)
     {
@@ -1219,8 +1219,6 @@ bool maybe_gen_new_terrain(
             work->player_x = player_x;
             work->player_y = player_y;
             work->player_z = player_z;
-            //add_work(reinterpret_cast<void**>(&new_chunks[it.idx]), JobId::load_terrain, allocate_and_gen_chunk_work, work);
-            //allocate_and_gen_chunk_work(main_thread_state, reinterpret_cast<void**>(&new_chunks[it.idx]), work);
             gen_count++;
             chunks_generated.set_bit(it.idx);
             if(gen_count >= MAX_CHUNKS_GEN_PER_FRAME)
@@ -1239,6 +1237,9 @@ bool maybe_gen_new_terrain(
     }
     
     wait_for_job(JobId::load_terrain);
+
+    delete[] work_outs;
+    delete[] work_list;
     
 #if 0
     

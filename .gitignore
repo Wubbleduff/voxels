@@ -8,3 +8,6 @@ lib/glad/
 lib/glfw-3.3.4.bin.WIN64/
 
 imgui.ini
+vc140.pdb
+project.4coder
+log.txt
