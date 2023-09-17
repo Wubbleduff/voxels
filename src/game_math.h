@@ -203,31 +203,59 @@ struct BitCube
 template<u64 N>
 struct BitArray
 {
-    static_assert(N % 8 == 0);
-    u8 v[N/8] = {};
+    u64 v[N/64] = {};
     
     void set_bit(u64 n)
     {
-        const u64 chunk = n >> 3;
-        const u64 pos = n & 7;
-        v[chunk] |= (1 << pos);
+        const u64 chunk = n / 64;
+        const u64 pos = n & 63;
+        v[chunk] |= (1ULL << pos);
+    }
+
+    void clear_bit(u64 n)
+    {
+        const u64 chunk = n / 64;
+        const u64 pos = n & 63;
+        u64 data = v[chunk];
+        u64 clear_mask = 1;
+        clear_mask = clear_mask << pos;
+        clear_mask = ~clear_mask;
+        data = data & clear_mask;
+        v[chunk] = data;
     }
     
     bool is_bit_set(u64 n)
     {
-        const u64 chunk = n >> 3;
-        const u64 pos = n & 7;
+        const u64 chunk = n / 64;
+        const u64 pos = n & 63;
         return v[chunk] & (1 << pos);
     }
     
     bool all_bits_set()
     {
-        // Assuming divisible by 8
-        for(u32 i = 0; i < N/8; i++)
+        static_assert(N % 64 == 0);
+        u64 mask = u64(-1);
+        for(u32 i = 0; i < N/64; i++)
         {
-            if(v[i] != 0xFF) return false;
+            mask &= v[i];
         }
-        return true;
+        return !bool(~mask);
+    }
+
+    u64 tzcnt()
+    {
+        static_assert(N % 64 == 0);
+        u64 result = 0;
+        u64 i = 0;
+        u64 tz;
+        do
+        {
+            tz = _tzcnt_u64(v[i]);
+            result += tz;
+            i++;
+        }
+        while(tz == 64 && result < N);
+        return result;
     }
 };
 
@@ -339,9 +367,30 @@ static float dot(v2 a, v2 b) { return (a.x * b.x) + (a.y * b.y); }
 static float dot(v3 a, v3 b) { return (a.x * b.x) + (a.y * b.y) + (a.z * b.z); }
 static float dot(v4 a, v4 b) { return (a.x * b.x) + (a.y * b.y) + (a.z * b.z) + (a.w * b.w); }
 
+static s32 dot(v3i a, v3i b)
+{
+    __m128i m = _mm_mullo_epi32(a.v, b.v);
+    __m128i sum = _mm_add_epi32(
+        m,
+        _mm_add_epi32(
+            _mm_shuffle_epi32(m, 0b00'11'10'01),
+            _mm_add_epi32(
+                _mm_shuffle_epi32(m, 0b01'00'11'10),
+                _mm_shuffle_epi32(m, 0b10'01'00'11)
+            )
+        )
+    );
+    return _mm_cvtsi128_si32(sum);
+}
+
 static v2 operator*(v2 a, float scalar) { return v2(a.x * scalar, a.y * scalar); }
 static v3 operator*(v3 a, float scalar) { return v3(a.x * scalar, a.y * scalar, a.z * scalar); }
 static v4 operator*(v4 a, float scalar) { return v4(a.x * scalar, a.y * scalar, a.z * scalar, a.w * scalar); }
+
+static v3i operator*(v3i a, s32 scalar)
+{
+    return _mm_mullo_epi32(a.v, _mm_set1_epi32(scalar));
+}
 
 static v2 operator*(float scalar, v2 a) { return v2(a.x * scalar, a.y * scalar); }
 static v3 operator*(float scalar, v3 a) { return v3(a.x * scalar, a.y * scalar, a.z * scalar); }
