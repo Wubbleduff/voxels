@@ -7,6 +7,9 @@
 layout (location = 0) in float a_x;
 layout (location = 1) in float a_y;
 layout (location = 2) in float a_z;
+layout (location = 3) in float n_x;
+layout (location = 4) in float n_y;
+layout (location = 5) in float n_z;
 
 layout(std430, binding = 0) buffer voxel_data
 {
@@ -24,6 +27,7 @@ out vec4 model_position;
 out vec4 world_position;
 out vec4 view_position;
 out vec4 model_color;
+out vec4 normal;
 
 void main()
 {
@@ -43,6 +47,7 @@ void main()
     int a = (color_tmp & 0x000000FF) >> 0;
     model_color = vec4(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f);
 
+    normal = vec4(n_x, n_y, n_z, 1.0f);
     gl_Position = m_proj * view_position;
 };
 
@@ -61,6 +66,7 @@ in vec4 model_position;
 in vec4 world_position;
 in vec4 view_position;
 in vec4 model_color;
+in vec4 normal;
 
 out vec4 frag_color;
 
@@ -72,25 +78,28 @@ vec3 hsv2rgb(vec3 c) {
 
 void main()
 {
-    vec4 normal;
-    if(abs(model_position.x) > abs(model_position.y) && abs(model_position.x) > abs(model_position.z))
+    vec4 n;
+    if(abs(normal.x) > abs(normal.y) && abs(normal.x) > abs(normal.z))
     {
-        normal = vec4(1.0f, 0.0f, 0.0f, 0.0f);
-        normal *= sign(model_position.x);
+        n = vec4(1.0f, 0.0f, 0.0f, 0.0f);
+        n *= sign(normal.x);
     }
-    else if(abs(model_position.y) > abs(model_position.x) && abs(model_position.y) > abs(model_position.z))
+    else if(abs(normal.y) > abs(normal.x) && abs(normal.y) > abs(normal.z))
     {
-        normal = vec4(0.0f, 1.0f, 0.0f, 0.0f);
-        normal *= sign(model_position.y);
+        n = vec4(0.0f, 1.0f, 0.0f, 0.0f);
+        n *= sign(normal.y);
     }
-    else if(abs(model_position.z) > abs(model_position.x) && abs(model_position.z) > abs(model_position.y))
+    else if(abs(normal.z) > abs(normal.x) && abs(normal.z) > abs(normal.y))
     {
-        normal = vec4(0.0f, 0.0f, 1.0f, 0.0f);
-        normal *= sign(model_position.z);
+        n = vec4(0.0f, 0.0f, 1.0f, 0.0f);
+        n *= sign(normal.z);
     }
-    float inten = dot(normalize(vec4(1.0f, 1.0f, 1.0f, 0.0f)), normal);
-    inten = max(inten, 0.2f);
+
+    //vec4 n = normalize(normal);
+    float inten = dot(normalize(vec4(1.0f, 1.0f, 1.0f, 0.0f)), n);
+    //inten = max(inten, 0.2f);
 
     frag_color = model_color * inten;
+    //frag_color = model_color;
 };
 

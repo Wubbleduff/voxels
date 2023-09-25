@@ -228,7 +228,7 @@ struct BitArray
     {
         const u64 chunk = n / 64;
         const u64 pos = n & 63;
-        return v[chunk] & (1 << pos);
+        return v[chunk] & (1ULL << pos);
     }
     
     bool all_bits_set()
@@ -256,6 +256,11 @@ struct BitArray
         }
         while(tz == 64 && result < N);
         return result;
+    }
+    
+    void clear()
+    {
+        memset(v, 0, sizeof(v));
     }
 };
 
@@ -659,37 +664,37 @@ static v3 hsv_to_rgb(v3 hsv)
     switch(i)
     {
         case 0:
-        rgb.r = hsv.v;
-        rgb.g = t;
-        rgb.b = p;
-        break;
+            rgb.r = hsv.v;
+            rgb.g = t;
+            rgb.b = p;
+            break;
         case 1:
-        rgb.r = q;
-        rgb.g = hsv.v;
-        rgb.b = p;
-        break;
+            rgb.r = q;
+            rgb.g = hsv.v;
+            rgb.b = p;
+            break;
         case 2:
-        rgb.r = p;
-        rgb.g = hsv.v;
-        rgb.b = t;
-        break;
-        
+            rgb.r = p;
+            rgb.g = hsv.v;
+            rgb.b = t;
+            break;
+
         case 3:
-        rgb.r = p;
-        rgb.g = q;
-        rgb.b = hsv.v;
-        break;
+            rgb.r = p;
+            rgb.g = q;
+            rgb.b = hsv.v;
+            break;
         case 4:
-        rgb.r = t;
-        rgb.g = p;
-        rgb.b = hsv.v;
-        break;
+            rgb.r = t;
+            rgb.g = p;
+            rgb.b = hsv.v;
+            break;
         case 5:
         default:
-        rgb.r = hsv.v;
-        rgb.g = p;
-        rgb.b = q;
-        break;
+            rgb.r = hsv.v;
+            rgb.g = p;
+            rgb.b = q;
+            break;
     }
     return rgb;     
 }

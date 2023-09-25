@@ -79,6 +79,7 @@ struct Camera
     f32 near_plane_dist;
     f32 ar; // w / h
 };
+static constexpr f32 SQRT3 = 1.73205080f;
 struct GraphicsState
 {
     GLFWwindow *window;
@@ -103,11 +104,36 @@ struct GraphicsState
     Camera debug_cam;
     bool use_debug_cam;
     
-    f32 voxel_vertices[32] =
+    //static constexpr f32 voxel_vertices[32] =
+    static constexpr f32 voxel_vertices[] =
     {
-        1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, // X
-        1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, // Y
-        0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f  // Z
+        0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, // X
+        0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, // Y
+        0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, // Z
+        -SQRT3,  SQRT3, -SQRT3,  SQRT3, -SQRT3,  SQRT3, -SQRT3,  SQRT3, 
+        -SQRT3, -SQRT3,  SQRT3,  SQRT3, -SQRT3, -SQRT3,  SQRT3,  SQRT3, 
+        -SQRT3, -SQRT3, -SQRT3, -SQRT3,  SQRT3,  SQRT3,  SQRT3,  SQRT3, 
+    };
+
+    static constexpr u32 voxel_indices[] = 
+    {
+        0, 4, 2, // -X
+        2, 4, 6, // -X
+
+        3, 5, 1, // +X
+        3, 7, 5, // +X
+
+        0, 1, 4, // -Y
+        4, 1, 5, // -Y
+
+        2, 6, 7, // +Y
+        3, 2, 7, // +Y
+
+        1, 0, 2, // -Z
+        2, 3, 1, // -Z
+
+        4, 5, 6, // +Z
+        6, 5, 7, // +Z
     };
 };
 struct InputState
@@ -169,8 +195,11 @@ static constexpr u32 EMPTY_VOXEL = u32(-1);
 
 struct Chunk
 {
-    u32 num;
+    s32 bl_x;
+    s32 bl_y;
+    s32 bl_z;
     u32 lod;
+    u32 num;
     // VLA | xxxx yyyy zzzz cccc |
     static constexpr u32 INTS_PER_VOXEL = 4;
     s32 voxels[1];
@@ -920,9 +949,7 @@ __m256 sample_terrain(__m256 x, __m256 y, __m256 z)
 
 Chunk* allocate_chunk(u32 cap_voxels)
 {
-    assert(offsetof(Chunk, voxels) == 8);
-
-    u64 bytes = sizeof(Chunk) * cap_voxels * sizeof(s32) * Chunk::INTS_PER_VOXEL;
+    u64 bytes = sizeof(Chunk) + cap_voxels * sizeof(s32) * Chunk::INTS_PER_VOXEL;
     Chunk* result = reinterpret_cast<Chunk*>(_mm_malloc(bytes, 4096));
     return result;
 }
@@ -943,15 +970,15 @@ static u32 get_chunk_lod_from_distance(u32 distance)
     //return distance / 1024;
     //return distance / 256;
     //return u32(sqrt(double(distance)));
-    if(distance < 128) return 1;
-    else if(distance < 1 << 8)  return 2;
-    else if(distance < 1 << 9)  return 4;
+    if(distance < 1 << 7) return 0;
+    else if(distance < 1 << 8)  return 1;
+    else if(distance < 1 << 9)  return 2;
     else if(distance < 1 << 10) return 4;
-    else if(distance < 1 << 11) return 5;
-    else if(distance < 1 << 12) return 5;
-    else if(distance < 1 << 13) return 5;
-    else if(distance < 1 << 14) return 6;
-    else return 7;
+    else if(distance < 1 << 11) return 6;
+    else if(distance < 1 << 12) return 8;
+    else if(distance < 1 << 13) return 10;
+    else if(distance < 1 << 14) return 12;
+    else return 8;
 }
 static u32 get_chunk_dim_from_lod(u32 lod)
 {
@@ -1098,8 +1125,18 @@ void allocate_and_gen_chunk_work(ThreadState* thread_state, void** out_data, con
                         )
                     );
                     */
-                    __m256i v = _mm256_set1_epi32(0x22AA00FF);
-                    //__m256i v = _mm256_set1_epi32(c);
+
+                    //__m256i v = _mm256_set1_epi32(0x22AA00FF);
+
+                    static constexpr u32 lod_lut[] = {
+                        0x00AA00FF,
+                        0x0000AAFF,
+                        0xAA0000FF,
+                        0x00AAAAFF,
+                        0xAAAA00FF,
+                        0xAAAAAAFF
+                    };
+                    __m256i v = _mm256_set1_epi32(lod_lut[min(lod, ARRAY_COUNT(lod_lut) - 1)]);
 
                     __m256i x_packed = left_pack(x, bits);
                     __m256i y_packed = left_pack(y, bits);
@@ -1116,8 +1153,11 @@ void allocate_and_gen_chunk_work(ThreadState* thread_state, void** out_data, con
     }
     
     Chunk* result = allocate_chunk(num_voxels);
-    result->num = num_voxels;
+    result->bl_x = chunk_x;
+    result->bl_y = chunk_y;
+    result->bl_z = chunk_z;
     result->lod = lod;
+    result->num = num_voxels;
     memcpy(result->voxels + num_voxels*0, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*0, num_voxels * sizeof(result->voxels[0]));
     memcpy(result->voxels + num_voxels*1, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*1, num_voxels * sizeof(result->voxels[0]));
     memcpy(result->voxels + num_voxels*2, gen_chunk_scratch->voxels + CHUNK_MAX_VOXELS*2, num_voxels * sizeof(result->voxels[0]));
@@ -1127,63 +1167,98 @@ void allocate_and_gen_chunk_work(ThreadState* thread_state, void** out_data, con
 
 
 
-struct Node
+struct OctTree
 {
-    v3i bl_pos;
-    u32 lod;
-    u16 children[8];
+    struct Node
+    {
+        v3i bl_pos;
+        u32 lod;
+        u16 children[8];
+    };
+    static constexpr u32 CAP = MAX_CHUNKS;
+    u16 num_allocated;
+    Node pool[CAP];
+    using NodeBitArray = BitArray<MAX_CHUNKS>;
+    NodeBitArray leaves;
+
+    Node* root()
+    {
+        return &(pool[0]);
+    }
+
+    u32 find(v3i bl_pos, u32 lod)
+    {
+        // TODO mfritz im being big dumb dumb bubble gum
+        for(u16 i = 0; i < num_allocated; i++)
+        {
+            if(pool[i].bl_pos == bl_pos && pool[i].lod == lod)
+            {
+                return i;
+            }
+        }
+        return CAP;
+    }
+
+    bool is_leaf(u32 id)
+    {
+        if(id == CAP) return false;
+        return leaves.is_bit_set(id);
+    }
+
+    void reset()
+    {
+        // 1 node always allocated for the root.
+        num_allocated = 1;
+        leaves.clear();
+    }
 };
 void terrain_generation(
-    Node* oct_tree_root,
-    Node* oct_tree_node_pool,
-    u16* oct_tree_num_nodes_allocated,
+    OctTree* oct_tree,
     u32* out_num_chunks,
     Chunk** out_chunks,
     const v3i player_pos)
 {
     // Build the oct tree for terrain.
     u16* nodes_to_process = new u16[MAX_CHUNKS];
-    BitArray<MAX_CHUNKS>* p_leaf_nodes = new BitArray<MAX_CHUNKS>;
-    BitArray<MAX_CHUNKS>& leaf_nodes = *p_leaf_nodes;
+
+    constexpr u32 MAX_LOD = 10;
+
+    const u32 chunk_pos_mask = ~((1U << 5U) - 1U);
+    const v3i player_chunk_pos = _mm_and_si128(player_pos.v, v3i(chunk_pos_mask, chunk_pos_mask, chunk_pos_mask).v);
 
     u32 num_nodes_to_process = 0;
     {
-        //oct_tree_root->lod = 12;
-        oct_tree_root->lod = 8;
-        u32 node_hdim = get_chunk_dim_from_lod(oct_tree_root->lod) / 2;
-        oct_tree_root->bl_pos = v3i(-s32(node_hdim), -s32(node_hdim), -s32(node_hdim));
-        leaf_nodes.set_bit(0);
-        nodes_to_process[num_nodes_to_process++] = 0;
-    }
-
-    for(u32 i = 0; i < *out_num_chunks; i++)
-    {
-        deallocate_chunk(out_chunks[i]);
-    }
-
-    {
         TIME_SCOPE("Build oct tree");
+
+        oct_tree->root()->lod = MAX_LOD;
+        const u32 root_node_hdim = get_chunk_dim_from_lod(oct_tree->root()->lod) / 2;
+        oct_tree->root()->bl_pos = player_chunk_pos + v3i(-s32(root_node_hdim), -s32(root_node_hdim), -s32(root_node_hdim));
+        oct_tree->leaves.set_bit(0);
+        nodes_to_process[num_nodes_to_process++] = 0;
 
         // Process until all nodes are the appropriate size.
         while(num_nodes_to_process)
-        { // Pop next node.
+        {
+            // Pop next node.
             u16 node_id = nodes_to_process[--num_nodes_to_process];
-            Node* node = oct_tree_node_pool + node_id;
+            assert(node_id < OctTree::CAP);
+            OctTree::Node* node = oct_tree->pool + node_id;
 
             // Do split?
             u32 node_hdim = get_chunk_dim_from_lod(node->lod) / 2;
             v3i node_center = node->bl_pos + v3i(node_hdim, node_hdim, node_hdim);
-            u32 dist_to_player = u32(dot(node_center - player_pos, node_center - player_pos));
+            u32 dist_to_player = u32(dot(node_center - player_chunk_pos, node_center - player_chunk_pos));
             dist_to_player = u32(sqrtf(float(dist_to_player)));
-            u32 node_radius = u32(double(node_hdim*2) * 1.75);
+            u32 node_radius = u32(double(node_hdim*2) * SQRT3);
             dist_to_player = u32(max(s32(dist_to_player) - s32(node_radius), 0));
             const u32 target_chunk_lod = get_chunk_lod_from_distance(dist_to_player);
             if(node->lod > target_chunk_lod)
             {
                 // Split
                 const u32 new_lod = node->lod - 1;
+                assert(new_lod < MAX_LOD);
                 const u32 new_dim = get_chunk_dim_from_lod(new_lod);
-                leaf_nodes.clear_bit(node_id);
+                oct_tree->leaves.clear_bit(node_id);
                 v3i child_offsets[8] = 
                 {
                     v3i(0, 0, 0),
@@ -1197,44 +1272,76 @@ void terrain_generation(
                 };
                 for(u32 i = 0; i < 8; i++)
                 {
-                    u16 child_id = (*oct_tree_num_nodes_allocated)++;
-                    assert(*oct_tree_num_nodes_allocated < MAX_CHUNKS);
-                    Node* child = oct_tree_node_pool + child_id;
+                    u16 child_id = oct_tree->num_allocated++;
+                    assert(oct_tree->num_allocated < MAX_CHUNKS);
+                    OctTree::Node* child = oct_tree->pool + child_id;
                     node->children[i] = child_id;
                     child->lod = new_lod;
                     child->bl_pos = node->bl_pos + child_offsets[i] * new_dim;
-                    leaf_nodes.set_bit(child_id);
+                    oct_tree->leaves.set_bit(child_id);
 
                     nodes_to_process[num_nodes_to_process] = child_id;
                     num_nodes_to_process++;
+                    assert(num_nodes_to_process < MAX_CHUNKS);
                 }
             }
         }
-
     }
 
-    // Generate terrain given chunks in the oct tree
     u32 num_chunks = 0;
-    for(u64 leaf_id = leaf_nodes.tzcnt(); leaf_id != MAX_CHUNKS;)
+
+    // Go through each old chunk. If the old chunk is a leaf node in the oct tree, reuse the chunk. Otherwise, deallocate the chunk.
+    const u32 num_old_chunks = *out_num_chunks;
+    Chunk** old_chunks = out_chunks;
+    OctTree::NodeBitArray reused_chunks;
+    // Ensure the bit array can fit on the stack.
+    static_assert(sizeof(OctTree::NodeBitArray) < 16*1024);
+    for(u32 i = 0; i < num_old_chunks; i++)
     {
-        Chunk* new_chunk;
-        GenChunkWork work;
-        Node* node = oct_tree_node_pool + leaf_id;
-        work.chunk_x = node->bl_pos.x();
-        work.chunk_y = node->bl_pos.y();
-        work.chunk_z = node->bl_pos.z();
-        work.lod = node->lod;
-        allocate_and_gen_chunk_work(main_thread_state, reinterpret_cast<void**>(&new_chunk), &work);
-
-        out_chunks[num_chunks++] = new_chunk;
-        assert(num_chunks < MAX_CHUNKS);
-
-        leaf_nodes.clear_bit(leaf_id);
-        leaf_id = leaf_nodes.tzcnt();
+        Chunk* old_chunk = old_chunks[i];
+        const u32 node_id = oct_tree->find(v3i(old_chunk->bl_x, old_chunk->bl_y, old_chunk->bl_z), old_chunk->lod);
+        if(oct_tree->is_leaf(node_id))
+        {
+            out_chunks[num_chunks++] = old_chunk;
+            assert(num_chunks < MAX_CHUNKS);
+            reused_chunks.set_bit(node_id);
+        }
+        else
+        {
+            deallocate_chunk(old_chunk);
+        }
     }
-    *out_num_chunks = num_chunks;
 
-    delete[] p_leaf_nodes;
+    {
+        TIME_SCOPE("Generate chunks");
+
+        // Generate terrain given chunks in the oct tree
+        OctTree::NodeBitArray leaves_copy = oct_tree->leaves;
+        for(u64 leaf_id = leaves_copy.tzcnt(); leaf_id != MAX_CHUNKS;)
+        {
+            Chunk* new_chunk;
+            OctTree::Node* node = oct_tree->pool + leaf_id;
+
+            // Generate the new chunk if it wasn't cached.
+            if(!reused_chunks.is_bit_set(leaf_id))
+            {
+                GenChunkWork work;
+                work.chunk_x = node->bl_pos.x();
+                work.chunk_y = node->bl_pos.y();
+                work.chunk_z = node->bl_pos.z();
+                work.lod = node->lod;
+                allocate_and_gen_chunk_work(main_thread_state, reinterpret_cast<void**>(&new_chunk), &work);
+
+                out_chunks[num_chunks++] = new_chunk;
+                assert(num_chunks < MAX_CHUNKS);
+            }
+
+            leaves_copy.clear_bit(leaf_id);
+            leaf_id = leaves_copy.tzcnt();
+        }
+        *out_num_chunks = num_chunks;
+    }
+
     delete[] nodes_to_process;
 }
 
@@ -1543,36 +1650,27 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             check_gl_errors("vao");
             glGenBuffers(1, &G_graphics_state->batch_voxel_vbo);
             check_gl_errors("vbo");
-            static u32 voxel_indices[] = 
-            {
-                4, 0, 3,
-                4, 3, 7,
-                2, 6, 7,
-                2, 7, 3,
-                5, 2, 1,
-                5, 6, 2,
-                4, 1, 0,
-                4, 5, 1,
-                7, 5, 4,
-                7, 6, 5,
-                0, 1, 2,
-                0, 2, 3
-            };
             
             glBindBuffer(GL_ARRAY_BUFFER, G_graphics_state->batch_voxel_vbo);
-            glBufferData(GL_ARRAY_BUFFER, sizeof(G_graphics_state->voxel_vertices), G_graphics_state->voxel_vertices, GL_STATIC_DRAW);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(GraphicsState::voxel_vertices), GraphicsState::voxel_vertices, GL_STATIC_DRAW);
             check_gl_errors("vbo voxel vertices");
             
             glGenBuffers(1, &G_graphics_state->batch_voxel_ebo);
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, G_graphics_state->batch_voxel_ebo);
-            glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(voxel_indices), voxel_indices, GL_STATIC_DRAW);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(GraphicsState::voxel_indices), GraphicsState::voxel_indices, GL_STATIC_DRAW);
             
             glVertexAttribPointer(0, 1, GL_FLOAT, GL_FALSE, 0, (void *)0);
             glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 0, (void *)(8*sizeof(f32)));
             glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 0, (void *)(16*sizeof(f32)));
+            glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, 0, (void *)(24*sizeof(f32)));
+            glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, 0, (void *)(32*sizeof(f32)));
+            glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, 0, (void *)(40*sizeof(f32)));
             glEnableVertexAttribArray(0);
             glEnableVertexAttribArray(1);
             glEnableVertexAttribArray(2);
+            glEnableVertexAttribArray(3);
+            glEnableVertexAttribArray(4);
+            glEnableVertexAttribArray(5);
             check_gl_errors("vertex attrib pointer");
             
             // https://www.khronos.org/opengl/wiki/Shader_Storage_Buffer_Object
@@ -1675,12 +1773,8 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
     u32 num_chunks = 0;
     Chunk** chunks = new Chunk*[MAX_CHUNKS];
 
-    Node* oct_tree_node_pool = new Node[MAX_CHUNKS];
-    u16 oct_tree_num_nodes_allocated = 0;
-    Node* oct_tree_root = oct_tree_node_pool;
-    u16 oct_tree_root_id = oct_tree_num_nodes_allocated++;
-    (void)oct_tree_root_id;
-
+    OctTree* oct_tree = new OctTree;
+    oct_tree->reset();
     
 #if 0
     static constexpr u32 NUM_TREES = 1;
@@ -1799,21 +1893,16 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
             
             const v3i camera_pos = point_to_voxel(v3(G_graphics_state->cam.pos.x, G_graphics_state->cam.pos.y, G_graphics_state->cam.pos.z));
 
-            // Oct tree
+            // Gen terrain
             {
-                TIME_SCOPE("gen terrain");
-                static bool asdf = false;
-                if(!asdf)
-                {
-                    terrain_generation(
-                            oct_tree_root,
-                            oct_tree_node_pool,
-                            &oct_tree_num_nodes_allocated,
-                            &num_chunks,
-                            chunks,
-                            camera_pos);
-                }
-                asdf = true;
+                TIME_SCOPE("Generate terrain");
+
+                oct_tree->reset();
+                terrain_generation(
+                        oct_tree,
+                        &num_chunks,
+                        chunks,
+                        camera_pos);
             }
 
             // Prep render data
@@ -1910,7 +1999,8 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                     glBufferSubData(GL_SHADER_STORAGE_BUFFER, offset_color, size, batch_color);
                     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, G_graphics_state->batch_voxel_ssbo);
                     
-                    glDrawElementsInstanced(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0, batch_size);
+                    const u32 num_indices = ARRAY_COUNT(GraphicsState::voxel_indices);
+                    glDrawElementsInstanced(GL_TRIANGLES, num_indices, GL_UNSIGNED_INT, 0, batch_size);
                     check_gl_errors("draw");
                     
                     num_batches_drawn++;
@@ -1967,10 +2057,10 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
                 if(show_chunk_lines)
                 {
                     // NOTE: Assuming oct tree nodes are allocated linearly and not deleted.
-                    for(u16 node_id = 0; node_id < oct_tree_num_nodes_allocated; node_id++)
+                    for(u16 node_id = 0; node_id < oct_tree->num_allocated; node_id++)
                     {
-                        v3i bl_pos = oct_tree_node_pool[node_id].bl_pos;
-                        u32 lod = oct_tree_node_pool[node_id].lod;
+                        v3i bl_pos = oct_tree->pool[node_id].bl_pos;
+                        u32 lod = oct_tree->pool[node_id].lod;
 
                         if(lod != show_lod) continue;
 
