@@ -4,6 +4,9 @@
 #include <immintrin.h>
 #include <atomic>
 
+// std sort
+#include <algorithm>
+
 #include <glad/glad.h>
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -27,8 +30,10 @@
 // NOTE: This value must match the shader.
 static constexpr u32 SHADER_BUFFER_WIDTH = 10*1024;
 static constexpr u64 MAX_VOXELS = 50*1024*1024;
-static constexpr u32 NUM_TOTAL_THREADS = 1;
-constexpr u32 MAX_CHUNKS = 1 << 16;
+static constexpr u32 NUM_TOTAL_THREADS = 16;
+static constexpr u32 MAX_CHUNKS = 1 << 17;
+//static constexpr u32 MAX_CHUNKS_GEN_PER_FRAME = 32;
+static constexpr u32 MAX_CHUNKS_GEN_PER_FRAME = 128;
 static struct GraphicsState *G_graphics_state = nullptr;
 static struct InputState *G_input_state = nullptr;
 static FILE* G_log_file = nullptr;
@@ -970,15 +975,16 @@ static u32 get_chunk_lod_from_distance(u32 distance)
     //return distance / 1024;
     //return distance / 256;
     //return u32(sqrt(double(distance)));
+
     if(distance < 1 << 7) return 0;
-    else if(distance < 1 << 8)  return 1;
-    else if(distance < 1 << 9)  return 2;
-    else if(distance < 1 << 10) return 4;
-    else if(distance < 1 << 11) return 6;
-    else if(distance < 1 << 12) return 8;
-    else if(distance < 1 << 13) return 10;
-    else if(distance < 1 << 14) return 12;
-    else return 8;
+    else if(distance < 1 << 8)  return 0;
+    else if(distance < 1 << 9)  return 1;
+    else if(distance < 1 << 10) return 2;
+    else if(distance < 1 << 11) return 3;
+    else if(distance < 1 << 12) return 4;
+    else if(distance < 1 << 13) return 5;
+    else if(distance < 1 << 14) return 6;
+    else return 7;
 }
 static u32 get_chunk_dim_from_lod(u32 lod)
 {
@@ -1102,7 +1108,6 @@ void allocate_and_gen_chunk_work(ThreadState* thread_state, void** out_data, con
                     __m256i y = _mm256_set1_epi32(chunk_y + yi*lod_scale);
                     __m256i z = _mm256_set1_epi32(chunk_z + zi*lod_scale);
 
-                    /*
                     u32 r = 0x22;
                     u32 g = 0x99;
                     u32 b = 0x00;
@@ -1124,10 +1129,11 @@ void allocate_and_gen_chunk_work(ThreadState* thread_state, void** out_data, con
                             _mm256_slli_epi32(vbi, 8)
                         )
                     );
-                    */
+                    
 
                     //__m256i v = _mm256_set1_epi32(0x22AA00FF);
 
+                    /*
                     static constexpr u32 lod_lut[] = {
                         0x00AA00FF,
                         0x0000AAFF,
@@ -1137,6 +1143,7 @@ void allocate_and_gen_chunk_work(ThreadState* thread_state, void** out_data, con
                         0xAAAAAAFF
                     };
                     __m256i v = _mm256_set1_epi32(lod_lut[min(lod, ARRAY_COUNT(lod_lut) - 1)]);
+                    */
 
                     __m256i x_packed = left_pack(x, bits);
                     __m256i y_packed = left_pack(y, bits);
@@ -1188,15 +1195,40 @@ struct OctTree
 
     u32 find(v3i bl_pos, u32 lod)
     {
-        // TODO mfritz im being big dumb dumb bubble gum
-        for(u16 i = 0; i < num_allocated; i++)
+        Node* cur = root();
+        while(true)
         {
-            if(pool[i].bl_pos == bl_pos && pool[i].lod == lod)
+            assert(cur - root() < 1<<16);
+            const u16 cur_id = u16(cur - root());
+            if(bl_pos == cur->bl_pos && lod == cur->lod)
             {
-                return i;
+                return cur_id;
+            }
+            if(leaves.is_bit_set(cur_id) || lod > cur->lod)
+            {
+                return CAP;
+            }
+
+            bool progress = false;
+            for(u32 i = 0; i < 8; i++)
+            {
+                // TODO Don't need to read from this memory if we statically know the order of quadrants...
+                Node* child = &(pool[cur->children[i]]);
+                const v3i quadrant_bl = child->bl_pos;
+                const u32 quadrant_dim = get_chunk_dim_from_lod(child->lod);
+                if(point_cube_intersect(bl_pos, quadrant_bl, quadrant_dim))
+                {
+                    progress = true;
+                    cur = child;
+                    break;
+                }
+            }
+            assert(progress);
+            if(!progress)
+            {
+                return CAP;
             }
         }
-        return CAP;
     }
 
     bool is_leaf(u32 id)
@@ -1221,7 +1253,7 @@ void terrain_generation(
     // Build the oct tree for terrain.
     u16* nodes_to_process = new u16[MAX_CHUNKS];
 
-    constexpr u32 MAX_LOD = 10;
+    constexpr u32 MAX_LOD = 11;
 
     const u32 chunk_pos_mask = ~((1U << 5U) - 1U);
     const v3i player_chunk_pos = _mm_and_si128(player_pos.v, v3i(chunk_pos_mask, chunk_pos_mask, chunk_pos_mask).v);
@@ -1232,7 +1264,7 @@ void terrain_generation(
 
         oct_tree->root()->lod = MAX_LOD;
         const u32 root_node_hdim = get_chunk_dim_from_lod(oct_tree->root()->lod) / 2;
-        oct_tree->root()->bl_pos = player_chunk_pos + v3i(-s32(root_node_hdim), -s32(root_node_hdim), -s32(root_node_hdim));
+        oct_tree->root()->bl_pos = v3i(-s32(root_node_hdim), -s32(root_node_hdim), -s32(root_node_hdim));
         oct_tree->leaves.set_bit(0);
         nodes_to_process[num_nodes_to_process++] = 0;
 
@@ -1295,7 +1327,7 @@ void terrain_generation(
     Chunk** old_chunks = out_chunks;
     OctTree::NodeBitArray reused_chunks;
     // Ensure the bit array can fit on the stack.
-    static_assert(sizeof(OctTree::NodeBitArray) < 16*1024);
+    static_assert(sizeof(OctTree::NodeBitArray) < 32*1024);
     for(u32 i = 0; i < num_old_chunks; i++)
     {
         Chunk* old_chunk = old_chunks[i];
@@ -1308,6 +1340,37 @@ void terrain_generation(
         }
         else
         {
+
+            // We don't want to deallocate immediately here. If we deallocate immediately, we'll get holes in the ground because we can't fill the deallocated chunk fast enough.
+            // There's 2 cases here: we're either moving away from the chunk (increasing LOD value, combining chunks) or moving towards the chunk (decreasing LOD value, splitting chunks).
+            // Case 1 (increasing LOD value):
+            //     We can't deallocate the chunk until the parent is generated.
+            // Case 2 (decreasing LOD value:
+            //     We can't deallocate the chunk until ALL children are generated.
+            // 
+            // What happens when we move back and forth and the new chunk isn't generated yet?
+            //     Case 1:
+            //         Move away from chunk -> frame -> move back towards chunk.
+            //         We can just keep the original chunks around and remove the parent generation work.
+            //     Case 2:
+            //         Move towards the chunk -> frame -> move back away from chunk.
+            //         We can just keep the original chunk around and remove the children generation work.
+            // 
+            // There's now state associated with which chunks to generate:
+            //     Generated list: Contains all present chunks that actually exist in the world.
+            //     To generate list: Contains chunks that are waiting to be generated. MAX_CHUNKS_GEN_PER_FRAME # of these will be generated per frame.
+            //     Generated but not real yet list: Chunks that are generated but can't exist because not all siblings are generated yet.
+            //                                      These chunks may be thrown away if they player moves back and forth and they're no longer needed.
+            //
+            //     Chunks will go from:
+            //     * Not generated -> to generate list
+            //     * To generate list -> Generated but not real yet list
+            //                        -> Not generated
+            //     * Generated but not real yet list -> Generated list
+            //                                       -> Not generated
+            //     * Generated list -> Not generated
+            //
+
             deallocate_chunk(old_chunk);
         }
     }
@@ -1315,31 +1378,59 @@ void terrain_generation(
     {
         TIME_SCOPE("Generate chunks");
 
+        u32 num_work = 0;
+        GenChunkWork* work_array = new GenChunkWork[MAX_CHUNKS];
+
         // Generate terrain given chunks in the oct tree
         OctTree::NodeBitArray leaves_copy = oct_tree->leaves;
         for(u64 leaf_id = leaves_copy.tzcnt(); leaf_id != MAX_CHUNKS;)
         {
-            Chunk* new_chunk;
-            OctTree::Node* node = oct_tree->pool + leaf_id;
-
             // Generate the new chunk if it wasn't cached.
             if(!reused_chunks.is_bit_set(leaf_id))
             {
+                OctTree::Node* node = oct_tree->pool + leaf_id;
                 GenChunkWork work;
                 work.chunk_x = node->bl_pos.x();
                 work.chunk_y = node->bl_pos.y();
                 work.chunk_z = node->bl_pos.z();
                 work.lod = node->lod;
-                allocate_and_gen_chunk_work(main_thread_state, reinterpret_cast<void**>(&new_chunk), &work);
-
-                out_chunks[num_chunks++] = new_chunk;
-                assert(num_chunks < MAX_CHUNKS);
+                work_array[num_work++] = work;
             }
 
             leaves_copy.clear_bit(leaf_id);
             leaf_id = leaves_copy.tzcnt();
         }
+
+        std::sort(work_array, work_array + num_work, [&player_chunk_pos](const GenChunkWork& a, const GenChunkWork& b)
+        {
+            const s64 adx = s64(a.chunk_x) - s64(player_chunk_pos.x());
+            const s64 ady = s64(a.chunk_y) - s64(player_chunk_pos.y());
+            const s64 adz = s64(a.chunk_z) - s64(player_chunk_pos.z());
+            const s64 a_dist = adx*adx + ady*ady + adz*adz;
+
+            const s64 bdx = s64(b.chunk_x) - s64(player_chunk_pos.x());
+            const s64 bdy = s64(b.chunk_y) - s64(player_chunk_pos.y());
+            const s64 bdz = s64(b.chunk_z) - s64(player_chunk_pos.z());
+            const s64 b_dist = bdx*bdx + bdy*bdy + bdz*bdz;
+
+            return a_dist < b_dist;
+        });
+
+        for(u32 i = 0; i < min(num_work, MAX_CHUNKS_GEN_PER_FRAME); i++)
+        {
+            //GenChunkWork work = work_array[i];
+            //Chunk* new_chunk;
+            //allocate_and_gen_chunk_work(main_thread_state, reinterpret_cast<void**>(&new_chunk), &work);
+            //out_chunks[num_chunks++] = new_chunk;
+            add_work(reinterpret_cast<void**>(&out_chunks[num_chunks++]), JobId::load_terrain, allocate_and_gen_chunk_work, work_array + i);
+            assert(num_chunks < MAX_CHUNKS);
+        }
+
+        wait_for_job(JobId::load_terrain);
+
         *out_num_chunks = num_chunks;
+
+        delete[] work_array;
     }
 
     delete[] nodes_to_process;
