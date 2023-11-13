@@ -174,7 +174,7 @@ struct BitCube
         m_v[chunk] &= ~(1 << pos);
     }
     
-    bool is_bit_set(u64 x, u64 y, u64 z)
+    bool is_bit_set(u64 x, u64 y, u64 z) const
     {
         const u64 n = z*W*H + y*W + x;
         const u64 chunk = n >> 3;
@@ -182,14 +182,14 @@ struct BitCube
         return m_v[chunk] & (1 << pos);
     }
     
-    bool is_bit_set(u64 n)
+    bool is_bit_set(u64 n) const
     {
         const u64 chunk = n >> 3;
         const u64 pos = n & 7;
         return m_v[chunk] & (1 << pos);
     }
     
-    bool all_bits_set()
+    bool all_bits_set() const
     {
         // Assuming divisible by 8
         for(u32 i = 0; i < N/8; i++)
@@ -224,14 +224,14 @@ struct BitArray
         v[chunk] = data;
     }
     
-    bool is_bit_set(u64 n)
+    bool is_bit_set(u64 n) const
     {
         const u64 chunk = n / 64;
         const u64 pos = n & 63;
         return v[chunk] & (1ULL << pos);
     }
     
-    bool all_bits_set()
+    bool all_bits_set() const
     {
         static_assert(N % 64 == 0);
         u64 mask = u64(-1);
@@ -242,7 +242,7 @@ struct BitArray
         return !bool(~mask);
     }
 
-    u64 tzcnt()
+    u64 tzcnt() const
     {
         static_assert(N % 64 == 0);
         u64 result = 0;
@@ -273,21 +273,10 @@ float rad_to_deg(float a) { return a * (180.0f / M_PI); }
 //float floor(float a) { return float(int(a)); }
 //float ceil(float a) { return float(int(a - 1.0f)+1); }
 //float ceil(float a) { return ceilf(a); }
-inline void swap(s32& a, s32& b)
+template<typename T>
+inline void swap(T& a, T& b)
 {
-    s32 tmp = a;
-    a = b;
-    b = tmp;
-}
-inline void swap(u32& a, u32& b)
-{
-    u32 tmp = a;
-    a = b;
-    b = tmp;
-}
-inline void swap(f32& a, f32& b)
-{
-    f32 tmp = a;
+    T tmp = a;
     a = b;
     b = tmp;
 }
