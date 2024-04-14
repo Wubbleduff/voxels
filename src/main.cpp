@@ -159,8 +159,8 @@ mat4 view_m_world(const Camera* cam)
 
 mat4 clip_m_view(const Camera* cam)
 {
-    static f32 n = cam->near_plane_dist;
-    static f32 f = cam->view_dist;
+    f32 n = cam->near_plane_dist;
+    f32 f = cam->view_dist;
     f32 fov = deg_to_rad(cam->vfov);
     f32 r = -(f + n) / (f - n);
     f32 s = -(2.0f * n * f) / (f - n);
@@ -642,12 +642,12 @@ static constexpr u32 left_pack_lut[] =
     0x00007654, 0x00076540, 0x00076541, 0x00765410, 0x00076542, 0x00765420, 0x00765421, 0x07654210,
     0x00076543, 0x00765430, 0x00765431, 0x07654310, 0x00765432, 0x07654320, 0x07654321, 0x76543210 
 };
-static __m256 left_pack(__m256 a, u32 mask)
+__m256 left_pack(__m256 a, u32 mask)
 {
     __m256i shufmask = _mm256_srlv_epi32(_mm256_set1_epi32(left_pack_lut[mask]), _mm256_setr_epi32(0, 4, 8, 12, 16, 20, 24, 28));
     return _mm256_permutevar8x32_ps(a, shufmask);
 }
-static __m256i left_pack(__m256i a, u32 mask)
+__m256i left_pack(__m256i a, u32 mask)
 {
     __m256i shufmask = _mm256_srlv_epi32(_mm256_set1_epi32(left_pack_lut[mask]), _mm256_setr_epi32(0, 4, 8, 12, 16, 20, 24, 28));
     return _mm256_permutevar8x32_epi32(a, shufmask);
@@ -709,13 +709,12 @@ void camera_cull(
             mask = _mm256_and_ps(mask, dist);
         }
         
-        u32 pack_index = _mm256_movemask_ps(mask);
-        _mm256_storeu_ps(out_voxel_pos + MAX_VOXELS*0 + num_voxels,   left_pack(vx, pack_index));
-        _mm256_storeu_ps(out_voxel_pos + MAX_VOXELS*1 + num_voxels,   left_pack(vy, pack_index));
-        _mm256_storeu_ps(out_voxel_pos + MAX_VOXELS*2 + num_voxels,   left_pack(vz, pack_index));
-        _mm256_storeu_ps(out_voxel_scale + num_voxels, left_pack(vs, pack_index));
-        _mm256_storeu_si256((__m256i*)(out_voxel_id + num_voxels), left_pack(vc, pack_index));
-        num_voxels += _mm_popcnt_u32(pack_index);
+        _mm256_storeu_ps(out_voxel_pos + MAX_VOXELS*0 + num_voxels,   vx);
+        _mm256_storeu_ps(out_voxel_pos + MAX_VOXELS*1 + num_voxels,   vy);
+        _mm256_storeu_ps(out_voxel_pos + MAX_VOXELS*2 + num_voxels,   vz);
+        _mm256_storeu_ps(out_voxel_scale + num_voxels, vs);
+        _mm256_storeu_si256((__m256i*)(out_voxel_id + num_voxels), vc);
+        num_voxels += 8;
     }
     *out_num_voxels = num_voxels;
 }
@@ -1358,6 +1357,20 @@ void terrain_generation(
     nodes_to_process[0] = 0;
     while(num_nodes_to_process)
     {
+        /*
+        max_n = max(max_n, num_nodes_to_process);
+        std::sort(nodes_to_process, nodes_to_process + num_nodes_to_process, [&](const u32 a, const u32 b)
+        {
+            OctTree::Node* a_node = current_oct_tree->root() + a;
+            OctTree::Node* b_node = current_oct_tree->root() + b;
+            const s32 a_target = s32(get_chunk_target_lod(a_node->bl_pos, a_node->lod, player_pos));
+            const s32 b_target = s32(get_chunk_target_lod(b_node->bl_pos, b_node->lod, player_pos));
+            const s32 a_delta = s32(a_node->lod) - a_target;
+            const s32 b_delta = s32(b_node->lod) - b_target;
+            return a_delta < b_delta;
+        });
+        */
+
         // Pop next node.
         u32 current_node_id = nodes_to_process[--num_nodes_to_process];
         assert(current_node_id < OctTree::CAP);
@@ -1744,8 +1757,8 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine,
         G_graphics_state->cam.rot_x = 0.0f;
         G_graphics_state->cam.rot_y = 0.0f;
         G_graphics_state->cam.vfov = 90.0f;
-        G_graphics_state->cam.view_dist = 5000.0f;
-        G_graphics_state->cam.near_plane_dist = 1.0f;
+        G_graphics_state->cam.view_dist = 64000.0f;
+        G_graphics_state->cam.near_plane_dist = 0.5f;
         G_graphics_state->debug_cam = G_graphics_state->cam;
         
         {
