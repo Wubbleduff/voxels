@@ -17,16 +17,16 @@ layout(std430, binding = 0) buffer voxel_data
     float b_py[10*1024];
     float b_pz[10*1024];
     float b_scale[10*1024];
-    int b_color[10*1024];
+    uint b_color[10*1024];
 };
 
 uniform mat4 m_view;
 uniform mat4 m_proj;
 
-out vec4 model_position;
-out vec4 world_position;
-out vec4 view_position;
-out vec4 model_color;
+out flat vec4 model_position;
+out flat vec4 world_position;
+out flat vec4 view_position;
+out flat vec4 model_color;
 out vec4 normal;
 
 void main()
@@ -40,12 +40,11 @@ void main()
     world_position = vec4(a_x*scale + offset_x, a_y*scale + offset_y, a_z*scale + offset_z, 1.0f);
     view_position = m_view * world_position;
 
-    int color_tmp = b_color[gl_InstanceID];
-    int r = (color_tmp & 0xFF000000) >> 24;
-    int g = (color_tmp & 0x00FF0000) >> 16;
-    int b = (color_tmp & 0x0000FF00) >> 8;
-    int a = (color_tmp & 0x000000FF) >> 0;
-    model_color = vec4(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f);
+    uint color_tmp = b_color[gl_InstanceID];
+    uint r = (color_tmp & 0xFF000000) >> 24;
+    uint g = (color_tmp & 0x00FF0000) >> 16;
+    uint b = (color_tmp & 0x0000FF00) >> 8;
+    model_color = vec4(r / 256.0f, g / 256.0f, b / 256.0f, 1.0f);
 
     normal = vec4(n_x, n_y, n_z, 1.0f);
     gl_Position = m_proj * view_position;
@@ -70,12 +69,6 @@ in vec4 normal;
 
 out vec4 frag_color;
 
-vec3 hsv2rgb(vec3 c) {
-    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
-    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-}
-
 void main()
 {
     vec4 n;
@@ -95,11 +88,8 @@ void main()
         n *= sign(normal.z);
     }
 
-    //vec4 n = normalize(normal);
     float inten = dot(normalize(vec4(1.0f, 1.0f, 1.0f, 0.0f)), n);
-    //inten = max(inten, 0.2f);
 
-    frag_color = model_color * inten;
-    //frag_color = model_color;
+    frag_color = vec4(model_color.x, model_color.y, model_color.z, 1.0f);
 };
 

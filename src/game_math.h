@@ -6,6 +6,9 @@
 #include <cstdlib>
 #include <cmath>
 
+#include <random>
+
+
 #pragma warning(disable:4201)
 #pragma warning(disable:4505)
 
@@ -1219,7 +1222,7 @@ static inline __m256 pnoise8(__m256 x, __m256 y, __m256 z)
     {
 #if 0
         // Alternate gradient function
-        constexpr u32 num_sphere_points = 1 << 12;
+        constexpr u32 num_sphere_points = 1 << 16;
         // Create noise
         __m256i i_noise = rand8(_mm256_castps_si256(_mm256_xor_ps(_mm256_xor_ps(vx, vy), vz)));
         i_noise = _mm256_and_si256(i_noise, _mm256_set1_epi32(num_sphere_points - 1));
@@ -1241,37 +1244,60 @@ static inline __m256 pnoise8(__m256 x, __m256 y, __m256 z)
         const __m256 dz = _mm256_sub_ps(z, vz);
         const __m256 result = _mm256_fmadd_ps(gx, dx, _mm256_fmadd_ps(gy, dy, _mm256_mul_ps(dz, gz)));
 
-#else
+#elif 0
         __m256 result;
-        {
-            __m256i gxi = rand8(_mm256_castps_si256(_mm256_xor_ps(_mm256_xor_ps(vx, vy), vz)));
-            gxi = _mm256_and_si256(gxi, _mm256_set1_epi32(0xFFFF));
-            const __m256 gx = _mm256_mul_ps(_mm256_cvtepi32_ps(gxi), _mm256_set1_ps(1.0f/65535.0f));
-            const __m256 dx = _mm256_sub_ps(x, vx);
-            result = _mm256_mul_ps(dx, gx);
-        }
+        const __m256i rand_x = rand8(_mm256_castps_si256(vx));
+        const __m256i rand_y = rand8(_mm256_castps_si256(vy));
+        const __m256i rand_z = rand8(_mm256_castps_si256(vz));
 
-        {
-            __m256i gyi = rand8(
-                    _mm256_mullo_epi32(
-                        _mm256_castps_si256(_mm256_xor_ps(_mm256_xor_ps(vx, vy), vz)),
-                        _mm256_set1_epi32(100)));
-            gyi = _mm256_and_si256(gyi, _mm256_set1_epi32(0xFFFF));
-            const __m256 gy = _mm256_mul_ps(_mm256_cvtepi32_ps(gyi), _mm256_set1_ps(1.0f/65535.0f));
-            const __m256 dy = _mm256_sub_ps(y, vy);
-            result = _mm256_fmadd_ps(dy, gy, result);
-        }
+        __m256i n = _mm256_mullo_epi32(rand_x, _mm256_mullo_epi32(rand_y, rand_z));
 
-        {
-            const __m256 dz = _mm256_sub_ps(z, vz);
-            __m256i gzi = rand8(
-                    _mm256_mullo_epi32(
-                        _mm256_castps_si256(_mm256_xor_ps(_mm256_xor_ps(vx, vy), vz)),
-                        _mm256_set1_epi32(10000)));
-            gzi = _mm256_and_si256(gzi, _mm256_set1_epi32(0xFFFF));
-            const __m256 gz = _mm256_mul_ps(_mm256_cvtepi32_ps(gzi), _mm256_set1_ps(1.0f/65535.0f));
-            result = _mm256_fmadd_ps(dz, gz, result);
-        }
+        const __m256i gxi = _mm256_abs_epi32(n);
+        const __m256 gx = _mm256_div_ps(_mm256_cvtepi32_ps(gxi), _mm256_set1_ps(float(0x7FFF'FFFF)));
+        const __m256 dx = _mm256_sub_ps(x, vx);
+        result = _mm256_mul_ps(dx, gx);
+
+        n = rand8(n);
+
+        const __m256i gyi = _mm256_abs_epi32(n);
+        const __m256 gy = _mm256_div_ps(_mm256_cvtepi32_ps(gyi), _mm256_set1_ps(float(0x7FFF'FFFF)));
+        const __m256 dy = _mm256_sub_ps(y, vy);
+        result = _mm256_fmadd_ps(dy, gy, result);
+
+        n = rand8(n);
+
+        const __m256i gzi = _mm256_abs_epi32(n);
+        const __m256 dz = _mm256_sub_ps(z, vz);
+        const __m256 gz = _mm256_div_ps(_mm256_cvtepi32_ps(gzi), _mm256_set1_ps(float(0x7FFF'FFFF)));
+        result = _mm256_fmadd_ps(dz, gz, result);
+#else
+        const __m256i rand_x = rand8(_mm256_castps_si256(vx));
+        const __m256i rand_y = rand8(_mm256_castps_si256(vy));
+        const __m256i rand_z = rand8(_mm256_castps_si256(vz));
+
+        __m256i n = _mm256_mullo_epi32(rand_x, _mm256_mullo_epi32(rand_y, rand_z));
+
+        const __m256i gxi = _mm256_abs_epi32(n);
+        const __m256 gx = _mm256_div_ps(_mm256_cvtepi32_ps(gxi), _mm256_set1_ps(float(0x7FFF'FFFF)));
+        n = rand8(n);
+        const __m256i gyi = _mm256_abs_epi32(n);
+        const __m256 gy = _mm256_div_ps(_mm256_cvtepi32_ps(gyi), _mm256_set1_ps(float(0x7FFF'FFFF)));
+        n = rand8(n);
+        const __m256i gzi = _mm256_abs_epi32(n);
+        const __m256 gz = _mm256_div_ps(_mm256_cvtepi32_ps(gzi), _mm256_set1_ps(float(0x7FFF'FFFF)));
+
+        __m256 dx = _mm256_sub_ps(x, vx);
+        __m256 dy = _mm256_sub_ps(y, vy);
+        __m256 dz = _mm256_sub_ps(z, vz);
+        __m256 len = _mm256_sqrt_ps(_mm256_fmadd_ps(dx, dx, _mm256_fmadd_ps(dy, dy, _mm256_mul_ps(dz, dz))));
+        dx = _mm256_div_ps(dx, len);
+        dy = _mm256_div_ps(dy, len);
+        dz = _mm256_div_ps(dz, len);
+
+        __m256 result = _mm256_mul_ps(dx, gx);
+        result = _mm256_fmadd_ps(dy, gy, result);
+        result = _mm256_fmadd_ps(dz, gz, result);
+
 #endif
 
         return result;
