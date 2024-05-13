@@ -1,40 +1,71 @@
 
 @echo off
 
-set INTERMEDIATE=.\intermediate
-set DEBUG_RUN_TREE=.\run_trees\debug
-set EXE=engine.exe
-set PDB=engine.pdb
 
-set SOURCE=src\unity_build.cpp
-REM set LIBRARY_SOURCE=lib\glad\src\glad.c lib\imgui\imgui*.cpp lib\imgui\examples\imgui_impl_glfw.cpp lib\imgui\examples\imgui_impl_opengl3.cpp
-set LIBRARY_SOURCE=
-set INCLUDE_DIRS=/I"src" /I"lib\glad\include" /I"lib\glfw\include" /I"lib\imgui" /I"lib\imgui\examples" /I"lib\stb"
-set LIBS=user32.lib gdi32.lib shell32.lib opengl32.lib lib\glfw\glfw.lib
+REM -------------------------------- Common --------------------------------
 
-set COMMON_COMPILE_FLAGS=/c /W4 /WX /EHsc /std:c++20 /Fo%INTERMEDIATE%\
+set NAME=voxels
 
-set DEBUG_MACROS=/DDEBUG
-set DEBUG_COMPILE_FLAGS=/Zi
-set DEBUG_LINK_FLAGS=/DEBUG:FULL /OUT:"%INTERMEDIATE%\%EXE%"
+set SRC=src
 
-mkdir %INTERMEDIATE%
-mkdir %DEBUG_RUN_TREE%
+REM Avoid C runtime library
+REM https://hero.handmade.network/forums/code-discussion/t/94-guide_-_how_to_avoid_c_c++_runtime_on_windows
+set COMMON_COMPILE_FLAGS=/c /W4 /WX /EHsc /std:c17 /GS- /Gs9999999
+set INCLUDE_DIRS=/I"src"
+set DEBUG_COMPILE_FLAGS=/DDEBUG /Zi
+set DEBUG_LINK_FLAGS=/NODEFAULTLIB /STACK:0x100000,0x100000 /SUBSYSTEM:WINDOWS /MACHINE:X64 /DEBUG:FULL
+set LIBS=kernel32.lib user32.lib gdi32.lib shell32.lib opengl32.lib
 
-cl %COMMON_COMPILE_FLAGS% %DEBUG_COMPILE_FLAGS% %DEBUG_MACROS% %INCLUDE_DIRS% %SOURCE% %LIBRARY_SOURCE%
+
+
+REM -------------------------------- Clang --------------------------------
+
+set CLANG_INTERMEDIATE_DIR=.\clang_build_intermediate
+set CLANG_DEPLOY_DEBUG_DIR=.\clang_deploy\debug
+
+mkdir %CLANG_INTERMEDIATE_DIR%
+mkdir %CLANG_DEPLOY_DEBUG_DIR%
+
+clang-cl %COMMON_COMPILE_FLAGS% %DEBUG_COMPILE_FLAGS% %INCLUDE_DIRS% /Fo%CLANG_INTERMEDIATE_DIR%\main.obj %SRC%\main.c
 if %errorlevel% neq 0 exit /b %errorlevel%
-link %DEBUG_LINK_FLAGS% %LIBS% %INTERMEDIATE%\*.obj
+
+clang-cl %COMMON_COMPILE_FLAGS% %DEBUG_COMPILE_FLAGS% %INCLUDE_DIRS% /Fo%CLANG_INTERMEDIATE_DIR%\win32_crt.obj %SRC%\win32_crt.c
 if %errorlevel% neq 0 exit /b %errorlevel%
 
-xcopy /Y %INTERMEDIATE%\%EXE% %DEBUG_RUN_TREE%
-xcopy /Y %INTERMEDIATE%\%PDB% %DEBUG_RUN_TREE%
-xcopy /Y /E assets %DEBUG_RUN_TREE%\assets\
+lld-link %DEBUG_LINK_FLAGS% %LIBS% %CLANG_INTERMEDIATE_DIR%\*.obj /OUT:"%CLANG_INTERMEDIATE_DIR%\%NAME%.exe"
+if %errorlevel% neq 0 exit /b %errorlevel%
 
-
+xcopy /Y %CLANG_INTERMEDIATE_DIR%\%NAME%.exe %CLANG_DEPLOY_DEBUG_DIR%
+xcopy /Y %CLANG_INTERMEDIATE_DIR%\%NAME%.pdb %CLANG_DEPLOY_DEBUG_DIR%
 
 echo.
-echo %DEBUG_RUN_TREE%\%EXE%
+echo %CLANG_DEPLOY_DEBUG_DIR%\%NAME%.exe
 echo.
 
-REM %DEBUG_RUN_TREE%\%EXE%
+
+
+REM -------------------------------- MSVC --------------------------------
+
+set MSVC_INTERMEDIATE_DIR=.\msvc_build_intermediate
+set MSVC_DEPLOY_DEBUG_DIR=.\msvc_deploy\debug
+
+mkdir %MSVC_INTERMEDIATE_DIR%
+mkdir %MSVC_DEPLOY_DEBUG_DIR%
+
+cl %COMMON_COMPILE_FLAGS% %DEBUG_COMPILE_FLAGS% %INCLUDE_DIRS% /Fo%MSVC_INTERMEDIATE_DIR%\main.obj %SRC%\main.c
+if %errorlevel% neq 0 exit /b %errorlevel%
+
+cl %COMMON_COMPILE_FLAGS% %DEBUG_COMPILE_FLAGS% %INCLUDE_DIRS% /Fo%MSVC_INTERMEDIATE_DIR%\win32_crt.obj %SRC%\win32_crt.c
+if %errorlevel% neq 0 exit /b %errorlevel%
+
+link %DEBUG_LINK_FLAGS% %LIBS% %MSVC_INTERMEDIATE_DIR%\*.obj /OUT:"%MSVC_INTERMEDIATE_DIR%\%NAME%.exe"
+if %errorlevel% neq 0 exit /b %errorlevel%
+
+xcopy /Y %MSVC_INTERMEDIATE_DIR%\%NAME%.exe %MSVC_DEPLOY_DEBUG_DIR%
+xcopy /Y %MSVC_INTERMEDIATE_DIR%\%NAME%.pdb %MSVC_DEPLOY_DEBUG_DIR%
+
+echo.
+echo %MSVC_DEPLOY_DEBUG_DIR%\%NAME%.exe
+echo.
+
 
