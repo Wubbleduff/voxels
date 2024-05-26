@@ -11,6 +11,8 @@ typedef const char s8;
 typedef const short s16;
 typedef const int s32;
 typedef const long long s64;
+typedef const float f32;
+typedef const double f64;
 
 typedef unsigned char u8_m;
 typedef unsigned short u16_m;
@@ -20,6 +22,8 @@ typedef char s8_m;
 typedef short s16_m;
 typedef const int s32_m;
 typedef long long s64_m;
+typedef float f32_m;
+typedef double f64_m;
 
 #define ARRAY_COUNT(N) (sizeof(N) / sizeof((N)[0]))
 

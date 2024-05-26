@@ -137,6 +137,9 @@ typedef void (*fnptr_glDeleteShader)(GLuint shader);
 typedef void (*fnptr_glUseProgram)(GLuint program);
 typedef void (*fnptr_glBufferSubData)(GLenum target, GLintptr offset, GLsizeiptr size, const void * data);
 typedef void (*fnptr_glDrawElementsInstanced)(GLenum mode, GLsizei count, GLenum type, const void * indices, GLsizei instancecount);
+typedef GLint (*fnptr_glGetUniformLocation)(GLuint program, const GLchar *name);
+typedef void (*fnptr_glUniformMatrix4fv)(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value);
+
 
 #define VERTEX_ARRAY_BYTES MB(1)
 #define INDEX_ARRAY_BYTES MB(1)
@@ -144,6 +147,9 @@ typedef void (*fnptr_glDrawElementsInstanced)(GLenum mode, GLsizei count, GLenum
 struct OpenGLState
 {
     HWND hwnd;
+    u64_m screen_width;
+    u64_m screen_height;
+
     HGLRC gl_context;
     GLuint last_gl_error;
 
@@ -177,6 +183,8 @@ struct OpenGLState
     fnptr_glUseProgram glUseProgram;
     fnptr_glBufferSubData glBufferSubData;
     fnptr_glDrawElementsInstanced glDrawElementsInstanced;
+    fnptr_glGetUniformLocation glGetUniformLocation;
+    fnptr_glUniformMatrix4fv glUniformMatrix4fv;
 };
 
 #define CALL_GL(fn, ...) \
@@ -262,9 +270,20 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             g_input_state->mouse_key[1] = 1;
             break;
         }
+
         case WM_RBUTTONUP:
         {
             g_input_state->mouse_key[1] = 0;
+            break;
+        }
+
+        case WM_SIZE:
+        {
+            const UINT width = LOWORD(lParam);
+            const UINT height = HIWORD(lParam);
+            g_opengl_state->screen_width = width;
+            g_opengl_state->screen_height = height;
+            glViewport(0, 0, width, height);
             break;
         }
 
@@ -273,7 +292,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             // https://learn.microsoft.com/en-us/windows/win32/learnwin32/closing-the-window?redirectedfrom=MSDN
             PostQuitMessage(0);
             return 0;
-        }  
+        }
 
         default:
         {
@@ -327,6 +346,12 @@ int WinMainCRTStartup()
 
         const HDC dc = GetDC(g_opengl_state->hwnd);
         ASSERT(dc != NULL, "GetDC failed.");
+
+        RECT client_rect;
+        const BOOL get_client_rect_success = GetClientRect(g_opengl_state->hwnd, &client_rect);
+        ASSERT(get_client_rect_success, "GetClientRect failed.");
+        g_opengl_state->screen_width = client_rect.right;
+        g_opengl_state->screen_height = client_rect.bottom;
 
         HMODULE opengl32_dll_module = LoadLibraryA("opengl32.dll");
         ASSERT(opengl32_dll_module != NULL, "Could not load opengl32.dll");
@@ -395,8 +420,10 @@ int WinMainCRTStartup()
         g_opengl_state->glUseProgram = (fnptr_glUseProgram)load_gl_fn(opengl32_dll_module, "glUseProgram");
         g_opengl_state->glBufferSubData = (fnptr_glBufferSubData)load_gl_fn(opengl32_dll_module, "glBufferSubData");
         g_opengl_state->glDrawElementsInstanced = (fnptr_glDrawElementsInstanced)load_gl_fn(opengl32_dll_module, "glDrawElementsInstanced");
+        g_opengl_state->glGetUniformLocation = (fnptr_glGetUniformLocation)load_gl_fn(opengl32_dll_module, "glGetUniformLocation");
+        g_opengl_state->glUniformMatrix4fv = (fnptr_glUniformMatrix4fv)load_gl_fn(opengl32_dll_module, "glUniformMatrix4fv");
 
-        glViewport(0, 0, (GLint)window_width, (GLint)window_height);
+        glViewport(0, 0, (GLsizei)g_opengl_state->screen_width, (GLsizei)g_opengl_state->screen_height);
 
         // Vertex array object
         CALL_GL(glGenVertexArrays, 1, &g_opengl_state->vertex_array_object);
@@ -438,10 +465,11 @@ int WinMainCRTStartup()
             "layout (location = 0) in float a_x;\n"
             "layout (location = 1) in float a_y;\n"
             "layout (location = 2) in float a_z;\n"
+            "uniform mat4 m_proj;\n"
             "void main()\n"
             "{\n"
             "    vec3 pos = vec3(a_x, a_y, a_z);\n"
-            "    gl_Position = vec4(pos, 1.0f);\n"
+            "    gl_Position = m_proj * vec4(pos, 1.0f);\n"
             "}\n"
             "\n";
         const char* fragment_source =
@@ -449,7 +477,7 @@ int WinMainCRTStartup()
             "out vec4 result_frag_color;\n"
             "void main()\n"
             "{\n"
-            "    result_frag_color = vec4(1.0f, 0.0f, 1.0f, 1.0f);\n"
+            "    result_frag_color = vec4(0.1f, 0.0f, 0.4f, 1.0f);\n"
             "}\n"
             "\n";
 
@@ -519,24 +547,245 @@ int WinMainCRTStartup()
             ExitProcess(0);
         }
 
-
-
-        float vx[] = {-0.5f, 0.0f, 0.5f};
-        float vy[] = {-0.5f, 0.5f, -0.5f};
-        float vz[] = {0.0f, 0.0f, -0.0f};
-        u32 indices[] = {0, 1, 2};
+        f32 vx[] = {-0.5f,  0.0f,  0.5f, -0.5f,  0.0f,  0.5f};
+        f32 vy[] = {-0.5f,  0.5f, -0.5f,  0.5f, -0.5f,  0.5f};
+        f32 vz[] = {-1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f};
+        u32 indices[] = {0, 1, 2, 3, 4, 5};
 
         glClearColor(0.0f, 161.0f/255.0f, 201.0f/255.0f, 0.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         CALL_GL(glUseProgram, g_opengl_state->shader_program);
 
-        //{
-        //    mat4 m = view_m_world(current_cam);
-        //    GLint loc = glGetUniformLocation(G_graphics_state->batch_voxel_shader_program, "m_view");
-        //    glUniformMatrix4fv(loc, 1, true, &(m[0][0]));
-        //    if(loc == -1) assert(false);
-        //}
+        /*
+         * Derivation for 3D perspective projection matrix
+         *
+         *                                            /
+         *                                          /
+         *                                        /
+         *                                      /
+         *                                    /
+         *                                  /
+         *                                /
+         *                              /
+         *                            /
+         *                          /
+         *                        /
+         *                      /
+         *                    /
+         *                  /
+         *                /
+         *              / |               V
+         *            /   |             .>+---------------+
+         *          /     |       -----/ D|               |
+         *        /       |  ----/        |               |
+         *      /       --R-/             |               |
+         *    /    ----/  |               |               |
+         *  /  ---/       |               |               |
+         * C../           |----> F        |               |
+         *  \             |               |               |
+         *    \           |               +---------------+
+         *      \         |
+         *        \       |
+         *          \     |
+         *            \   |
+         *              \ |
+         *                \
+         *                  \
+         *                    \
+         *                      \
+         *                        \
+         *                          \
+         *                            \
+         *                              \
+         *                                \
+         *                                  \
+         *                                    \
+         *                                      \
+         *                                        \
+         *                                          \
+         *                                            \
+         *
+         *
+         *
+         * C : 3D camera point (Assume the camera is at the origin - (0, 0)
+         * F : Normalized camera forward vector
+         * n : Camera's near plane dist along F
+         * V : Vertex to be projected
+         *
+         * The goal is to intersect the ray from the origin to the vertex with the near plane.
+         *
+         * Q : Point along the ray (solve for intersection)
+         * Q = C + unit(V)*t
+         * Q = unit(V)*t
+         *
+         * Find the plane equation:
+         * F : The near plane normal.
+         * S : a point on the near plane.
+         * S = F*n
+         * 
+         * New plane equation : (P - S) * F = 0
+         * We want to find where a point on the ray is equal to 0, so plug in Q for P:
+         * (Q - S) * F = 0
+         *
+         * Expand:
+         *
+         * (unit(V)*t - S) * F = 0
+         *
+         * Solve for t:
+         *
+         * unit(V)*t*F - S*F = 0
+         * t = S*F / (unit(V)*F)
+         *
+         * Plug t back in to the ray equation:
+         *
+         * Q = unit(V)*t
+         * Q = unit(V)*(S*F / (unit(V)*F))
+         *
+         * Find in terms of V
+         *
+         * Q = unit(V)*(S*F / (unit(V)*F))
+         *
+         * Q = unit(V)*S*F
+         *     -----------
+         *     (unit(V)*F)
+         *
+         * Q = unit(V)*(F*n)*F
+         *     ---------------
+         *       (unit(V)*F)
+         *      
+         * Q = F*n*F*unit(V)
+         *     -------------
+         *      (unit(V)*F)
+         *
+         * Q = F*n*F*(V / ||V*V||)
+         *     -------------------
+         *      ((V / ||V*V||)*F)
+         *
+         * Q = F*n*F*V
+         *     -------
+         *     (V*F)
+         *
+         * Q = F*F*n*V
+         *     -------
+         *     (V*F)
+         *
+         *
+         * In 3D:
+         * Q = (F_x*F_x*n + F_y*F_y*n * F_z*F_z*n)
+         *     -----------------------------------  *  V
+         *       (V_x*F_x + V_y*F_y + V_z*F_z)
+         *
+         * Q_x = (F_x*F_x*n + F_y*F_y*n * F_z*F_z*n)
+         *       -----------------------------------  *  V_x
+         *         (V_x*F_x + V_y*F_y + V_z*F_z)
+         *
+         * Q_y = (F_x*F_x*n + F_y*F_y*n * F_z*F_z*n)
+         *       -----------------------------------  *  V_y
+         *         (V_x*F_x + V_y*F_y + V_z*F_z)
+         *
+         * Q_z = (F_x*F_x*n + F_y*F_y*n * F_z*F_z*n)
+         *       -----------------------------------  *  V_z
+         *         (V_x*F_x + V_y*F_y + V_z*F_z)
+         * 
+         * Assume our object has been translated to camera space. In this case, F = (0, 0, -1) (Right-handed coordinate system)
+         * F_x = 0
+         * F_y = 0
+         * F_z = -1
+         *
+         * Q_x =   n
+         *       ------ * V_x
+         *       (-V_z)
+         *
+         * Q_y =   n
+         *       ------ * V_y
+         *       (-V_z)
+         *
+         * Q_z =   n
+         *       ------ * V_z
+         *       (-V_z)
+         *
+         *
+         * So now we have the point Q in camera space where Q is V perspective projected onto the near plane.
+         * Our goal is to find Q_p in NDC space. So, we need to divide X and Y by the camera width and height.
+         *
+         * C_w : camera width
+         * C_h : camera height
+         *
+         * Q_px = Q_x / C_w = n / C_w
+         *                    ------- * V_x
+         *                    (-V_z)        
+         *
+         * Q_py = Q_y / C_h = n / C_h
+         *                    ------- * V_y
+         *                    (-V_z)
+         *
+         * Z should be between -1 and 1, so we need to divide by far plane - near plane. Use the vertex's Z coordinate instead of Q's Z coordinate
+         * (Q is already projected and will have a constant Z, so we can't use that).
+         * f : far plane dist
+         *
+         * Q_pz = (V_z - (-n)) * 2
+         *        ----------------  -  1
+         *           -f - (-n)
+         *
+         * Q_pz = (V_z + n) * 2
+         *        -------------  -  1
+         *           n - f
+         *
+         * Q_pz = V_z*2 + n*2
+         *        -----------  -  1
+         *           n - f
+         *
+         * Q_pz = V_z*2       n*2
+         *        ------  +  -----  -  1
+         *        n - f      n - f
+         *
+         * Q_pz =   2              n*2
+         *        ----- * V_z  +  -----  -  1
+         *        n - f           n - f
+         *
+         * https://www.desmos.com/calculator/frzetn7doc
+         *       
+         * Now, define as a matrix (keep in mind we will be dividing by the W component after matrix multiplication):
+         *
+         * | Q_px |   | n / C_w    0           0            0           |   |  V_x |   
+         * | Q_py | = |   0      n / C_h       0            0           | * |  V_y |
+         * | Q_pz |   |   0        0        2 / (n-f)    (n*2) / (n-f)  |   |  V_z |   
+         * | Q_pw |   |   0        0          -1            0           |   | 1.0f |   
+         *
+         * | Q_px |   |         (n / C_w) * V_x         |
+         * | Q_py | = |         (n / C_h) * V_y         |
+         * | Q_pz |   | 2 / (n-f) * V_z + (n*2) / (n-f) |
+         * | Q_pw |   |              -V_z               | <-- Will be dividing all the terms by -V_z
+         * 
+         * Dividing the depth by -V_z has the unfortunate consequence of reducing the NDC depth space.
+         *
+         */
+
+        {
+            //f32 cam_x = 0.0f;
+            //f32 cam_y = 0.0f;
+            //f32 cam_z = 0.0f;
+
+            f32 aspect_ratio = (float)g_opengl_state->screen_height / (float)g_opengl_state->screen_width;
+            f32 C_w = 0.25f;
+            f32 C_h = C_w * aspect_ratio;
+
+            f32 n = 0.1f;
+            f32 f = 1000.0f;
+
+            float proj_mat[] = {
+                //    X         Y                Z                      W
+                n / C_w,     0.0f,            0.0f,                  0.0f,
+                   0.0f,  n / C_h,            0.0f,                  0.0f,
+                   0.0f,     0.0f,  2.0f / (n - f),  (n * 2.0f) / (n - f),
+                   0.0f,     0.0f,           -1.0f,                  0.0f,
+            };
+            GLint loc;
+            CALL_GL_RET(&loc, GLint, glGetUniformLocation, g_opengl_state->shader_program, "m_proj");
+            CALL_GL(glUniformMatrix4fv, loc, 1, 1, &(proj_mat[0]));
+            ASSERT(loc != -1, "Failed to bind uniform.");
+        }
         //{
         //    mat4 m = clip_m_view(current_cam);
         //    GLint loc = glGetUniformLocation(G_graphics_state->batch_voxel_shader_program, "m_proj");
@@ -547,7 +796,6 @@ int WinMainCRTStartup()
 
         CALL_GL(glBindVertexArray, g_opengl_state->vertex_array_object);
 
-
         CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->vertex_buffer_object_x);
         CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(vx), vx);
 
@@ -557,12 +805,14 @@ int WinMainCRTStartup()
         CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->vertex_buffer_object_z);
         CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(vz), vz);
 
-
         CALL_GL(glBindBuffer, GL_ELEMENT_ARRAY_BUFFER, g_opengl_state->index_buffer_object);
         CALL_GL(glBufferSubData, GL_ELEMENT_ARRAY_BUFFER, 0, sizeof(indices), indices);
 
-
         CALL_GL(glDrawElementsInstanced, GL_TRIANGLES, ARRAY_COUNT(indices), GL_UNSIGNED_INT, 0, 1/*batch_size*/);
+
+        CALL_GL(glBindVertexArray, 0);
+        CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, 0);
+        CALL_GL(glBindBuffer, GL_ELEMENT_ARRAY_BUFFER, 0);
 
 
         const HDC dc = GetDC(g_opengl_state->hwnd);
