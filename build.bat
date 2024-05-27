@@ -20,13 +20,15 @@ set LIBS=kernel32.lib user32.lib gdi32.lib shell32.lib opengl32.lib
 
 REM -------------------------------- Clang --------------------------------
 
+set CLANG_COMPILE_FLAGS=-march=skylake
+
 set CLANG_INTERMEDIATE_DIR=.\clang_build_intermediate
 set CLANG_DEPLOY_DEBUG_DIR=.\clang_deploy\debug
 
 mkdir %CLANG_INTERMEDIATE_DIR%
 mkdir %CLANG_DEPLOY_DEBUG_DIR%
 
-clang-cl %COMMON_COMPILE_FLAGS% %DEBUG_COMPILE_FLAGS% %INCLUDE_DIRS% /Fo%CLANG_INTERMEDIATE_DIR%\main.obj %SRC%\main.c
+clang-cl %COMMON_COMPILE_FLAGS% %CLANG_COMPILE_FLAGS% %DEBUG_COMPILE_FLAGS% %INCLUDE_DIRS% /Fo%CLANG_INTERMEDIATE_DIR%\main.obj %SRC%\main.c
 if %errorlevel% neq 0 exit /b %errorlevel%
 
 clang-cl %COMMON_COMPILE_FLAGS% %DEBUG_COMPILE_FLAGS% %INCLUDE_DIRS% /Fo%CLANG_INTERMEDIATE_DIR%\win32_crt.obj %SRC%\win32_crt.c
