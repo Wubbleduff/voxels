@@ -4,6 +4,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <immintrin.h>
+
 #include <GL/GL.h>
 #include "wglext.h"
 
@@ -77,6 +79,69 @@ static inline void assert_fn(const char* file, int line, s32 c, const char* msg)
     }
 }
 #define ASSERT(c, msg) assert_fn(__FILE__, __LINE__, (c), (msg))
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Math
+
+// 4x4 matrix multiply : r = a * b.
+// NOTE: Matrices are assumed to be row-major.
+static inline void mtx4x4_mul(f32_m* r, f32* a, f32* b)
+{
+    /*
+     *
+     * | a00  a01  a02  a03 |   | b00  b01  b02  b03 |   
+     * | a10  a11  a12  a13 | * | b10  b11  b12  b13 | = 
+     * | a20  a21  a22  a23 |   | b20  b21  b22  b23 |   
+     * | a30  a31  a32  a33 |   | b30  b31  b32  b33 |   
+     *
+     * | a00*b00 + a01*b10 + a02*b20 + a03*b30    a00*b01 + a01*b11 + a02*b21 + a03*b31    a00*b02 + a01*b12 + a02*b22 + a03*b32    a00*b03 + a01*b13 + a02*b23 + a03*b33 |
+     * | a10*b00 + a11*b10 + a12*b20 + a13*b30    a10*b01 + a11*b11 + a12*b21 + a13*b31    a10*b02 + a11*b12 + a12*b22 + a13*b32    a10*b03 + a11*b13 + a12*b23 + a13*b33 |
+     * | a20*b00 + a21*b10 + a22*b20 + a23*b30    a20*b01 + a21*b11 + a22*b21 + a23*b31    a20*b02 + a21*b12 + a22*b22 + a23*b32    a20*b03 + a21*b13 + a22*b23 + a23*b33 |
+     * | a30*b00 + a31*b10 + a32*b20 + a33*b30    a30*b01 + a31*b11 + a32*b21 + a33*b31    a30*b02 + a31*b12 + a32*b22 + a33*b32    a30*b03 + a31*b13 + a32*b23 + a33*b33 |
+     *
+     */
+
+    /*
+    Reference
+    for(u64_m i = 0; i < 4; i++)
+    {
+        for(u64_m j = 0; j < 4; j++)
+        {
+            r[i*4 + j] =
+                a[i*4 + 0] * b[0*4 + j] + 
+                a[i*4 + 1] * b[1*4 + j] + 
+                a[i*4 + 2] * b[2*4 + j] + 
+                a[i*4 + 3] * b[3*4 + j];
+        }
+    }
+    */
+
+    for(u64_m row = 0; row < 4; row++)
+    {
+        const __m128 v = _mm_fmadd_ps(
+            _mm_broadcast_ss(a + row*4 + 0),
+            _mm_loadu_ps(b + 0*4 + 0),
+            _mm_fmadd_ps(
+                _mm_broadcast_ss(a + row*4 + 1),
+                _mm_loadu_ps(b + 1*4 + 0),
+                _mm_fmadd_ps(
+                    _mm_broadcast_ss(a + row*4 + 2),
+                    _mm_loadu_ps(b + 2*4 + 0),
+                    _mm_mul_ps(
+                        _mm_broadcast_ss(a + row*4 + 3),
+                        _mm_loadu_ps(b + 3*4 + 0)
+                    )
+                )
+            )
+        );
+        _mm_storeu_ps(r + row*4, v);
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -221,7 +286,44 @@ struct InputState
 
 enum KeyboardKey
 {
+    // https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes
     KB_ESCAPE = VK_ESCAPE,
+    KB_0 = 0x30,    
+    KB_1 = 0x31,    
+    KB_2 = 0x32,    
+    KB_3 = 0x33,    
+    KB_4 = 0x34,    
+    KB_5 = 0x35,    
+    KB_6 = 0x36,    
+    KB_7 = 0x37,    
+    KB_8 = 0x38,    
+    KB_9 = 0x39,    
+    KB_A = 0x41,    
+    KB_B = 0x42,    
+    KB_C = 0x43,    
+    KB_D = 0x44,    
+    KB_E = 0x45,    
+    KB_F = 0x46,    
+    KB_G = 0x47,    
+    KB_H = 0x48,    
+    KB_I = 0x49,    
+    KB_J = 0x4A,    
+    KB_K = 0x4B,    
+    KB_L = 0x4C,    
+    KB_M = 0x4D,    
+    KB_N = 0x4E,    
+    KB_O = 0x4F,    
+    KB_P = 0x50,    
+    KB_Q = 0x51,    
+    KB_R = 0x52,    
+    KB_S = 0x53,    
+    KB_T = 0x54,    
+    KB_U = 0x55,    
+    KB_V = 0x56,    
+    KB_W = 0x57,    
+    KB_X = 0x58,    
+    KB_Y = 0x59,    
+    KB_Z = 0x5A,    
 };
 
 static inline u32 is_key_down(enum KeyboardKey k)
@@ -311,6 +413,8 @@ int WinMainCRTStartup()
 
     struct InputState input_state_storage;
     g_input_state = &input_state_storage;
+    memset(g_input_state->key, 0, sizeof(g_input_state->key));
+    memset(g_input_state->mouse_key, 0, sizeof(g_input_state->mouse_key));
 
     struct OpenGLState opengl_state_storage;
     g_opengl_state = &opengl_state_storage;
@@ -547,251 +651,327 @@ int WinMainCRTStartup()
             ExitProcess(0);
         }
 
-        f32 vx[] = {-0.5f,  0.0f,  0.5f, -0.5f,  0.0f,  0.5f};
-        f32 vy[] = {-0.5f,  0.5f, -0.5f,  0.5f, -0.5f,  0.5f};
-        f32 vz[] = {-1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f};
-        u32 indices[] = {0, 1, 2, 3, 4, 5};
+        f32 vx[] = { 10.0f + 0.0f, 10.0f + 1.0f, 10.0f + 0.0f, 10.0f + 1.0f, 10.0f + 0.0f, 10.0f + 1.0f, 10.0f + 0.0f, 10.0f + 1.0f };
+        f32 vy[] = { 10.0f + 0.0f, 10.0f + 0.0f, 10.0f + 1.0f, 10.0f + 1.0f, 10.0f + 0.0f, 10.0f + 0.0f, 10.0f + 1.0f, 10.0f + 1.0f };
+        f32 vz[] = { 10.0f + 0.0f, 10.0f + 0.0f, 10.0f + 0.0f, 10.0f + 0.0f, 10.0f + 1.0f, 10.0f + 1.0f, 10.0f + 1.0f, 10.0f + 1.0f };
+        u32 indices[] = 
+        {
+            0, 4, 2, // -X
+            2, 4, 6, // -X
+
+            3, 5, 1, // +X
+            3, 7, 5, // +X
+
+            0, 1, 4, // -Y
+            4, 1, 5, // -Y
+
+            2, 6, 7, // +Y
+            3, 2, 7, // +Y
+
+            1, 0, 2, // -Z
+            2, 3, 1, // -Z
+
+            4, 5, 6, // +Z
+            6, 5, 7, // +Z
+        };
 
         glClearColor(0.0f, 161.0f/255.0f, 201.0f/255.0f, 0.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         CALL_GL(glUseProgram, g_opengl_state->shader_program);
 
-        /*
-         * Derivation for 3D perspective projection matrix
-         *
-         *                                            /
-         *                                          /
-         *                                        /
-         *                                      /
-         *                                    /
-         *                                  /
-         *                                /
-         *                              /
-         *                            /
-         *                          /
-         *                        /
-         *                      /
-         *                    /
-         *                  /
-         *                /
-         *              / |               V
-         *            /   |             .>+---------------+
-         *          /     |       -----/ D|               |
-         *        /       |  ----/        |               |
-         *      /       --R-/             |               |
-         *    /    ----/  |               |               |
-         *  /  ---/       |               |               |
-         * C../           |----> F        |               |
-         *  \             |               |               |
-         *    \           |               +---------------+
-         *      \         |
-         *        \       |
-         *          \     |
-         *            \   |
-         *              \ |
-         *                \
-         *                  \
-         *                    \
-         *                      \
-         *                        \
-         *                          \
-         *                            \
-         *                              \
-         *                                \
-         *                                  \
-         *                                    \
-         *                                      \
-         *                                        \
-         *                                          \
-         *                                            \
-         *
-         *
-         *
-         * C : 3D camera point (Assume the camera is at the origin - (0, 0)
-         * F : Normalized camera forward vector
-         * n : Camera's near plane dist along F
-         * V : Vertex to be projected
-         *
-         * The goal is to intersect the ray from the origin to the vertex with the near plane.
-         *
-         * Q : Point along the ray (solve for intersection)
-         * Q = C + unit(V)*t
-         * Q = unit(V)*t
-         *
-         * Find the plane equation:
-         * F : The near plane normal.
-         * S : a point on the near plane.
-         * S = F*n
-         * 
-         * New plane equation : (P - S) * F = 0
-         * We want to find where a point on the ray is equal to 0, so plug in Q for P:
-         * (Q - S) * F = 0
-         *
-         * Expand:
-         *
-         * (unit(V)*t - S) * F = 0
-         *
-         * Solve for t:
-         *
-         * unit(V)*t*F - S*F = 0
-         * t = S*F / (unit(V)*F)
-         *
-         * Plug t back in to the ray equation:
-         *
-         * Q = unit(V)*t
-         * Q = unit(V)*(S*F / (unit(V)*F))
-         *
-         * Find in terms of V
-         *
-         * Q = unit(V)*(S*F / (unit(V)*F))
-         *
-         * Q = unit(V)*S*F
-         *     -----------
-         *     (unit(V)*F)
-         *
-         * Q = unit(V)*(F*n)*F
-         *     ---------------
-         *       (unit(V)*F)
-         *      
-         * Q = F*n*F*unit(V)
-         *     -------------
-         *      (unit(V)*F)
-         *
-         * Q = F*n*F*(V / ||V*V||)
-         *     -------------------
-         *      ((V / ||V*V||)*F)
-         *
-         * Q = F*n*F*V
-         *     -------
-         *     (V*F)
-         *
-         * Q = F*F*n*V
-         *     -------
-         *     (V*F)
-         *
-         *
-         * In 3D:
-         * Q = (F_x*F_x*n + F_y*F_y*n * F_z*F_z*n)
-         *     -----------------------------------  *  V
-         *       (V_x*F_x + V_y*F_y + V_z*F_z)
-         *
-         * Q_x = (F_x*F_x*n + F_y*F_y*n * F_z*F_z*n)
-         *       -----------------------------------  *  V_x
-         *         (V_x*F_x + V_y*F_y + V_z*F_z)
-         *
-         * Q_y = (F_x*F_x*n + F_y*F_y*n * F_z*F_z*n)
-         *       -----------------------------------  *  V_y
-         *         (V_x*F_x + V_y*F_y + V_z*F_z)
-         *
-         * Q_z = (F_x*F_x*n + F_y*F_y*n * F_z*F_z*n)
-         *       -----------------------------------  *  V_z
-         *         (V_x*F_x + V_y*F_y + V_z*F_z)
-         * 
-         * Assume our object has been translated to camera space. In this case, F = (0, 0, -1) (Right-handed coordinate system)
-         * F_x = 0
-         * F_y = 0
-         * F_z = -1
-         *
-         * Q_x =   n
-         *       ------ * V_x
-         *       (-V_z)
-         *
-         * Q_y =   n
-         *       ------ * V_y
-         *       (-V_z)
-         *
-         * Q_z =   n
-         *       ------ * V_z
-         *       (-V_z)
-         *
-         *
-         * So now we have the point Q in camera space where Q is V perspective projected onto the near plane.
-         * Our goal is to find Q_p in NDC space. So, we need to divide X and Y by the camera width and height.
-         *
-         * C_w : camera width
-         * C_h : camera height
-         *
-         * Q_px = Q_x / C_w = n / C_w
-         *                    ------- * V_x
-         *                    (-V_z)        
-         *
-         * Q_py = Q_y / C_h = n / C_h
-         *                    ------- * V_y
-         *                    (-V_z)
-         *
-         * Z should be between -1 and 1, so we need to divide by far plane - near plane. Use the vertex's Z coordinate instead of Q's Z coordinate
-         * (Q is already projected and will have a constant Z, so we can't use that).
-         * f : far plane dist
-         *
-         * Q_pz = (V_z - (-n)) * 2
-         *        ----------------  -  1
-         *           -f - (-n)
-         *
-         * Q_pz = (V_z + n) * 2
-         *        -------------  -  1
-         *           n - f
-         *
-         * Q_pz = V_z*2 + n*2
-         *        -----------  -  1
-         *           n - f
-         *
-         * Q_pz = V_z*2       n*2
-         *        ------  +  -----  -  1
-         *        n - f      n - f
-         *
-         * Q_pz =   2              n*2
-         *        ----- * V_z  +  -----  -  1
-         *        n - f           n - f
-         *
-         * https://www.desmos.com/calculator/frzetn7doc
-         *       
-         * Now, define as a matrix (keep in mind we will be dividing by the W component after matrix multiplication):
-         *
-         * | Q_px |   | n / C_w    0           0            0           |   |  V_x |   
-         * | Q_py | = |   0      n / C_h       0            0           | * |  V_y |
-         * | Q_pz |   |   0        0        2 / (n-f)    (n*2) / (n-f)  |   |  V_z |   
-         * | Q_pw |   |   0        0          -1            0           |   | 1.0f |   
-         *
-         * | Q_px |   |         (n / C_w) * V_x         |
-         * | Q_py | = |         (n / C_h) * V_y         |
-         * | Q_pz |   | 2 / (n-f) * V_z + (n*2) / (n-f) |
-         * | Q_pw |   |              -V_z               | <-- Will be dividing all the terms by -V_z
-         * 
-         * Dividing the depth by -V_z has the unfortunate consequence of reducing the NDC depth space.
-         *
-         */
 
         {
-            //f32 cam_x = 0.0f;
-            //f32 cam_y = 0.0f;
-            //f32 cam_z = 0.0f;
+            /*
+             * World-to-camera matrix derivation:
+             *
+             * C : 3D camera point in world space
+             * I : Camera right vector in world space
+             * J : Camera up vector in world space
+             * K : Camera forward vector in world space (keep in mind this is pointing backwards from where
+             *     we're "looking" because of the right-handed coordinate system).
+             * V : Vertex to transform
+             *
+             * Transform a camera-space point to world-space
+             *
+             * | R_x | = V_x * | I_x | + V_y * | J_x | + V_z * | K_x |  +  | C_x |
+             * | R_y |         | I_y |         | J_y |         | K_y |  +  | C_y |
+             * | R_z |         | I_z |         | J_z |         | K_z |  +  | C_z |
+             *
+             * | I_x  J_x  K_x  C_x |   | V_x |   | V_x*I_x + V_y*J_x + V_z*K_x + C_x |
+             * | I_y  J_y  K_y  C_y | * | V_y | = | V_x*I_y + V_y*J_y + V_z*K_y + C_y |
+             * | I_z  J_z  K_z  C_z |   | V_z |   | V_x*I_z + V_y*J_z + V_z*K_z + C_z |
+             * |   0    0    0    1 |   |   1 |   |                                 1 |
+             *
+             * Camera-to-world space matrix:
+             * | I_x  J_x  K_x  C_x |
+             * | I_y  J_y  K_y  C_y |
+             * | I_z  J_z  K_z  C_z |
+             * |   0    0    0    1 |
+             *
+             * World-to-camera space matrix is just the inverse. Since the top-left 3x3 matrix is the orientation and the top-right 3x1 is the translation,
+             * we can inverse the matrix trivially. Inverse orientation is just the transpose. Inverse translation is just the negative.
+             *
+             * World-to-camera space matrix:
+             * | I_x  I_y  I_z  -C_x |
+             * | J_x  J_y  J_z  -C_y |
+             * | K_x  K_y  K_z  -C_z |
+             * |   0    0    0     1 |
+             *
+             */
+
+            // Camera forward is (0, 0, -1) because of the right-handed coordinate system. Camera looks along the -z axis.
+            f32 K_cam[] = {0.0f, 0.0f, -1.0f};
+            f32 J_cam[] = {0.0f, 1.0f,  0.0f};
+            f32 I_cam[] = {1.0f, 0.0f,  0.0f};
+            f32_m P_cam[] = {0.0f, 0.0f,  0.0f};
+
+            static f32_m x_offset = 0.0f;
+            static f32_m y_offset = 0.0f;
+            static f32_m z_offset = 0.0f;
+            x_offset += (float)is_key_down(KB_D) * 0.1f;
+            x_offset -= (float)is_key_down(KB_A) * 0.1f;
+            y_offset += (float)is_key_down(KB_W) * 0.1f;
+            y_offset -= (float)is_key_down(KB_S) * 0.1f;
+            P_cam[0] = x_offset;
+            P_cam[1] = y_offset;
+            P_cam[2] = z_offset;
+
+            f32 world_to_camera_mtx[] = {
+                I_cam[0], I_cam[1], I_cam[2], -P_cam[0],
+                J_cam[0], J_cam[1], J_cam[2], -P_cam[1],
+                K_cam[0], K_cam[1], K_cam[2], -P_cam[2],
+                    0.0f,     0.0f,     0.0f,      1.0f
+            };
+
+            /*
+             * Derivation for 3D perspective projection matrix
+             *
+             *                                            /
+             *                                          /
+             *                                        /
+             *                                      /
+             *                                    /
+             *                                  /
+             *                                /
+             *                              /
+             *                            /
+             *                          /
+             *                        /
+             *                      /
+             *                    /
+             *                  /
+             *                /
+             *              / |               V
+             *            /   |             .>+---------------+
+             *          /     |       -----/ D|               |
+             *        /       |  ----/        |               |
+             *      /       --R-/             |               |
+             *    /    ----/  |               |               |
+             *  /  ---/       |               |               |
+             * C../           |----> F        |               |
+             *  \             |               |               |
+             *    \           |               +---------------+
+             *      \         |
+             *        \       |
+             *          \     |
+             *            \   |
+             *              \ |
+             *                \
+             *                  \
+             *                    \
+             *                      \
+             *                        \
+             *                          \
+             *                            \
+             *                              \
+             *                                \
+             *                                  \
+             *                                    \
+             *                                      \
+             *                                        \
+             *                                          \
+             *                                            \
+             *
+             *
+             *
+             * C : 3D camera point (Assume the camera is at the origin - (0, 0)
+             * F : Normalized camera forward vector
+             * n : Camera's near plane dist along F
+             * V : Vertex to be projected
+             *
+             * The goal is to intersect the ray from the origin to the vertex with the near plane.
+             *
+             * Q : Point along the ray (solve for intersection)
+             * Q = C + unit(V)*t
+             * Q = unit(V)*t
+             *
+             * Find the plane equation:
+             * F : The near plane normal.
+             * S : a point on the near plane.
+             * S = F*n
+             * 
+             * New plane equation : (P - S) * F = 0
+             * We want to find where a point on the ray is equal to 0, so plug in Q for P:
+             * (Q - S) * F = 0
+             *
+             * Expand:
+             *
+             * (unit(V)*t - S) * F = 0
+             *
+             * Solve for t:
+             *
+             * unit(V)*t*F - S*F = 0
+             * t = S*F / (unit(V)*F)
+             *
+             * Plug t back in to the ray equation:
+             *
+             * Q = unit(V)*t
+             * Q = unit(V)*(S*F / (unit(V)*F))
+             *
+             * Find in terms of V
+             *
+             * Q = unit(V)*(S*F / (unit(V)*F))
+             *
+             * Q = unit(V)*S*F
+             *     -----------
+             *     (unit(V)*F)
+             *
+             * Q = unit(V)*(F*n)*F
+             *     ---------------
+             *       (unit(V)*F)
+             *      
+             * Q = F*n*F*unit(V)
+             *     -------------
+             *      (unit(V)*F)
+             *
+             * Q = F*n*F*(V / ||V*V||)
+             *     -------------------
+             *      ((V / ||V*V||)*F)
+             *
+             * Q = F*n*F*V
+             *     -------
+             *     (V*F)
+             *
+             * Q = F*F*n*V
+             *     -------
+             *     (V*F)
+             *
+             *
+             * In 3D:
+             * Q = (F_x*F_x*n + F_y*F_y*n * F_z*F_z*n)
+             *     -----------------------------------  *  V
+             *       (V_x*F_x + V_y*F_y + V_z*F_z)
+             *
+             * Q_x = (F_x*F_x*n + F_y*F_y*n * F_z*F_z*n)
+             *       -----------------------------------  *  V_x
+             *         (V_x*F_x + V_y*F_y + V_z*F_z)
+             *
+             * Q_y = (F_x*F_x*n + F_y*F_y*n * F_z*F_z*n)
+             *       -----------------------------------  *  V_y
+             *         (V_x*F_x + V_y*F_y + V_z*F_z)
+             *
+             * Q_z = (F_x*F_x*n + F_y*F_y*n * F_z*F_z*n)
+             *       -----------------------------------  *  V_z
+             *         (V_x*F_x + V_y*F_y + V_z*F_z)
+             * 
+             * Assume our object has been translated to camera space. In this case, F = (0, 0, -1) (Right-handed coordinate system)
+             * F_x = 0
+             * F_y = 0
+             * F_z = -1
+             *
+             * Q_x =   n
+             *       ------ * V_x
+             *       (-V_z)
+             *
+             * Q_y =   n
+             *       ------ * V_y
+             *       (-V_z)
+             *
+             * Q_z =   n
+             *       ------ * V_z
+             *       (-V_z)
+             *
+             *
+             * So now we have the point Q in camera space where Q is V perspective projected onto the near plane.
+             * Our goal is to find Q_p in NDC space. So, we need to divide X and Y by the camera width and height.
+             *
+             * C_w : camera width
+             * C_h : camera height
+             *
+             * Q_px = Q_x / C_w = n / C_w
+             *                    ------- * V_x
+             *                    (-V_z)        
+             *
+             * Q_py = Q_y / C_h = n / C_h
+             *                    ------- * V_y
+             *                    (-V_z)
+             *
+             * Z should be between -1 and 1, so we need to divide by far plane - near plane. Use the vertex's Z coordinate instead of Q's Z coordinate
+             * (Q is already projected and will have a constant Z, so we can't use that).
+             * f : far plane dist
+             *
+             * Q_pz = (V_z - (-n)) * 2
+             *        ----------------  -  1
+             *           -f - (-n)
+             *
+             * Q_pz = (V_z + n) * 2
+             *        -------------  -  1
+             *           n - f
+             *
+             * Q_pz = V_z*2 + n*2
+             *        -----------  -  1
+             *           n - f
+             *
+             * Q_pz = V_z*2       n*2
+             *        ------  +  -----  -  1
+             *        n - f      n - f
+             *
+             * Q_pz =   2              n*2
+             *        ----- * V_z  +  -----  -  1
+             *        n - f           n - f
+             *
+             * https://www.desmos.com/calculator/frzetn7doc
+             *       
+             * Now, define as a matrix (keep in mind we will be dividing by the W component after matrix multiplication):
+             *
+             * | Q_px |   | n / C_w    0           0            0           |   |  V_x |   
+             * | Q_py | = |   0      n / C_h       0            0           | * |  V_y |
+             * | Q_pz |   |   0        0        2 / (n-f)    (n*2) / (n-f)  |   |  V_z |   
+             * | Q_pw |   |   0        0          -1            0           |   | 1.0f |   
+             *
+             * | Q_px |   |         (n / C_w) * V_x         |
+             * | Q_py | = |         (n / C_h) * V_y         |
+             * | Q_pz |   | 2 / (n-f) * V_z + (n*2) / (n-f) |
+             * | Q_pw |   |              -V_z               | <-- Will be dividing all the terms by -V_z
+             * 
+             * Dividing the depth by -V_z has the unfortunate consequence of reducing the NDC depth space.
+             *
+             */
 
             f32 aspect_ratio = (float)g_opengl_state->screen_height / (float)g_opengl_state->screen_width;
-            f32 C_w = 0.25f;
+            f32 C_w = 0.5f;
             f32 C_h = C_w * aspect_ratio;
 
             f32 n = 0.1f;
             f32 f = 1000.0f;
 
-            float proj_mat[] = {
+            f32 proj_mtx[] = {
                 //    X         Y                Z                      W
                 n / C_w,     0.0f,            0.0f,                  0.0f,
                    0.0f,  n / C_h,            0.0f,                  0.0f,
                    0.0f,     0.0f,  2.0f / (n - f),  (n * 2.0f) / (n - f),
                    0.0f,     0.0f,           -1.0f,                  0.0f,
             };
+
+            f32_m cam_proj_mtx[4 * 4];
+            mtx4x4_mul(cam_proj_mtx, proj_mtx, world_to_camera_mtx);
+
             GLint loc;
             CALL_GL_RET(&loc, GLint, glGetUniformLocation, g_opengl_state->shader_program, "m_proj");
-            CALL_GL(glUniformMatrix4fv, loc, 1, 1, &(proj_mat[0]));
+            CALL_GL(glUniformMatrix4fv, loc, 1, 1, &cam_proj_mtx[0]);
             ASSERT(loc != -1, "Failed to bind uniform.");
         }
-        //{
-        //    mat4 m = clip_m_view(current_cam);
-        //    GLint loc = glGetUniformLocation(G_graphics_state->batch_voxel_shader_program, "m_proj");
-        //    glUniformMatrix4fv(loc, 1, true, &(m[0][0]));
-        //    if(loc == -1) assert(false);
-        //}
 
 
         CALL_GL(glBindVertexArray, g_opengl_state->vertex_array_object);
@@ -813,7 +993,6 @@ int WinMainCRTStartup()
         CALL_GL(glBindVertexArray, 0);
         CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, 0);
         CALL_GL(glBindBuffer, GL_ELEMENT_ARRAY_BUFFER, 0);
-
 
         const HDC dc = GetDC(g_opengl_state->hwnd);
         BOOL swap_buffers_success = SwapBuffers(dc);
