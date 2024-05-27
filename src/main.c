@@ -10,6 +10,7 @@
 #include "wglext.h"
 
 
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Globals
 
@@ -135,13 +136,7 @@ typedef struct
 } v4_m;
 typedef const v4_m v4;
 
-static inline v3 v3_up()
-{
-    v3_m r = {.v=_mm_setr_ps(0.0f, 1.0f, 0.0f, 0.0f)};
-    return r;
-}
-
-static inline f32 v3_dot(v3 a, v3 b)
+MAYBE_UNUSED static inline f32 v3_dot(v3 a, v3 b)
 {
     // | a.x | a.y | a.z | - |
     // | b.x | b.y | b.z | - |
@@ -165,7 +160,7 @@ static inline f32 v3_dot(v3 a, v3 b)
     return r.m[0];
 }
 
-static inline v3 v3_cross(v3 a, v3 b)
+MAYBE_UNUSED static inline v3 v3_cross(v3 a, v3 b)
 {
     v3_m r;
     r.v = _mm_fmsub_ps(
@@ -179,21 +174,31 @@ static inline v3 v3_cross(v3 a, v3 b)
     return r;
 }
 
-static inline v3 v3_add(v3 a, v3 b)
+MAYBE_UNUSED static inline v3 v3_add(v3 a, v3 b)
 {
     v3_m r;
     r.v = _mm_add_ps(a.v, b.v);
     return r;
 }
 
-static inline v3 v3_scale(v3 a, f32 b)
+MAYBE_UNUSED static inline v3 v3_scale(v3 a, f32 b)
 {
     v3_m r;
     r.v = _mm_mul_ps(a.v, _mm_set1_ps(b));
     return r;
 }
 
-static inline __m256 approx_sin8(__m256 x)
+MAYBE_UNUSED static inline v3 v3_normalize(v3 a)
+{
+    // TODO(mfritz) No need to go to scalar here.
+    v3_m r = a;
+    f32 len_sqr = v3_dot(a, a);
+    f32 len = _mm_cvtss_f32(_mm_sqrt_ss(_mm_set1_ps(len_sqr)));
+    r = v3_scale(r, 1.0f / len);
+    return r;
+}
+
+MAYBE_UNUSED static inline __m256 approx_sin8(__m256 x)
 {
     const __m256 pi       = _mm256_set1_ps(PI);
     const __m256 h_pi     = _mm256_set1_ps(H_PI);
@@ -250,7 +255,7 @@ static inline __m256 approx_sin8(__m256 x)
 
 // 4x4 matrix multiply : r = a * b.
 // NOTE: Matrices are assumed to be row-major.
-static inline void mtx4x4_mul(mtx4x4_m* r, mtx4x4* a, mtx4x4* b)
+MAYBE_UNUSED static inline void mtx4x4_mul(mtx4x4_m* r, mtx4x4* a, mtx4x4* b)
 {
     /*
      *
@@ -303,8 +308,8 @@ static inline void mtx4x4_mul(mtx4x4_m* r, mtx4x4* a, mtx4x4* b)
     }
 }
 
-#if 0
-static inline void make_x_axis_rotation_mtx(mtx4x4_m* r, f32 turns)
+#if 1
+MAYBE_UNUSED static inline void make_x_axis_rotation_mtx(mtx4x4_m* r, f32 turns)
 {
     __m256 a_v = approx_sin8(_mm256_setr_ps(TAU * turns, TAU * turns + H_PI, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f));
     _Alignas(32) f32_m a[8];
@@ -318,7 +323,7 @@ static inline void make_x_axis_rotation_mtx(mtx4x4_m* r, f32 turns)
     r->m[12] = 0.0f;  r->m[13] = 0.0f;  r->m[14] = 0.0f;   r->m[15] = 1.0f;
 }
 
-static inline void make_y_axis_rotation_mtx(mtx4x4_m* r, float turns)
+MAYBE_UNUSED static inline void make_y_axis_rotation_mtx(mtx4x4_m* r, float turns)
 {
     __m256 a_v = approx_sin8(_mm256_setr_ps(TAU * turns, TAU * turns + H_PI, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f));
     _Alignas(32) f32_m a[8];
@@ -331,6 +336,15 @@ static inline void make_y_axis_rotation_mtx(mtx4x4_m* r, float turns)
     r->m[8] = -sin_a;  r->m[9] = 0.0f;   r->m[10] = cos_a;  r->m[11] = 0.0f;
     r->m[12] = 0.0f;   r->m[13] = 0.0f;  r->m[14] = 0.0f;   r->m[15] = 1.0f;
 }
+
+MAYBE_UNUSED static inline void make_translation_mtx(mtx4x4_m* r, v3 v)
+{
+    r->m[0]  = 1.0f;   r->m[1] = 0.0f;    r->m[2] = 0.0f;   r->m[3] = v.m[0];
+    r->m[4]  = 0.0f;   r->m[5] = 1.0f;    r->m[6] = 0.0f;   r->m[7] = v.m[1];
+    r->m[8]  = 0.0f;   r->m[9] = 0.0f;   r->m[10] = 1.0f;  r->m[11] = v.m[2];
+    r->m[12] = 0.0f;  r->m[13] = 0.0f;   r->m[14] = 0.0f;  r->m[15] = 1.0f;
+}
+
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -452,11 +466,11 @@ do { \
 
 #define CALL_GL_RET(out, type, fn, ...) \
 do { \
-    type r = g_opengl_state->fn(__VA_ARGS__); \
+    type MACRO_r = g_opengl_state->fn(__VA_ARGS__); \
     const GLuint err = g_opengl_state->glGetError(); \
     g_opengl_state->last_gl_error = err; \
     ASSERT(err == 0, #fn " failed"); \
-    *(out) = r; \
+    *(out) = MACRO_r; \
 } while(0)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -843,9 +857,12 @@ int WinMainCRTStartup()
             ExitProcess(0);
         }
 
-        f32 vx[] = { 10.0f + 0.0f, 10.0f + 1.0f, 10.0f + 0.0f, 10.0f + 1.0f, 10.0f + 0.0f, 10.0f + 1.0f, 10.0f + 0.0f, 10.0f + 1.0f };
-        f32 vy[] = { 10.0f + 0.0f, 10.0f + 0.0f, 10.0f + 1.0f, 10.0f + 1.0f, 10.0f + 0.0f, 10.0f + 0.0f, 10.0f + 1.0f, 10.0f + 1.0f };
-        f32 vz[] = { 10.0f + 0.0f, 10.0f + 0.0f, 10.0f + 0.0f, 10.0f + 0.0f, 10.0f + 1.0f, 10.0f + 1.0f, 10.0f + 1.0f, 10.0f + 1.0f };
+        f32 vx_offset = 0.0f;
+        f32 vy_offset = 0.0f;
+        f32 vz_offset = -3.0f;
+        f32 vx[] = { vx_offset + 0.0f, vx_offset + 1.0f, vx_offset + 0.0f, vx_offset + 1.0f, vx_offset + 0.0f, vx_offset + 1.0f, vx_offset + 0.0f, vx_offset + 1.0f };
+        f32 vy[] = { vy_offset + 0.0f, vy_offset + 0.0f, vy_offset + 1.0f, vy_offset + 1.0f, vy_offset + 0.0f, vy_offset + 0.0f, vy_offset + 1.0f, vy_offset + 1.0f };
+        f32 vz[] = { vz_offset + 0.0f, vz_offset + 0.0f, vz_offset + 0.0f, vz_offset + 0.0f, vz_offset + 1.0f, vz_offset + 1.0f, vz_offset + 1.0f, vz_offset + 1.0f };
         u32 indices[] = 
         {
             0, 4, 2, // -X
@@ -885,34 +902,24 @@ int WinMainCRTStartup()
 
             static v3_m cam_pos = {0};
 
-            // Camera forward is (0, 0, -1) because of the right-handed coordinate system. Camera looks along the -z axis.
-            // Theta goes from X to Y (90 deg) (yaw)
-            // Phi goes from Z to the XY plane (90 deg - pitch)
-            f32 cam_pitch_rad = -cam_pitch_turns * TAU;
-            f32 cam_yaw_rad = -cam_yaw_turns * TAU;
-            __m256 cam_sin_cos_pitch_v = approx_sin8(_mm256_setr_ps(cam_pitch_rad, cam_pitch_rad + H_PI, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f));
-            _Alignas(32) f32_m cam_sin_cos_pitch[8];
-            _mm256_store_ps(cam_sin_cos_pitch, cam_sin_cos_pitch_v);
-            __m256 cam_sin_cos_yaw_v = approx_sin8(_mm256_setr_ps(cam_yaw_rad, cam_yaw_rad + H_PI, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f));
-            _Alignas(32) f32_m cam_sin_cos_yaw[8];
-            _mm256_store_ps(cam_sin_cos_yaw, cam_sin_cos_yaw_v);
-            v3 K_cam = {
-                .m = {
-                    cam_sin_cos_yaw[0] * cam_sin_cos_pitch[1],
-                    cam_sin_cos_pitch[0],
-                    -cam_sin_cos_yaw[1] * cam_sin_cos_pitch[1],
-                }
-            };
-            v3 I_cam = v3_cross(K_cam, v3_up());
-            v3 J_cam = v3_cross(I_cam, K_cam);
+            mtx4x4_m y_rot_mtx;
+            make_y_axis_rotation_mtx(&y_rot_mtx, -cam_yaw_turns);
 
-            f32 d_d0 = v3_dot(I_cam, J_cam);
-            f32 d_d1 = v3_dot(J_cam, K_cam);
-            f32 d_d2 = v3_dot(I_cam, K_cam);
-            ASSERT(d_d0 < 0.001f, "NOPE");
-            ASSERT(d_d1 < 0.001f, "NOPE");
-            ASSERT(d_d2 < 0.001f, "NOPE");
+            mtx4x4_m x_rot_mtx;
+            make_x_axis_rotation_mtx(&x_rot_mtx, -cam_pitch_turns);
 
+            mtx4x4_m translation_mtx;
+            make_translation_mtx(&translation_mtx, v3_scale(cam_pos, -1.0f));
+
+            mtx4x4_m world_to_cam_mtx_temp;
+            mtx4x4_mul(&world_to_cam_mtx_temp, &y_rot_mtx, &translation_mtx);
+
+            mtx4x4_m world_to_cam_mtx;
+            mtx4x4_mul(&world_to_cam_mtx, &x_rot_mtx, &world_to_cam_mtx_temp);
+
+            v3 I_cam = {.m={world_to_cam_mtx.m[0*4 + 0], world_to_cam_mtx.m[0*4 + 1], world_to_cam_mtx.m[0*4 + 2]}};
+            v3 J_cam = {.m={world_to_cam_mtx.m[1*4 + 0], world_to_cam_mtx.m[1*4 + 1], world_to_cam_mtx.m[1*4 + 2]}};
+            v3 K_cam = {.m={world_to_cam_mtx.m[2*4 + 0], world_to_cam_mtx.m[2*4 + 1], world_to_cam_mtx.m[2*4 + 2]}};
 
             f32 speed = 0.1f;
             cam_pos = v3_add(cam_pos, v3_scale(K_cam, -speed * (float)is_key_down(KB_W)));
@@ -925,55 +932,12 @@ int WinMainCRTStartup()
             cam_pos = v3_add(cam_pos, v3_scale(J_cam, -speed * (float)is_key_down(KB_LCTRL)));
 
             /*
-             * World-to-camera matrix derivation:
-             *
-             * C : 3D camera point in world space
-             * I : Camera right vector in world space
-             * J : Camera up vector in world space
-             * K : Camera forward vector in world space (keep in mind this is pointing backwards from where
-             *     we're "looking" because of the right-handed coordinate system).
-             * V : Vertex to transform
-             *
-             * Transform a camera-space point to world-space
-             *
-             * | R_x | = V_x * | I_x | + V_y * | J_x | + V_z * | K_x |  +  | C_x |
-             * | R_y |         | I_y |         | J_y |         | K_y |  +  | C_y |
-             * | R_z |         | I_z |         | J_z |         | K_z |  +  | C_z |
-             *
-             * | I_x  J_x  K_x  C_x |   | V_x |   | V_x*I_x + V_y*J_x + V_z*K_x + C_x |
-             * | I_y  J_y  K_y  C_y | * | V_y | = | V_x*I_y + V_y*J_y + V_z*K_y + C_y |
-             * | I_z  J_z  K_z  C_z |   | V_z |   | V_x*I_z + V_y*J_z + V_z*K_z + C_z |
-             * |   0    0    0    1 |   |   1 |   |                                 1 |
-             *
-             * Camera-to-world space matrix:
-             * | I_x  J_x  K_x  C_x |
-             * | I_y  J_y  K_y  C_y |
-             * | I_z  J_z  K_z  C_z |
-             * |   0    0    0    1 |
-             *
-             * World-to-camera space matrix is just the inverse. Since the top-left 3x3 matrix is the orientation and the top-right 3x1 is the translation,
-             * we can inverse the matrix trivially. Inverse orientation is just the transpose. Inverse translation is just the negative.
-             *
-             * World-to-camera space matrix:
-             * | I_x  I_y  I_z  -C_x |
-             * | J_x  J_y  J_z  -C_y |
-             * | K_x  K_y  K_z  -C_z |
-             * |   0    0    0     1 |
-             *
-             */
-
-            mtx4x4_m world_to_cam_mtx = {
-                .m = {
-                    I_cam.m[0], I_cam.m[1], I_cam.m[2], -cam_pos.m[0],
-                    J_cam.m[0], J_cam.m[1], J_cam.m[2], -cam_pos.m[1],
-                    K_cam.m[0], K_cam.m[1], K_cam.m[2], -cam_pos.m[2],
-                          0.0f,       0.0f,       0.0f,          1.0f
-                }
-            };
-
-            /*
              * Derivation for 3D perspective projection matrix
-             *
+             *        
+             *                                                    /
+             *                                                  /
+             *                                                /
+             *                                              /
              *                                            /
              *                                          /
              *                                        /
@@ -985,29 +949,21 @@ int WinMainCRTStartup()
              *                            /
              *                          /
              *                        /
-             *                      /
-             *                    /
-             *                  /
-             *                /
-             *              / |               V
-             *            /   |             .>+---------------+
-             *          /     |       -----/ D|               |
-             *        /       |  ----/        |               |
-             *      /       --R-/             |               |
-             *    /    ----/  |               |               |
-             *  /  ---/       |               |               |
-             * C../           |----> F        |               |
-             *  \             |               |               |
-             *    \           |               +---------------+
-             *      \         |
-             *        \       |
-             *          \     |
-             *            \   |
-             *              \ |
-             *                \
-             *                  \
-             *                    \
-             *                      \
+             *                      / |               V
+             *                    /   |             .>+---------------+
+             *                  /     |       -----/ D|               |
+             *         Y      /       |  ----/        |               |
+             *         ^    /       --R-/             |               |
+             *         |  /    ----/  |               |               |
+             *         |/  ---/       |               |               |
+             *  Z <----C../           |----> N        |               |
+             *  F     / \             |               |               |
+             *       /    \           |               +---------------+
+             *      V       \         |
+             *     X          \       |
+             *                  \     |
+             *                    \   |
+             *                      \ |
              *                        \
              *                          \
              *                            \
@@ -1019,93 +975,97 @@ int WinMainCRTStartup()
              *                                        \
              *                                          \
              *                                            \
-             *
-             *
-             *
+             *                                              \
+             *                                                \
+             *                                                  \
+             *                                                    \
+             *        
+             *        
+             *        
              * C : 3D camera point (Assume the camera is at the origin - (0, 0)
-             * F : Normalized camera forward vector
-             * n : Camera's near plane dist along F
+             * F : Normalized camera forward vector (The camera looks along the -Z axis. For something to be seen, it must be more -Z than the near plane.)
+             *     In camera space, this will be (0, 0, 1)
+             * n : Camera's near plane distance. For something to be seen, it must have a Z coordinate < -n.
              * V : Vertex to be projected
              *
              * The goal is to intersect the ray from the origin to the vertex with the near plane.
              *
              * Q : Point along the ray (solve for intersection)
-             * Q = C + unit(V)*t
+             * Q = C + unit(V)*t, but since C is just the origin
              * Q = unit(V)*t
              *
              * Find the plane equation:
-             * F : The near plane normal.
+             * N : The near plane normal (In camera space, this will be (0, 0, -1)
              * S : a point on the near plane.
-             * S = F*n
+             * S = N*n
              * 
-             * New plane equation : (P - S) * F = 0
+             * New plane equation : (P - S) * N = 0
              * We want to find where a point on the ray is equal to 0, so plug in Q for P:
-             * (Q - S) * F = 0
+             * (Q - S) * N = 0
              *
              * Expand:
              *
-             * (unit(V)*t - S) * F = 0
+             * (unit(V)*t - S) * N = 0
              *
              * Solve for t:
              *
-             * unit(V)*t*F - S*F = 0
-             * t = S*F / (unit(V)*F)
+             * unit(V)*t*N - S*N = 0
+             * t = S*N / (unit(V)*N)
              *
              * Plug t back in to the ray equation:
              *
              * Q = unit(V)*t
-             * Q = unit(V)*(S*F / (unit(V)*F))
+             * Q = unit(V)*(S*N / (unit(V)*N))
              *
              * Find in terms of V
              *
-             * Q = unit(V)*(S*F / (unit(V)*F))
+             * Q = unit(V)*(S*N / (unit(V)*N))
              *
-             * Q = unit(V)*S*F
+             * Q = unit(V)*S*N
              *     -----------
-             *     (unit(V)*F)
+             *     (unit(V)*N)
              *
-             * Q = unit(V)*(F*n)*F
+             * Q = unit(V)*(N*n)*N
              *     ---------------
-             *       (unit(V)*F)
+             *       (unit(V)*N)
              *      
-             * Q = F*n*F*unit(V)
+             * Q = N*n*N*unit(V)
              *     -------------
-             *      (unit(V)*F)
+             *      (unit(V)*N)
              *
-             * Q = F*n*F*(V / ||V*V||)
+             * Q = N*n*N*(V / ||V*V||)
              *     -------------------
-             *      ((V / ||V*V||)*F)
+             *      ((V / ||V*V||)*N)
              *
-             * Q = F*n*F*V
+             * Q = N*n*N*V
              *     -------
-             *     (V*F)
+             *     (V*N)
              *
-             * Q = F*F*n*V
+             * Q = N*N*n*V
              *     -------
-             *     (V*F)
-             *
+             *     (V*N)
              *
              * In 3D:
-             * Q = (F_x*F_x*n + F_y*F_y*n * F_z*F_z*n)
+             * Q = (N_x*N_x*n + N_y*N_y*n * N_z*N_z*n)
              *     -----------------------------------  *  V
-             *       (V_x*F_x + V_y*F_y + V_z*F_z)
+             *       (V_x*N_x + V_y*N_y + V_z*N_z)
              *
-             * Q_x = (F_x*F_x*n + F_y*F_y*n * F_z*F_z*n)
+             * Q_x = (N_x*N_x*n + N_y*N_y*n * N_z*N_z*n)
              *       -----------------------------------  *  V_x
-             *         (V_x*F_x + V_y*F_y + V_z*F_z)
+             *         (V_x*N_x + V_y*N_y + V_z*N_z)
              *
-             * Q_y = (F_x*F_x*n + F_y*F_y*n * F_z*F_z*n)
+             * Q_y = (N_x*N_x*n + N_y*N_y*n * N_z*N_z*n)
              *       -----------------------------------  *  V_y
-             *         (V_x*F_x + V_y*F_y + V_z*F_z)
+             *         (V_x*N_x + V_y*N_y + V_z*N_z)
              *
-             * Q_z = (F_x*F_x*n + F_y*F_y*n * F_z*F_z*n)
+             * Q_z = (N_x*N_x*n + N_y*N_y*n * N_z*N_z*n)
              *       -----------------------------------  *  V_z
-             *         (V_x*F_x + V_y*F_y + V_z*F_z)
+             *         (V_x*N_x + V_y*N_y + V_z*N_z)
              * 
-             * Assume our object has been translated to camera space. In this case, F = (0, 0, -1) (Right-handed coordinate system)
-             * F_x = 0
-             * F_y = 0
-             * F_z = -1
+             * Assume our object has been translated to camera space. In this case, N = (0, 0, -1) (Right-handed coordinate system)
+             * N_x = 0
+             * N_y = 0
+             * N_z = -1
              *
              * Q_x =   n
              *       ------ * V_x
@@ -1177,12 +1137,11 @@ int WinMainCRTStartup()
              */
 
             f32 aspect_ratio = (float)g_opengl_state->screen_height / (float)g_opengl_state->screen_width;
-            f32 C_w = 0.25f;
-            f32 C_h = C_w * aspect_ratio;
 
             f32 n = 0.1f;
             f32 f = 1000.0f;
-
+            f32 C_w = 0.125f;
+            f32 C_h = C_w * aspect_ratio;
             mtx4x4 proj_mtx = {
                 .m = {
                     //    X         Y                Z                      W

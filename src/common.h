@@ -3,6 +3,16 @@
 
 #include "win32_crt.h"
 
+
+#if defined(__clang__)
+    #define MAYBE_UNUSED __attribute__((unused))
+#elif defined(__GNUC__) || defined(__GNUG__)
+    #define MAYBE_UNUSED __attribute__((unused))
+#elif defined(_MSC_VER)
+    #define MAYBE_UNUSED 
+#endif
+
+
 typedef const unsigned char u8;
 typedef const unsigned short u16;
 typedef const unsigned int u32;
