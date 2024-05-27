@@ -88,9 +88,169 @@ static inline void assert_fn(const char* file, int line, s32 c, const char* msg)
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Math
 
+#define H_PI 1.57079637f
+#define PI 3.14159274f
+#define TAU 6.28318548f
+#define INV_PI 0.318309873f
+#define INV_H_PI 0.636620f
+#define INV_TAU 0.159154937f
+
+typedef struct
+{
+    union
+    {
+        _Alignas(32) f32_m m[16];
+        __m128 v[4];
+    };
+} mtx4x4_m;
+typedef const mtx4x4_m mtx4x4;
+
+typedef struct
+{
+    union
+    {
+        _Alignas(16) f32_m m[4];
+        __m128 v;
+    };
+} v2_m;
+typedef const v2_m v2;
+
+typedef struct
+{
+    union
+    {
+        _Alignas(16) f32_m m[4];
+        __m128 v;
+    };
+} v3_m;
+typedef const v3_m v3;
+
+typedef struct
+{
+    union
+    {
+        _Alignas(16) f32_m m[4];
+        __m128 v;
+    };
+} v4_m;
+typedef const v4_m v4;
+
+static inline v3 v3_up()
+{
+    v3_m r = {.v=_mm_setr_ps(0.0f, 1.0f, 0.0f, 0.0f)};
+    return r;
+}
+
+static inline f32 v3_dot(v3 a, v3 b)
+{
+    // | a.x | a.y | a.z | - |
+    // | b.x | b.y | b.z | - |
+
+    v3_m r;
+
+    //     00        01        10
+    // | a.x*b.x | a.y*b.y | a.z*b.z | - |
+    __m128 p = _mm_mul_ps(a.v, b.v);
+
+    // | a.x*b.x | a.y*b.y | a.z*b.z | - |
+    // +
+    // | a.y*b.y | a.z*b.z | a.x*b.x | - |
+    r.v = _mm_add_ps(p, _mm_shuffle_ps(p, p, 0b11001001));
+
+    // | a.x*b.x + a.y*b.y | a.y*b.y + a.z*b.z | a.z*b.z + a.x*b.x | - |
+    // +
+    // |           a.z*b.z |           a.x*b.x |           a.y*b.y | - |
+    r.v = _mm_add_ps(r.v, _mm_shuffle_ps(p, p, 0b11010010));
+
+    return r.m[0];
+}
+
+static inline v3 v3_cross(v3 a, v3 b)
+{
+    v3_m r;
+    r.v = _mm_fmsub_ps(
+        _mm_shuffle_ps(a.v, a.v, 0b11001001),
+        _mm_shuffle_ps(b.v, b.v, 0b11010010),
+        _mm_mul_ps(
+            _mm_shuffle_ps(a.v, a.v, 0b11010010),
+            _mm_shuffle_ps(b.v, b.v, 0b11001001)
+        )
+    );
+    return r;
+}
+
+static inline v3 v3_add(v3 a, v3 b)
+{
+    v3_m r;
+    r.v = _mm_add_ps(a.v, b.v);
+    return r;
+}
+
+static inline v3 v3_scale(v3 a, f32 b)
+{
+    v3_m r;
+    r.v = _mm_mul_ps(a.v, _mm_set1_ps(b));
+    return r;
+}
+
+static inline __m256 approx_sin8(__m256 x)
+{
+    const __m256 pi       = _mm256_set1_ps(PI);
+    const __m256 h_pi     = _mm256_set1_ps(H_PI);
+    const __m256 inv_pi   = _mm256_set1_ps(INV_PI);
+    const __m256 inv_h_pi = _mm256_set1_ps(INV_H_PI);
+    const __m256 inv_tau = _mm256_set1_ps(INV_TAU);
+    
+    // Range reduce to [0, 2*pi] to check if we need to negate result.
+    __m256 sign;
+    {
+        __m256 xx = _mm256_mul_ps(x, inv_tau);
+        xx = _mm256_sub_ps(xx, _mm256_round_ps(xx, _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+        __m256 mask = _mm256_cmp_ps(xx, _mm256_set1_ps(0.5f), _CMP_NLT_UQ);
+        sign = _mm256_and_ps(mask, _mm256_castsi256_ps(_mm256_set1_epi32(0x80000000)));
+    }
+    
+    // From now on x is positive
+    x = _mm256_and_ps(x, _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF)));
+    
+    // Range reduce to [0, pi] to check if we need to flip X.
+    __m256 flip_mask;
+    {
+        __m256 xx = _mm256_mul_ps(x, inv_pi);
+        xx = _mm256_sub_ps(xx, _mm256_round_ps(xx, _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC));
+        flip_mask = _mm256_cmp_ps(xx, _mm256_set1_ps(0.5f), _CMP_NLT_UQ);
+    }
+    
+    // Range reduce to [0, pi/2] for evaluation
+    x = _mm256_mul_ps(x, inv_h_pi);
+    x = _mm256_sub_ps(x, _mm256_round_ps(x, _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC));
+    x = _mm256_mul_ps(x,  h_pi);
+    
+    __m256 flip_x = _mm256_fmadd_ps(x, _mm256_set1_ps(-1.0f), h_pi);
+    x = _mm256_blendv_ps(x, flip_x, flip_mask);
+    
+    // x = x - x^3 / 6
+    __m256 eval0 =  _mm256_fnmadd_ps(_mm256_mul_ps(_mm256_mul_ps(x, x), x), _mm256_set1_ps(1.0f / 6.0f), x);
+    
+    // x = 1/384*(pi - 2*x)^4 - 1/8*(pi - 2x)^2 + 1
+    __m256 t = _mm256_fnmadd_ps(x, _mm256_set1_ps(2.0f), pi);
+    __m256 t2 = _mm256_mul_ps(t, t);
+    __m256 t4 = _mm256_mul_ps(t2, t2);
+    __m256 eval1 = _mm256_mul_ps(_mm256_set1_ps(1.0f/384.0f), t4);
+    eval1 = _mm256_fnmadd_ps(_mm256_set1_ps(1.0f/8.0f), t2, eval1);
+    eval1 = _mm256_add_ps(eval1, _mm256_set1_ps(1.0f));
+    
+    __m256 eval_blend_mask = _mm256_cmp_ps(x, _mm256_set1_ps(0.6403f), _CMP_LT_OQ);
+    __m256 eval = _mm256_blendv_ps(eval1, eval0, eval_blend_mask);
+    
+    eval = _mm256_or_ps(eval, sign);
+    
+    return eval;
+}
+
 // 4x4 matrix multiply : r = a * b.
 // NOTE: Matrices are assumed to be row-major.
-static inline void mtx4x4_mul(f32_m* r, f32* a, f32* b)
+static inline void mtx4x4_mul(mtx4x4_m* r, mtx4x4* a, mtx4x4* b)
 {
     /*
      *
@@ -124,24 +284,54 @@ static inline void mtx4x4_mul(f32_m* r, f32* a, f32* b)
     for(u64_m row = 0; row < 4; row++)
     {
         const __m128 v = _mm_fmadd_ps(
-            _mm_broadcast_ss(a + row*4 + 0),
-            _mm_loadu_ps(b + 0*4 + 0),
+            _mm_broadcast_ss(a->m + row*4 + 0),
+            _mm_loadu_ps(b->m + 0*4 + 0),
             _mm_fmadd_ps(
-                _mm_broadcast_ss(a + row*4 + 1),
-                _mm_loadu_ps(b + 1*4 + 0),
+                _mm_broadcast_ss(a->m + row*4 + 1),
+                _mm_loadu_ps(b->m + 1*4 + 0),
                 _mm_fmadd_ps(
-                    _mm_broadcast_ss(a + row*4 + 2),
-                    _mm_loadu_ps(b + 2*4 + 0),
+                    _mm_broadcast_ss(a->m + row*4 + 2),
+                    _mm_loadu_ps(b->m + 2*4 + 0),
                     _mm_mul_ps(
-                        _mm_broadcast_ss(a + row*4 + 3),
-                        _mm_loadu_ps(b + 3*4 + 0)
+                        _mm_broadcast_ss(a->m + row*4 + 3),
+                        _mm_loadu_ps(b->m + 3*4 + 0)
                     )
                 )
             )
         );
-        _mm_storeu_ps(r + row*4, v);
+        _mm_storeu_ps(r->m + row*4, v);
     }
 }
+
+#if 0
+static inline void make_x_axis_rotation_mtx(mtx4x4_m* r, f32 turns)
+{
+    __m256 a_v = approx_sin8(_mm256_setr_ps(TAU * turns, TAU * turns + H_PI, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f));
+    _Alignas(32) f32_m a[8];
+    _mm256_store_ps(a, a_v);
+    f32 sin_a = a[0];
+    f32 cos_a = a[1];
+
+    r->m[0] = 1.0f;   r->m[1] = 0.0f;   r->m[2] = 0.0f;    r->m[3] = 0.0f;
+    r->m[4] = 0.0f;   r->m[5] = cos_a;  r->m[6] = -sin_a;  r->m[7] = 0.0f;
+    r->m[8] = 0.0f;   r->m[9] = sin_a;  r->m[10] = cos_a;  r->m[11] = 0.0f;
+    r->m[12] = 0.0f;  r->m[13] = 0.0f;  r->m[14] = 0.0f;   r->m[15] = 1.0f;
+}
+
+static inline void make_y_axis_rotation_mtx(mtx4x4_m* r, float turns)
+{
+    __m256 a_v = approx_sin8(_mm256_setr_ps(TAU * turns, TAU * turns + H_PI, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f));
+    _Alignas(32) f32_m a[8];
+    _mm256_store_ps(a, a_v);
+    f32 sin_a = a[0];
+    f32 cos_a = a[1];
+
+    r->m[0] = cos_a;   r->m[1] = 0.0f;   r->m[2] = sin_a;   r->m[3] = 0.0f;
+    r->m[4] = 0.0f;    r->m[5] = 1.0f;   r->m[6] = 0.0f;    r->m[7] = 0.0f;
+    r->m[8] = -sin_a;  r->m[9] = 0.0f;   r->m[10] = cos_a;  r->m[11] = 0.0f;
+    r->m[12] = 0.0f;   r->m[13] = 0.0f;  r->m[14] = 0.0f;   r->m[15] = 1.0f;
+}
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -288,6 +478,8 @@ enum KeyboardKey
 {
     // https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes
     KB_ESCAPE = VK_ESCAPE,
+    KB_SPACE = VK_SPACE,
+    KB_LCTRL = VK_CONTROL,
     KB_0 = 0x30,    
     KB_1 = 0x31,    
     KB_2 = 0x32,    
@@ -682,6 +874,56 @@ int WinMainCRTStartup()
 
 
         {
+            // Camera controls
+            static f32_m cam_pitch_turns = 0.0f;
+            cam_pitch_turns += (float)is_key_down(KB_I) * 0.001f;
+            cam_pitch_turns -= (float)is_key_down(KB_K) * 0.001f;
+
+            static f32_m cam_yaw_turns = 0.0f;
+            cam_yaw_turns += (float)is_key_down(KB_J) * 0.001f;
+            cam_yaw_turns -= (float)is_key_down(KB_L) * 0.001f;
+
+            static v3_m cam_pos = {0};
+
+            // Camera forward is (0, 0, -1) because of the right-handed coordinate system. Camera looks along the -z axis.
+            // Theta goes from X to Y (90 deg) (yaw)
+            // Phi goes from Z to the XY plane (90 deg - pitch)
+            f32 cam_pitch_rad = -cam_pitch_turns * TAU;
+            f32 cam_yaw_rad = -cam_yaw_turns * TAU;
+            __m256 cam_sin_cos_pitch_v = approx_sin8(_mm256_setr_ps(cam_pitch_rad, cam_pitch_rad + H_PI, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f));
+            _Alignas(32) f32_m cam_sin_cos_pitch[8];
+            _mm256_store_ps(cam_sin_cos_pitch, cam_sin_cos_pitch_v);
+            __m256 cam_sin_cos_yaw_v = approx_sin8(_mm256_setr_ps(cam_yaw_rad, cam_yaw_rad + H_PI, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f));
+            _Alignas(32) f32_m cam_sin_cos_yaw[8];
+            _mm256_store_ps(cam_sin_cos_yaw, cam_sin_cos_yaw_v);
+            v3 K_cam = {
+                .m = {
+                    cam_sin_cos_yaw[0] * cam_sin_cos_pitch[1],
+                    cam_sin_cos_pitch[0],
+                    -cam_sin_cos_yaw[1] * cam_sin_cos_pitch[1],
+                }
+            };
+            v3 I_cam = v3_cross(K_cam, v3_up());
+            v3 J_cam = v3_cross(I_cam, K_cam);
+
+            f32 d_d0 = v3_dot(I_cam, J_cam);
+            f32 d_d1 = v3_dot(J_cam, K_cam);
+            f32 d_d2 = v3_dot(I_cam, K_cam);
+            ASSERT(d_d0 < 0.001f, "NOPE");
+            ASSERT(d_d1 < 0.001f, "NOPE");
+            ASSERT(d_d2 < 0.001f, "NOPE");
+
+
+            f32 speed = 0.1f;
+            cam_pos = v3_add(cam_pos, v3_scale(K_cam, -speed * (float)is_key_down(KB_W)));
+            cam_pos = v3_add(cam_pos, v3_scale(K_cam,  speed * (float)is_key_down(KB_S)));
+
+            cam_pos = v3_add(cam_pos, v3_scale(I_cam,  speed * (float)is_key_down(KB_D)));
+            cam_pos = v3_add(cam_pos, v3_scale(I_cam, -speed * (float)is_key_down(KB_A)));
+            
+            cam_pos = v3_add(cam_pos, v3_scale(J_cam,  speed * (float)is_key_down(KB_SPACE)));
+            cam_pos = v3_add(cam_pos, v3_scale(J_cam, -speed * (float)is_key_down(KB_LCTRL)));
+
             /*
              * World-to-camera matrix derivation:
              *
@@ -720,28 +962,13 @@ int WinMainCRTStartup()
              *
              */
 
-            // Camera forward is (0, 0, -1) because of the right-handed coordinate system. Camera looks along the -z axis.
-            f32 K_cam[] = {0.0f, 0.0f, -1.0f};
-            f32 J_cam[] = {0.0f, 1.0f,  0.0f};
-            f32 I_cam[] = {1.0f, 0.0f,  0.0f};
-            f32_m P_cam[] = {0.0f, 0.0f,  0.0f};
-
-            static f32_m x_offset = 0.0f;
-            static f32_m y_offset = 0.0f;
-            static f32_m z_offset = 0.0f;
-            x_offset += (float)is_key_down(KB_D) * 0.1f;
-            x_offset -= (float)is_key_down(KB_A) * 0.1f;
-            y_offset += (float)is_key_down(KB_W) * 0.1f;
-            y_offset -= (float)is_key_down(KB_S) * 0.1f;
-            P_cam[0] = x_offset;
-            P_cam[1] = y_offset;
-            P_cam[2] = z_offset;
-
-            f32 world_to_camera_mtx[] = {
-                I_cam[0], I_cam[1], I_cam[2], -P_cam[0],
-                J_cam[0], J_cam[1], J_cam[2], -P_cam[1],
-                K_cam[0], K_cam[1], K_cam[2], -P_cam[2],
-                    0.0f,     0.0f,     0.0f,      1.0f
+            mtx4x4_m world_to_cam_mtx = {
+                .m = {
+                    I_cam.m[0], I_cam.m[1], I_cam.m[2], -cam_pos.m[0],
+                    J_cam.m[0], J_cam.m[1], J_cam.m[2], -cam_pos.m[1],
+                    K_cam.m[0], K_cam.m[1], K_cam.m[2], -cam_pos.m[2],
+                          0.0f,       0.0f,       0.0f,          1.0f
+                }
             };
 
             /*
@@ -950,26 +1177,28 @@ int WinMainCRTStartup()
              */
 
             f32 aspect_ratio = (float)g_opengl_state->screen_height / (float)g_opengl_state->screen_width;
-            f32 C_w = 0.5f;
+            f32 C_w = 0.25f;
             f32 C_h = C_w * aspect_ratio;
 
             f32 n = 0.1f;
             f32 f = 1000.0f;
 
-            f32 proj_mtx[] = {
-                //    X         Y                Z                      W
-                n / C_w,     0.0f,            0.0f,                  0.0f,
-                   0.0f,  n / C_h,            0.0f,                  0.0f,
-                   0.0f,     0.0f,  2.0f / (n - f),  (n * 2.0f) / (n - f),
-                   0.0f,     0.0f,           -1.0f,                  0.0f,
+            mtx4x4 proj_mtx = {
+                .m = {
+                    //    X         Y                Z                      W
+                    n / C_w,     0.0f,            0.0f,                  0.0f,
+                       0.0f,  n / C_h,            0.0f,                  0.0f,
+                       0.0f,     0.0f,  2.0f / (n - f),  (n * 2.0f) / (n - f),
+                       0.0f,     0.0f,           -1.0f,                  0.0f,
+                }
             };
 
-            f32_m cam_proj_mtx[4 * 4];
-            mtx4x4_mul(cam_proj_mtx, proj_mtx, world_to_camera_mtx);
+            mtx4x4_m cam_proj_mtx;
+            mtx4x4_mul(&cam_proj_mtx, &proj_mtx, &world_to_cam_mtx);
 
             GLint loc;
             CALL_GL_RET(&loc, GLint, glGetUniformLocation, g_opengl_state->shader_program, "m_proj");
-            CALL_GL(glUniformMatrix4fv, loc, 1, 1, &cam_proj_mtx[0]);
+            CALL_GL(glUniformMatrix4fv, loc, 1, 1, &cam_proj_mtx.m[0]);
             ASSERT(loc != -1, "Failed to bind uniform.");
         }
 
