@@ -12,11 +12,17 @@
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Globals
+// Globals and defines
 
 HANDLE g_log_file;
 struct OpenGLState* g_opengl_state;
 struct InputState* g_input_state;
+s64_m g_clock_freq;
+
+// TODO(mfritz) Should not be global
+struct DrawData* g_draw_data;
+
+#define ENGINE_FRAME_DURATION_US 16666LL / 2LL
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -264,6 +270,14 @@ MAYBE_UNUSED static inline v3 v3_normalize(v3 a)
     return r;
 }
 
+static inline __m256 lerp8(__m256 a, __m256 b, __m256 t)
+{
+    return _mm256_add_ps(
+            _mm256_mul_ps(_mm256_sub_ps(_mm256_set1_ps(1.0f), t), a),
+            _mm256_mul_ps(t, b)
+            );
+}
+
 MAYBE_UNUSED static inline __m256 approx_sin8(__m256 x)
 {
     const __m256 pi       = _mm256_set1_ps(PI);
@@ -317,6 +331,12 @@ MAYBE_UNUSED static inline __m256 approx_sin8(__m256 x)
     eval = _mm256_or_ps(eval, sign);
     
     return eval;
+}
+
+MAYBE_UNUSED static inline __m256 approx_cos8(__m256 x)
+{
+    const __m256 h_pi = _mm256_set1_ps(0.5f * 3.14159265f);
+    return approx_sin8(_mm256_sub_ps(x, h_pi));
 }
 
 // 4x4 matrix multiply : r = a * b.
@@ -374,7 +394,6 @@ MAYBE_UNUSED static inline void mtx4x4_mul(mtx4x4_m* r, mtx4x4* a, mtx4x4* b)
     }
 }
 
-#if 1
 MAYBE_UNUSED static inline void make_x_axis_rotation_mtx(mtx4x4_m* r, f32 turns)
 {
     __m256 a_v = approx_sin8(_mm256_setr_ps(TAU * turns, TAU * turns + H_PI, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f));
@@ -411,7 +430,100 @@ MAYBE_UNUSED static inline void make_translation_mtx(mtx4x4_m* r, v3 v)
     r->m[12] = 0.0f;  r->m[13] = 0.0f;   r->m[14] = 0.0f;  r->m[15] = 1.0f;
 }
 
-#endif
+MAYBE_UNUSED static inline u32 rand_u32(u32_m n)
+{
+    n ^= n << 13;
+    n ^= n >> 17;
+    n ^= n << 5;
+    return n;
+}
+
+// NOTE: Should not initialize this with the result of rand_u32(). That will cause the 8 lanes to produce the same random numbers in sequence repeatedly.
+MAYBE_UNUSED static inline __m256i rand8_u32(__m256i n)
+{
+    n = _mm256_xor_si256(n, _mm256_slli_epi32(n, 13));
+    n = _mm256_mullo_epi32(n, _mm256_set1_epi32(182376581));
+    n = _mm256_xor_si256(n, _mm256_srli_epi32(n, 17));
+    n = _mm256_mullo_epi32(n, _mm256_set1_epi32(783456103));
+    n = _mm256_xor_si256(n, _mm256_slli_epi32(n, 5));
+    n = _mm256_mullo_epi32(n, _mm256_set1_epi32(53523));
+    return n;
+}
+
+
+MAYBE_UNUSED static inline __m256 pnoise8_calc_gradient(__m256 x, __m256 y, __m256 z, __m256 vx, __m256 vy, __m256 vz)
+{
+    u32 num_sphere_points = 1 << 16;
+    // Create noise
+    __m256i i_noise = rand8_u32(_mm256_castps_si256(_mm256_xor_ps(_mm256_xor_ps(vx, vy), vz)));
+    i_noise = _mm256_and_si256(i_noise, _mm256_set1_epi32(num_sphere_points - 1));
+    // Use random number to index points on a sphere.
+    const __m256 noise = _mm256_cvtepi32_ps(i_noise);
+    const __m256 u = _mm256_fmsub_ps(_mm256_set1_ps(2.0f / (f32)(num_sphere_points - 1)), noise, _mm256_set1_ps(1.0f));
+    const __m256 t = _mm256_mul_ps(_mm256_set1_ps(10.166640738f), noise);
+    const __m256 up = _mm256_sqrt_ps(
+            _mm256_max_ps(
+                _mm256_set1_ps(0.0f),
+                _mm256_fnmadd_ps(u, u, _mm256_set1_ps(1.0f))
+                )
+            );
+    const __m256 gx = _mm256_mul_ps(up, approx_cos8(t));
+    const __m256 gy = _mm256_mul_ps(up, approx_sin8(t));
+    const __m256 gz = u;
+
+    __m256 dx = _mm256_sub_ps(x, vx);
+    __m256 dy = _mm256_sub_ps(y, vy);
+    __m256 dz = _mm256_sub_ps(z, vz);
+    const __m256 result = _mm256_fmadd_ps(gx, dx, _mm256_fmadd_ps(gy, dy, _mm256_mul_ps(gz, dz)));
+    return result;
+}
+
+MAYBE_UNUSED static inline __m256 pnoise8(const __m256 x, const __m256 y, const __m256 z)
+{
+    __m256 x0 = _mm256_round_ps(x, (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+    __m256 x1 = _mm256_round_ps(_mm256_add_ps(x, _mm256_set1_ps(1.0f)), (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+    __m256 y0 = _mm256_round_ps(y, (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+    __m256 y1 = _mm256_round_ps(_mm256_add_ps(y, _mm256_set1_ps(1.0f)), (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+    __m256 z0 = _mm256_round_ps(z, (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+    __m256 z1 = _mm256_round_ps(_mm256_add_ps(z, _mm256_set1_ps(1.0f)), (_MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+
+    // Handle the case where e.g. x is 1.99999988. x0 will be 1 and x1 will be 3 (1.99999988f + 1.0f = 3.0f).
+    // If x1 - x0 > 1, x1--
+    __m256 sub_mask = _mm256_cmp_ps(_mm256_sub_ps(x1, x0), _mm256_set1_ps(1.0f), _CMP_GT_OQ);
+    x1 = _mm256_sub_ps(x1, _mm256_and_ps(_mm256_set1_ps(1.0f), sub_mask));
+    sub_mask = _mm256_cmp_ps(_mm256_sub_ps(y1, y0), _mm256_set1_ps(1.0f), _CMP_GT_OQ);
+    y1 = _mm256_sub_ps(y1, _mm256_and_ps(_mm256_set1_ps(1.0f), sub_mask));
+    sub_mask = _mm256_cmp_ps(_mm256_sub_ps(z1, z0), _mm256_set1_ps(1.0f), _CMP_GT_OQ);
+    z1 = _mm256_sub_ps(z1, _mm256_and_ps(_mm256_set1_ps(1.0f), sub_mask));
+
+    // Smooth t.
+    const __m256 dx0 = _mm256_sub_ps(x, x0);
+    const __m256 dy0 = _mm256_sub_ps(y, y0);
+    const __m256 dz0 = _mm256_sub_ps(z, z0);
+    const __m256 tx = _mm256_mul_ps(dx0, _mm256_mul_ps(dx0, _mm256_sub_ps(_mm256_set1_ps(3.0f), _mm256_mul_ps(dx0, _mm256_set1_ps(2.0f)))));
+    const __m256 ty = _mm256_mul_ps(dy0, _mm256_mul_ps(dy0, _mm256_sub_ps(_mm256_set1_ps(3.0f), _mm256_mul_ps(dy0, _mm256_set1_ps(2.0f)))));
+    const __m256 tz = _mm256_mul_ps(dz0, _mm256_mul_ps(dz0, _mm256_sub_ps(_mm256_set1_ps(3.0f), _mm256_mul_ps(dz0, _mm256_set1_ps(2.0f)))));
+
+    __m256 p0 = pnoise8_calc_gradient(x, y, z, x0, y0, z0);
+    __m256 p1 = pnoise8_calc_gradient(x, y, z, x1, y0, z0);
+    __m256 r0 = lerp8(p0, p1, tx);
+    p0 = pnoise8_calc_gradient(x, y, z, x0, y1, z0);
+    p1 = pnoise8_calc_gradient(x, y, z, x1, y1, z0);
+    __m256 r1 = lerp8(p0, p1, tx);
+    __m256 r2 = lerp8(r0, r1, ty);
+
+    p0 = pnoise8_calc_gradient(x, y, z, x0, y0, z1);
+    p1 = pnoise8_calc_gradient(x, y, z, x1, y0, z1);
+    r0 = lerp8(p0, p1, tx);
+    p0 = pnoise8_calc_gradient(x, y, z, x0, y1, z1);
+    p1 = pnoise8_calc_gradient(x, y, z, x1, y1, z1);
+    r1 = lerp8(p0, p1, tx);
+    __m256 r3 = lerp8(r0, r1, ty);
+    
+    __m256 r4 = lerp8(r2, r3, tz);
+
+    return r4;
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -425,12 +537,14 @@ typedef signed long long int GLsizeiptr;
 typedef signed long long int GLintptr;
 typedef char GLchar;
 #define GL_ELEMENT_ARRAY_BUFFER 0x8893
+#define GL_STATIC_DRAW 0x88E4
 #define GL_DYNAMIC_DRAW 0x88E8
 #define GL_ARRAY_BUFFER 0x8892
 #define GL_VERTEX_SHADER 0x8B31
 #define GL_FRAGMENT_SHADER 0x8B30
 #define GL_COMPILE_STATUS 0x8B81
 #define GL_LINK_STATUS 0x8B82
+#define GL_CLAMP_TO_EDGE 0x812F
 
 // https://www.khronos.org/opengl/wiki/Load_OpenGL_Functions
 void *load_gl_fn(HMODULE opengl32_dll_module, const char *name)
@@ -471,12 +585,18 @@ typedef void (*fnptr_glGetProgramInfoLog)(GLuint program, GLsizei maxLength, GLs
 typedef void (*fnptr_glDeleteShader)(GLuint shader);
 typedef void (*fnptr_glUseProgram)(GLuint program);
 typedef void (*fnptr_glBufferSubData)(GLenum target, GLintptr offset, GLsizeiptr size, const void * data);
+typedef void (*fnptr_glDrawArrays)(GLenum mode, GLint first, GLsizei count);
+typedef void (*fnptr_glDrawArraysInstanced)(GLenum mode, GLint first, GLsizei count, GLsizei instancecount);
 typedef void (*fnptr_glDrawElementsInstanced)(GLenum mode, GLsizei count, GLenum type, const void * indices, GLsizei instancecount);
 typedef GLint (*fnptr_glGetUniformLocation)(GLuint program, const GLchar *name);
 typedef void (*fnptr_glUniformMatrix4fv)(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value);
 typedef void (*fnptr_glUniformMatrix4fv)(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value);
 typedef void (*fnptr_glVertexAttribDivisor)(GLuint index, GLuint divisor);
-typedef void (*fnptr_glDrawArraysInstanced)(GLenum mode, GLint first, GLsizei count, GLsizei instancecount);
+typedef void (*fnptr_glGenTextures)(GLsizei n, GLuint * textures);
+typedef void (*fnptr_glBindTexture)(GLenum target, GLuint texture);
+typedef void (*fnptr_glTexParameteri)(GLenum target, GLenum pname, GLint param);
+typedef void (*fnptr_glTexImage2D)(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void * data);
+typedef void (*fnptr_glTexSubImage2D)(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const void * pixels);
 
 
 #define VERTEX_ARRAY_BYTES MB(1)
@@ -485,8 +605,8 @@ typedef void (*fnptr_glDrawArraysInstanced)(GLenum mode, GLint first, GLsizei co
 struct OpenGLState
 {
     HWND hwnd;
-    u64_m screen_width;
-    u64_m screen_height;
+    u32_m screen_width;
+    u32_m screen_height;
 
     HGLRC gl_context;
     GLuint last_gl_error;
@@ -517,6 +637,11 @@ struct OpenGLState
     GLuint debug_line_instanced_vertex_buffer_object_color_b;
     GLuint debug_line_shader_program;
 
+    GLuint fullscreen_quad_vertex_array_object;
+    GLuint fullscreen_quad_vertex_buffer_object_pos;
+    GLuint fullscreen_quad_texture;
+    GLuint textured_quad_shader_program;
+
     fnptr_wglCreateContextAttribsARB wglCreateContextAttribsARB;
     fnptr_glGetError glGetError;
     fnptr_glGenVertexArrays glGenVertexArrays;
@@ -539,11 +664,17 @@ struct OpenGLState
     fnptr_glDeleteShader glDeleteShader;
     fnptr_glUseProgram glUseProgram;
     fnptr_glBufferSubData glBufferSubData;
+    fnptr_glDrawArrays glDrawArrays;
+    fnptr_glDrawArraysInstanced glDrawArraysInstanced;
     fnptr_glDrawElementsInstanced glDrawElementsInstanced;
     fnptr_glGetUniformLocation glGetUniformLocation;
     fnptr_glUniformMatrix4fv glUniformMatrix4fv;
     fnptr_glVertexAttribDivisor glVertexAttribDivisor;
-    fnptr_glDrawArraysInstanced glDrawArraysInstanced;
+    fnptr_glGenTextures glGenTextures;
+    fnptr_glBindTexture glBindTexture;
+    fnptr_glTexParameteri glTexParameteri;
+    fnptr_glTexImage2D glTexImage2D;
+    fnptr_glTexSubImage2D glTexSubImage2D;
 };
 
 #define CALL_GL(fn, ...) \
@@ -587,6 +718,56 @@ MAYBE_UNUSED static u32 s_cube_mesh_indices[] =
     6, 5, 7, // +Z
 };
 
+static GLuint make_shader_program(const char* vertex_source, const char* fragment_source)
+{
+    GLsizei debug_info_len;
+    char debug_info_buf[512];
+    GLint shader_compile_success;
+
+    GLuint vertex_shader;
+    CALL_GL_RET(&vertex_shader, GLuint, glCreateShader, GL_VERTEX_SHADER);
+    CALL_GL(glShaderSource, vertex_shader, 1, &vertex_source, NULL);
+    CALL_GL(glCompileShader, vertex_shader);
+    CALL_GL(glGetShaderiv, vertex_shader, GL_COMPILE_STATUS, &shader_compile_success);
+    if(!shader_compile_success)
+    {
+        CALL_GL(glGetShaderInfoLog, vertex_shader, sizeof(debug_info_buf), &debug_info_len, debug_info_buf);
+        WriteFile(g_log_file, debug_info_buf, debug_info_len, NULL, NULL);
+        ASSERT(0, "Failed to compile vertex shader.");
+    }
+
+    GLuint fragment_shader;
+    CALL_GL_RET(&fragment_shader, GLuint, glCreateShader, GL_FRAGMENT_SHADER);
+    CALL_GL(glShaderSource, fragment_shader, 1, &fragment_source, NULL);
+    CALL_GL(glCompileShader, fragment_shader);
+    CALL_GL(glGetShaderiv, fragment_shader, GL_COMPILE_STATUS, &shader_compile_success);
+    if(!shader_compile_success)
+    {
+        CALL_GL(glGetShaderInfoLog, vertex_shader, sizeof(debug_info_buf), &debug_info_len, debug_info_buf);
+        WriteFile(g_log_file, debug_info_buf, debug_info_len, NULL, NULL);
+        ASSERT(0, "Failed to compile fragment shader.");
+    }
+
+    u32_m result_program;
+    CALL_GL_RET(&result_program, GLuint, glCreateProgram);
+    CALL_GL(glAttachShader, result_program, vertex_shader);
+    CALL_GL(glAttachShader, result_program, fragment_shader);
+    CALL_GL(glLinkProgram, result_program);
+    
+    CALL_GL(glGetProgramiv, result_program, GL_LINK_STATUS, &shader_compile_success);
+    if(!shader_compile_success)
+    {
+        CALL_GL(glGetProgramInfoLog, result_program, sizeof(debug_info_buf), &debug_info_len, debug_info_buf);
+        WriteFile(g_log_file, debug_info_buf, debug_info_len, NULL, NULL);
+        ASSERT(0, "Failed to link shader.");
+    }
+    
+    CALL_GL(glDeleteShader, vertex_shader);
+    CALL_GL(glDeleteShader, fragment_shader); 
+
+    return result_program;
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
@@ -595,8 +776,12 @@ MAYBE_UNUSED static u32 s_cube_mesh_indices[] =
 /// Draw array
 
 #define MAX_ARROWS 1024
-struct DrawArray
+struct DrawData
 {
+    u32_m frame_buffer_width;
+    u32_m frame_buffer_height;
+    u32_m* frame_buffer;
+
     u32_m num_arrows;
     f32_m arrows_start_x[MAX_ARROWS];
     f32_m arrows_start_y[MAX_ARROWS];
@@ -609,23 +794,33 @@ struct DrawArray
     f32_m arrows_color_b[MAX_ARROWS];
 };
 
-MAYBE_UNUSED static inline void reset_draw_array(struct DrawArray* draw_array)
+MAYBE_UNUSED static inline void init_draw_data(struct DrawData* draw_data, u32 screen_width, u32 screen_height, struct MemoryArena* memory_arena)
 {
-    draw_array->num_arrows = 0;
+    draw_data->num_arrows = 0;
+
+    draw_data->frame_buffer_width = screen_width;
+    draw_data->frame_buffer_height = screen_height;
+    draw_data->frame_buffer = (u32_m*)MEMORY_ARENA_ALLOCATE_ZEROED(memory_arena, screen_width * screen_height * sizeof(u32));
 }
 
-MAYBE_UNUSED static inline void draw_arrow(struct DrawArray* draw_array, v3 start, v3 end, v3 color)
+MAYBE_UNUSED static inline void reset_draw_data(struct DrawData* draw_data)
 {
-    u64 n = draw_array->num_arrows++;
-    draw_array->arrows_start_x[n] = start.x;
-    draw_array->arrows_start_y[n] = start.y;
-    draw_array->arrows_start_z[n] = start.z;
-    draw_array->arrows_end_x[n] = end.x;
-    draw_array->arrows_end_y[n] = end.y;
-    draw_array->arrows_end_z[n] = end.z;
-    draw_array->arrows_color_r[n] = color.x;
-    draw_array->arrows_color_g[n] = color.y;
-    draw_array->arrows_color_b[n] = color.z;
+    draw_data->num_arrows = 0;
+    memset(draw_data->frame_buffer, 0, draw_data->frame_buffer_width * draw_data->frame_buffer_height * sizeof(u32));
+}
+
+MAYBE_UNUSED static inline void draw_arrow(struct DrawData* draw_data, v3 start, v3 end, v3 color)
+{
+    u64 n = draw_data->num_arrows++;
+    draw_data->arrows_start_x[n] = start.x;
+    draw_data->arrows_start_y[n] = start.y;
+    draw_data->arrows_start_z[n] = start.z;
+    draw_data->arrows_end_x[n] = end.x;
+    draw_data->arrows_end_y[n] = end.y;
+    draw_data->arrows_end_z[n] = end.z;
+    draw_data->arrows_color_r[n] = color.x;
+    draw_data->arrows_color_g[n] = color.y;
+    draw_data->arrows_color_b[n] = color.z;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -641,6 +836,15 @@ struct InputState
 {
     u32_m key[MAX_KEYBOARD_KEYS];
     u32_m mouse_key[MAX_MOUSE_KEYS];
+
+    u32_m last_key[MAX_KEYBOARD_KEYS];
+    u32_m last_mouse_key[MAX_MOUSE_KEYS];
+
+    u32_m fps_mode; 
+    s32_m mouse_screen_pos_x;
+    s32_m mouse_screen_pos_y;
+    s32_m mouse_screen_dx;
+    s32_m mouse_screen_dy;
 };
 
 enum KeyboardKey
@@ -687,13 +891,59 @@ enum KeyboardKey
     KB_Z = 0x5A,    
 };
 
-static inline u32 is_key_down(enum KeyboardKey k)
+static inline u32 is_key_down(const struct InputState* input_state, enum KeyboardKey k)
 {
     ASSERT(k >= 0, "is_key_down key code underflow");
     ASSERT(k < MAX_KEYBOARD_KEYS, "is_key_down key code overflow");
-    return g_input_state->key[(u32)k];
+    return input_state->key[(u32)k];
 }
 
+static inline u32 is_key_toggled_down(const struct InputState* input_state, enum KeyboardKey k)
+{
+    ASSERT(k >= 0, "is_key_down key code underflow");
+    ASSERT(k < MAX_KEYBOARD_KEYS, "is_key_down key code overflow");
+    return input_state->key[(u32)k] && !input_state->last_key[(u32)k];
+}
+
+static inline void show_cursor(u32_m show)
+{
+    if(show)
+    {
+        // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showcursor
+        s32_m show_cursor_display_counter = ShowCursor(0);
+        while(show_cursor_display_counter >= 0)
+        {
+            show_cursor_display_counter = ShowCursor(0);
+        }
+    }
+    else
+    {
+        // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showcursor
+        s32_m show_cursor_display_counter = ShowCursor(1);
+        while(show_cursor_display_counter < 0)
+        {
+            show_cursor_display_counter = ShowCursor(1);
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Time
+static s64 get_timestamp_us()
+{
+    // https://learn.microsoft.com/en-us/windows/win32/sysinfo/acquiring-high-resolution-time-stamps
+    LARGE_INTEGER cy;
+    QueryPerformanceCounter(&cy);
+    cy.QuadPart *= 1000000LL;
+    cy.QuadPart /= g_clock_freq;
+    s64 result_us = cy.QuadPart;
+    ASSERT(result_us >= 0, "get_timestamp_us overflow.");
+    return result_us;
+}
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
@@ -740,6 +990,25 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             break;
         }
 
+        case WM_MOUSEMOVE: 
+        {
+            struct InputState* input_state = g_input_state;
+            if(input_state->fps_mode)
+            {
+                RECT clip_rect;
+                const BOOL get_client_rect_success = GetWindowRect(g_opengl_state->hwnd, &clip_rect);
+                ASSERT(get_client_rect_success, "GetWindowRect failed.");
+                const BOOL clip_cursor_success = ClipCursor(&clip_rect);
+                ASSERT(clip_cursor_success, "ClipCursor failed.");
+            }
+            else
+            {
+                const BOOL clip_cursor_success = ClipCursor(NULL);
+                ASSERT(clip_cursor_success, "ClipCursor failed.");
+            }
+            break;
+        }
+
         case WM_SIZE:
         {
             const UINT width = LOWORD(lParam);
@@ -750,11 +1019,19 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             break;
         }
 
+        case WM_KILLFOCUS:
+        {
+            struct InputState* input_state = g_input_state;
+            input_state->fps_mode = 0;
+            break;
+        }
+
         case WM_DESTROY:
         {
             // https://learn.microsoft.com/en-us/windows/win32/learnwin32/closing-the-window?redirectedfrom=MSDN
             PostQuitMessage(0);
             return 0;
+            
         }
 
         default:
@@ -767,6 +1044,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     return result;
 }
 
+static void do_one_frame();
+
 int WinMainCRTStartup()
 {
     // Init logging file.
@@ -778,17 +1057,13 @@ int WinMainCRTStartup()
     void* main_memory_arena_starting_address = (void*)0x100000;
     u64 main_memory_arena_cap = MB(10);
     void* main_memory_arena_storage = VirtualAlloc(
-      main_memory_arena_starting_address,
-      main_memory_arena_cap,
-      MEM_RESERVE | MEM_COMMIT,
-      PAGE_READWRITE
+        main_memory_arena_starting_address,
+        main_memory_arena_cap,
+        MEM_RESERVE | MEM_COMMIT,
+        PAGE_READWRITE
     );
     ASSERT(main_memory_arena_storage, "Could not allocate main memory arena.");
     struct MemoryArena main_memory_arena = memory_arena_init(main_memory_arena_storage, main_memory_arena_cap);
-
-
-    // Init engine input state.
-    g_input_state = (struct InputState*)MEMORY_ARENA_ALLOCATE_ZEROED(&main_memory_arena, sizeof(*g_input_state));
 
 
     // Init engine graphics state.
@@ -805,14 +1080,17 @@ int WinMainCRTStartup()
         ATOM register_class_result = RegisterClass(&window_class);
         ASSERT(register_class_result, "Register class failed");
 
-        u64 window_width = GetSystemMetrics(SM_CXSCREEN) / 2;
-        u64 window_height = GetSystemMetrics(SM_CYSCREEN) / 2;
-        g_opengl_state->hwnd = CreateWindowEx(0,                     // Extended style
+        u64 window_width = 1920;
+        u64 window_height = 1080;
+        u64 window_start_x = (GetSystemMetrics(SM_CXSCREEN) - window_width) / 2;
+        u64 window_start_y = (GetSystemMetrics(SM_CYSCREEN) - window_height) / 2;
+        g_opengl_state->hwnd = CreateWindowEx(0,          // Extended style
                 window_class.lpszClassName,               // Class name
                 "",                                       // Window name
-                WS_OVERLAPPEDWINDOW | WS_VISIBLE,         // Style of the window
-                0,                                        // Initial X position
-                0,                                        // Initial Y position
+                //WS_OVERLAPPEDWINDOW | WS_VISIBLE,       // Style of the window
+                WS_POPUP | WS_VISIBLE,                    // Style of the window
+                (int)window_start_x,                      // Initial X position
+                (int)window_start_y,                      // Initial Y position
                 (int)window_width,                        // Initial width
                 (int)window_height,                       // Initial height
                 0,                                        // Handle to the window parent
@@ -820,7 +1098,6 @@ int WinMainCRTStartup()
                 hinstance,                                // Handle to an instance
                 0);
         ASSERT(g_opengl_state->hwnd != NULL, "Failed to create a window");
-
 
         const HDC dc = GetDC(g_opengl_state->hwnd);
         ASSERT(dc != NULL, "GetDC failed.");
@@ -830,6 +1107,9 @@ int WinMainCRTStartup()
         ASSERT(get_client_rect_success, "GetClientRect failed.");
         g_opengl_state->screen_width = client_rect.right;
         g_opengl_state->screen_height = client_rect.bottom;
+
+        BOOL clip_cursor_success = ClipCursor(&client_rect);
+        ASSERT(clip_cursor_success, "ClipCursor failed.");
 
         HMODULE opengl32_dll_module = LoadLibraryA("opengl32.dll");
         ASSERT(opengl32_dll_module != NULL, "Could not load opengl32.dll");
@@ -897,16 +1177,23 @@ int WinMainCRTStartup()
         g_opengl_state->glDeleteShader = (fnptr_glDeleteShader)load_gl_fn(opengl32_dll_module, "glDeleteShader");
         g_opengl_state->glUseProgram = (fnptr_glUseProgram)load_gl_fn(opengl32_dll_module, "glUseProgram");
         g_opengl_state->glBufferSubData = (fnptr_glBufferSubData)load_gl_fn(opengl32_dll_module, "glBufferSubData");
+        g_opengl_state->glDrawArrays = (fnptr_glDrawArrays)load_gl_fn(opengl32_dll_module, "glDrawArrays");
+        g_opengl_state->glDrawArraysInstanced = (fnptr_glDrawArraysInstanced)load_gl_fn(opengl32_dll_module, "glDrawArraysInstanced");
         g_opengl_state->glDrawElementsInstanced = (fnptr_glDrawElementsInstanced)load_gl_fn(opengl32_dll_module, "glDrawElementsInstanced");
         g_opengl_state->glGetUniformLocation = (fnptr_glGetUniformLocation)load_gl_fn(opengl32_dll_module, "glGetUniformLocation");
         g_opengl_state->glUniformMatrix4fv = (fnptr_glUniformMatrix4fv)load_gl_fn(opengl32_dll_module, "glUniformMatrix4fv");
         g_opengl_state->glVertexAttribDivisor = (fnptr_glVertexAttribDivisor)load_gl_fn(opengl32_dll_module, "glVertexAttribDivisor");
-        g_opengl_state->glDrawArraysInstanced = (fnptr_glDrawArraysInstanced)load_gl_fn(opengl32_dll_module, "glDrawArraysInstanced");
+
+        g_opengl_state->glGenTextures = (fnptr_glGenTextures)load_gl_fn(opengl32_dll_module, "glGenTextures");
+        g_opengl_state->glBindTexture = (fnptr_glBindTexture)load_gl_fn(opengl32_dll_module, "glBindTexture");
+        g_opengl_state->glTexParameteri = (fnptr_glTexParameteri)load_gl_fn(opengl32_dll_module, "glTexParameteri");
+        g_opengl_state->glTexImage2D = (fnptr_glTexImage2D)load_gl_fn(opengl32_dll_module, "glTexImage2D");
+        g_opengl_state->glTexSubImage2D = (fnptr_glTexSubImage2D)load_gl_fn(opengl32_dll_module, "glTexSubImage2D");
 
         glViewport(0, 0, (GLsizei)g_opengl_state->screen_width, (GLsizei)g_opengl_state->screen_height);
         glEnable(GL_CULL_FACE);
         glCullFace(GL_BACK);
-        glFrontFace(GL_CW);
+        glFrontFace(GL_CCW);
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
 
@@ -1032,50 +1319,7 @@ int WinMainCRTStartup()
                 "    result_frag_color = vec4(v_color, 1.0f);\n"
                 "}\n"
                 "\n";
-
-            GLsizei debug_info_len;
-            char debug_info_buf[512];
-            GLint shader_compile_success;
-
-            GLuint vertex_shader;
-            CALL_GL_RET(&vertex_shader, GLuint, glCreateShader, GL_VERTEX_SHADER);
-            CALL_GL(glShaderSource, vertex_shader, 1, &vertex_source, NULL);
-            CALL_GL(glCompileShader, vertex_shader);
-            CALL_GL(glGetShaderiv, vertex_shader, GL_COMPILE_STATUS, &shader_compile_success);
-            if(!shader_compile_success)
-            {
-                CALL_GL(glGetShaderInfoLog, vertex_shader, sizeof(debug_info_buf), &debug_info_len, debug_info_buf);
-                WriteFile(g_log_file, debug_info_buf, debug_info_len, NULL, NULL);
-                ASSERT(0, "Failed to compile shader.");
-            }
-
-            GLuint fragment_shader;
-            CALL_GL_RET(&fragment_shader, GLuint, glCreateShader, GL_FRAGMENT_SHADER);
-            CALL_GL(glShaderSource, fragment_shader, 1, &fragment_source, NULL);
-            CALL_GL(glCompileShader, fragment_shader);
-            CALL_GL(glGetShaderiv, fragment_shader, GL_COMPILE_STATUS, &shader_compile_success);
-            if(!shader_compile_success)
-            {
-                CALL_GL(glGetShaderInfoLog, vertex_shader, sizeof(debug_info_buf), &debug_info_len, debug_info_buf);
-                WriteFile(g_log_file, debug_info_buf, debug_info_len, NULL, NULL);
-                ASSERT(0, "Failed to compile shader.");
-            }
-
-            CALL_GL_RET(&g_opengl_state->shader_program, GLuint, glCreateProgram);
-            CALL_GL(glAttachShader, g_opengl_state->shader_program, vertex_shader);
-            CALL_GL(glAttachShader, g_opengl_state->shader_program, fragment_shader);
-            CALL_GL(glLinkProgram, g_opengl_state->shader_program);
-            
-            CALL_GL(glGetProgramiv, g_opengl_state->shader_program, GL_LINK_STATUS, &shader_compile_success);
-            if(!shader_compile_success)
-            {
-                CALL_GL(glGetProgramInfoLog, g_opengl_state->shader_program, sizeof(debug_info_buf), &debug_info_len, debug_info_buf);
-                WriteFile(g_log_file, debug_info_buf, debug_info_len, NULL, NULL);
-                ASSERT(0, "Failed to link shader.");
-            }
-            
-            CALL_GL(glDeleteShader, vertex_shader);
-            CALL_GL(glDeleteShader, fragment_shader); 
+            g_opengl_state->shader_program = make_shader_program(vertex_source, fragment_source);
         }
 
 
@@ -1212,62 +1456,105 @@ int WinMainCRTStartup()
                 "    result_frag_color = vec4(v_color, 1.0f);\n"
                 "}\n"
                 "\n";
+            g_opengl_state->debug_line_shader_program = make_shader_program(vertex_source, fragment_source);
+        }
 
-            GLsizei debug_info_len;
-            char debug_info_buf[512];
-            GLint shader_compile_success;
 
-            GLuint vertex_shader;
-            CALL_GL_RET(&vertex_shader, GLuint, glCreateShader, GL_VERTEX_SHADER);
-            CALL_GL(glShaderSource, vertex_shader, 1, &vertex_source, NULL);
-            CALL_GL(glCompileShader, vertex_shader);
-            CALL_GL(glGetShaderiv, vertex_shader, GL_COMPILE_STATUS, &shader_compile_success);
-            if(!shader_compile_success)
-            {
-                CALL_GL(glGetShaderInfoLog, vertex_shader, sizeof(debug_info_buf), &debug_info_len, debug_info_buf);
-                WriteFile(g_log_file, debug_info_buf, debug_info_len, NULL, NULL);
-                ASSERT(0, "Failed to compile shader.");
-            }
+        {
+            CALL_GL(glGenTextures, 1, &g_opengl_state->fullscreen_quad_texture);
+            CALL_GL(glBindTexture, GL_TEXTURE_2D, g_opengl_state->fullscreen_quad_texture);
+            CALL_GL(glTexParameteri, GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            CALL_GL(glTexParameteri, GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            CALL_GL(glTexParameteri, GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            CALL_GL(glTexParameteri, GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-            GLuint fragment_shader;
-            CALL_GL_RET(&fragment_shader, GLuint, glCreateShader, GL_FRAGMENT_SHADER);
-            CALL_GL(glShaderSource, fragment_shader, 1, &fragment_source, NULL);
-            CALL_GL(glCompileShader, fragment_shader);
-            CALL_GL(glGetShaderiv, fragment_shader, GL_COMPILE_STATUS, &shader_compile_success);
-            if(!shader_compile_success)
-            {
-                CALL_GL(glGetShaderInfoLog, vertex_shader, sizeof(debug_info_buf), &debug_info_len, debug_info_buf);
-                WriteFile(g_log_file, debug_info_buf, debug_info_len, NULL, NULL);
-                ASSERT(0, "Failed to compile shader.");
-            }
+            CALL_GL(glTexImage2D, GL_TEXTURE_2D,
+                         0,
+                         GL_RGBA,
+                         g_opengl_state->screen_width,
+                         g_opengl_state->screen_height,
+                         0,
+                         GL_RGBA,
+                         GL_UNSIGNED_BYTE,
+                         NULL);
+            const char* vertex_source =
+                "#version 330 core\n"
+                "layout (location = 0) in vec2 a_pos;\n"
+                "out vec2 v_uv;\n"
+                "void main()\n"
+                "{\n"
+                "    v_uv = a_pos * 0.5f + vec2(0.5f, 0.5f);\n"
+                "    gl_Position = vec4(a_pos, 0.0f, 1.0f);\n"
+                "}\n"
+                "\n";
+            const char* fragment_source =
+                "#version 330 core\n"
+                "uniform sampler2D tex_sampler;\n"
+                "in vec2 v_uv;\n"
+                "out vec4 result_frag_color;\n"
+                "void main()\n"
+                "{\n"
+                "    result_frag_color = texture(tex_sampler, v_uv);\n"
+                "}\n"
+                "\n";
+            g_opengl_state->textured_quad_shader_program = make_shader_program(vertex_source, fragment_source);
 
-            CALL_GL_RET(&g_opengl_state->debug_line_shader_program, GLuint, glCreateProgram);
-            CALL_GL(glAttachShader, g_opengl_state->debug_line_shader_program, vertex_shader);
-            CALL_GL(glAttachShader, g_opengl_state->debug_line_shader_program, fragment_shader);
-            CALL_GL(glLinkProgram, g_opengl_state->debug_line_shader_program);
-            
-            CALL_GL(glGetProgramiv, g_opengl_state->debug_line_shader_program, GL_LINK_STATUS, &shader_compile_success);
-            if(!shader_compile_success)
-            {
-                CALL_GL(glGetProgramInfoLog, g_opengl_state->debug_line_shader_program, sizeof(debug_info_buf), &debug_info_len, debug_info_buf);
-                WriteFile(g_log_file, debug_info_buf, debug_info_len, NULL, NULL);
-                ASSERT(0, "Failed to link shader.");
-            }
-            
-            CALL_GL(glDeleteShader, vertex_shader);
-            CALL_GL(glDeleteShader, fragment_shader); 
+            CALL_GL(glGenVertexArrays, 1, &g_opengl_state->fullscreen_quad_vertex_array_object);
+            CALL_GL(glBindVertexArray, g_opengl_state->fullscreen_quad_vertex_array_object);
+
+            u32_m attr_idx = 0;
+
+            // Vertex buffer: vertices
+            CALL_GL(glGenBuffers, 1, &g_opengl_state->fullscreen_quad_vertex_buffer_object_pos);
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->fullscreen_quad_vertex_buffer_object_pos);
+            CALL_GL(glBufferData, GL_ARRAY_BUFFER, 6 * 2 * sizeof(f32), NULL, GL_STATIC_DRAW);
+            CALL_GL(glVertexAttribPointer, attr_idx, 2, GL_FLOAT, GL_FALSE, 0, 0);
+            CALL_GL(glEnableVertexAttribArray, attr_idx);
+            attr_idx++;
+
+            CALL_GL(glBindVertexArray, 0);
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, 0);
         }
     }
 
 
     // Init draw array.
-    struct DrawArray* draw_array = (struct DrawArray*)MEMORY_ARENA_ALLOCATE(&main_memory_arena, sizeof(struct DrawArray));
-    reset_draw_array(draw_array);
+    g_draw_data = (struct DrawData*)MEMORY_ARENA_ALLOCATE(&main_memory_arena, sizeof(struct DrawData));
+    init_draw_data(g_draw_data, g_opengl_state->screen_width, g_opengl_state->screen_height, &main_memory_arena);
+    reset_draw_data(g_draw_data);
+
+
+    // Init engine input state.
+    // Dependent on window being created.
+    {
+        g_input_state = (struct InputState*)MEMORY_ARENA_ALLOCATE_ZEROED(&main_memory_arena, sizeof(*g_input_state));
+        struct InputState* input_state = g_input_state;
+
+        POINT p;
+        const BOOL get_cursor_pos_succes = GetCursorPos(&p);
+        ASSERT(get_cursor_pos_succes, "Failed GetCursorPos");
+        const BOOL screen_to_client_success = ScreenToClient(g_opengl_state->hwnd, &p);
+        ASSERT(screen_to_client_success, "Failed ScreenToClient");
+        input_state->mouse_screen_pos_x = (s32_m)p.x;
+        input_state->mouse_screen_pos_y = (s32_m)p.y;
+        input_state->fps_mode = 0;
+    }
+
+    // Init engine time.
+    {
+        LARGE_INTEGER clock_freq;
+        QueryPerformanceFrequency(&clock_freq);
+        g_clock_freq = clock_freq.QuadPart;
+    }
 
 
     // Main loop
+    s64 engine_start_timestamp_us = get_timestamp_us();
+    s64_m last_frame_timestamp_us = engine_start_timestamp_us;
     while(1)
     {
+
+
         MSG msg;
         while(PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
         {
@@ -1279,430 +1566,26 @@ int WinMainCRTStartup()
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         }
-
-        if(is_key_down(KB_ESCAPE))
+        if(is_key_down(g_input_state, KB_ESCAPE))
         {
             ExitProcess(0);
         }
 
 
-        reset_draw_array(draw_array);
-
-
-        // Draw world basis.
+        // Main loop time control.
         {
-            v3 s = {.m={0.0f, 0.0f, 0.0f}};
-            v3_m e = {.m={1.0f, 0.0f, 0.0f}};
-            draw_arrow(draw_array, s, e, e);
-            e.x = 0.0f;
-            e.y = 1.0f;
-            e.z = 0.0f;
-            draw_arrow(draw_array, s, e, e);
-            e.x = 0.0f;
-            e.y = 0.0f;
-            e.z = 1.0f;
-            draw_arrow(draw_array, s, e, e);
-        }
-
-
-        //                       0      1      2      3      4      5      6      7      8
-        f32 terrain_vx[9] = {-1.0f,  0.0f,  1.0f, -1.0f,  0.0f,  1.0f, -1.0f,  0.0f,  1.0f};
-        f32 terrain_vy[9] = { 0.0f,  0.0f,  0.0f,  0.0f,  0.0f,  0.0f, -1.0f,  0.0f,  1.0f};
-        f32 terrain_vz[9] = {-1.0f, -1.0f, -1.0f,  0.0f,  0.0f,  0.0f,  1.0f,  1.0f,  1.0f};
-
-        f32 terrain_nx[9] = { 0.0f,  0.0f,  0.0f,  0.0f,  0.0f,  0.0f, -0.7f,  0.0f, -0.7f};
-        f32 terrain_ny[9] = { 1.0f,  1.0f,  1.0f,  1.0f,  1.0f,  1.0f,  0.7f,  1.0f,  0.7f};
-        f32 terrain_nz[9] = { 0.0f,  0.0f,  0.0f,  0.0f,  0.0f,  0.0f,  0.7f,  0.0f, -0.7f};
-
-        u32 terrain_indices[] = {
-            0, 1, 3,
-            3, 1, 4,
-
-            1, 2, 4,
-            4, 2, 5,
-            
-            3, 4, 6,
-            6, 4, 7,
-
-            4, 5, 7,
-            7, 5, 8
-        };
-
-
-        f32 offset_x[] = { 0.0f };
-        f32 offset_y[] = { -1.0f };
-        f32 offset_z[] = { 0.0f };
-
-        glClearColor(0.0f, 161.0f/255.0f, 201.0f/255.0f, 0.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-
-
-        {
-            // Camera controls
-            static f32_m cam_pitch_turns = 0.0f;
-            cam_pitch_turns += (float)is_key_down(KB_I) * 0.001f;
-            cam_pitch_turns -= (float)is_key_down(KB_K) * 0.001f;
-
-            static f32_m cam_yaw_turns = 0.0f;
-            cam_yaw_turns += (float)is_key_down(KB_J) * 0.001f;
-            cam_yaw_turns -= (float)is_key_down(KB_L) * 0.001f;
-
-            static v3_m cam_pos = {.m = {0.0f, 1.0f, 3.0f}};
-
-            mtx4x4_m y_rot_mtx;
-            make_y_axis_rotation_mtx(&y_rot_mtx, -cam_yaw_turns);
-
-            mtx4x4_m x_rot_mtx;
-            make_x_axis_rotation_mtx(&x_rot_mtx, -cam_pitch_turns);
-
-            mtx4x4_m translation_mtx;
-            make_translation_mtx(&translation_mtx, v3_scale(cam_pos, -1.0f));
-
-            mtx4x4_m world_to_cam_mtx_temp;
-            mtx4x4_mul(&world_to_cam_mtx_temp, &y_rot_mtx, &translation_mtx);
-
-            mtx4x4_m world_to_cam_mtx;
-            mtx4x4_mul(&world_to_cam_mtx, &x_rot_mtx, &world_to_cam_mtx_temp);
-
-            v3 I_cam = {.m={world_to_cam_mtx.m[0*4 + 0], world_to_cam_mtx.m[0*4 + 1], world_to_cam_mtx.m[0*4 + 2]}};
-            v3 J_cam = {.m={world_to_cam_mtx.m[1*4 + 0], world_to_cam_mtx.m[1*4 + 1], world_to_cam_mtx.m[1*4 + 2]}};
-            v3 K_cam = {.m={world_to_cam_mtx.m[2*4 + 0], world_to_cam_mtx.m[2*4 + 1], world_to_cam_mtx.m[2*4 + 2]}};
-
-            f32 speed = 0.01f;
-            cam_pos = v3_add(cam_pos, v3_scale(K_cam, -speed * (float)is_key_down(KB_W)));
-            cam_pos = v3_add(cam_pos, v3_scale(K_cam,  speed * (float)is_key_down(KB_S)));
-
-            cam_pos = v3_add(cam_pos, v3_scale(I_cam,  speed * (float)is_key_down(KB_D)));
-            cam_pos = v3_add(cam_pos, v3_scale(I_cam, -speed * (float)is_key_down(KB_A)));
-            
-            cam_pos = v3_add(cam_pos, v3_scale(J_cam,  speed * (float)is_key_down(KB_SPACE)));
-            cam_pos = v3_add(cam_pos, v3_scale(J_cam, -speed * (float)is_key_down(KB_LCTRL)));
-
-            /*
-             * Derivation for 3D perspective projection matrix
-             *        
-             *                                                    /
-             *                                                  /
-             *                                                /
-             *                                              /
-             *                                            /
-             *                                          /
-             *                                        /
-             *                                      /
-             *                                    /
-             *                                  /
-             *                                /
-             *                              /
-             *                            /
-             *                          /
-             *                        /
-             *                      / |               V
-             *                    /   |             .>+---------------+
-             *                  /     |       -----/ D|               |
-             *         Y      /       |  ----/        |               |
-             *         ^    /       --R-/             |               |
-             *         |  /    ----/  |               |               |
-             *         |/  ---/       |               |               |
-             *  Z <----C../           |----> N        |               |
-             *  F     / \             |               |               |
-             *       /    \           |               +---------------+
-             *      V       \         |
-             *     X          \       |
-             *                  \     |
-             *                    \   |
-             *                      \ |
-             *                        \
-             *                          \
-             *                            \
-             *                              \
-             *                                \
-             *                                  \
-             *                                    \
-             *                                      \
-             *                                        \
-             *                                          \
-             *                                            \
-             *                                              \
-             *                                                \
-             *                                                  \
-             *                                                    \
-             *        
-             *        
-             *        
-             * C : 3D camera point (Assume the camera is at the origin - (0, 0)
-             * F : Normalized camera forward vector (The camera looks along the -Z axis. For something to be seen, it must be more -Z than the near plane.)
-             *     In camera space, this will be (0, 0, 1)
-             * n : Camera's near plane distance. For something to be seen, it must have a Z coordinate < -n.
-             * V : Vertex to be projected
-             *
-             * The goal is to intersect the ray from the origin to the vertex with the near plane.
-             *
-             * Q : Point along the ray (solve for intersection)
-             * Q = C + unit(V)*t, but since C is just the origin
-             * Q = unit(V)*t
-             *
-             * Find the plane equation:
-             * N : The near plane normal (In camera space, this will be (0, 0, -1)
-             * S : a point on the near plane.
-             * S = N*n
-             * 
-             * New plane equation : (P - S) * N = 0
-             * We want to find where a point on the ray is equal to 0, so plug in Q for P:
-             * (Q - S) * N = 0
-             *
-             * Expand:
-             *
-             * (unit(V)*t - S) * N = 0
-             *
-             * Solve for t:
-             *
-             * unit(V)*t*N - S*N = 0
-             * t = S*N / (unit(V)*N)
-             *
-             * Plug t back in to the ray equation:
-             *
-             * Q = unit(V)*t
-             * Q = unit(V)*(S*N / (unit(V)*N))
-             *
-             * Find in terms of V
-             *
-             * Q = unit(V)*(S*N / (unit(V)*N))
-             *
-             * Q = unit(V)*S*N
-             *     -----------
-             *     (unit(V)*N)
-             *
-             * Q = unit(V)*(N*n)*N
-             *     ---------------
-             *       (unit(V)*N)
-             *      
-             * Q = N*n*N*unit(V)
-             *     -------------
-             *      (unit(V)*N)
-             *
-             * Q = N*n*N*(V / ||V*V||)
-             *     -------------------
-             *      ((V / ||V*V||)*N)
-             *
-             * Q = N*n*N*V
-             *     -------
-             *     (V*N)
-             *
-             * Q = N*N*n*V
-             *     -------
-             *     (V*N)
-             *
-             * In 3D:
-             * Q = (N_x*N_x*n + N_y*N_y*n * N_z*N_z*n)
-             *     -----------------------------------  *  V
-             *       (V_x*N_x + V_y*N_y + V_z*N_z)
-             *
-             * Q_x = (N_x*N_x*n + N_y*N_y*n * N_z*N_z*n)
-             *       -----------------------------------  *  V_x
-             *         (V_x*N_x + V_y*N_y + V_z*N_z)
-             *
-             * Q_y = (N_x*N_x*n + N_y*N_y*n * N_z*N_z*n)
-             *       -----------------------------------  *  V_y
-             *         (V_x*N_x + V_y*N_y + V_z*N_z)
-             *
-             * Q_z = (N_x*N_x*n + N_y*N_y*n * N_z*N_z*n)
-             *       -----------------------------------  *  V_z
-             *         (V_x*N_x + V_y*N_y + V_z*N_z)
-             * 
-             * Assume our object has been translated to camera space. In this case, N = (0, 0, -1) (Right-handed coordinate system)
-             * N_x = 0
-             * N_y = 0
-             * N_z = -1
-             *
-             * Q_x =   n
-             *       ------ * V_x
-             *       (-V_z)
-             *
-             * Q_y =   n
-             *       ------ * V_y
-             *       (-V_z)
-             *
-             * Q_z =   n
-             *       ------ * V_z
-             *       (-V_z)
-             *
-             *
-             * So now we have the point Q in camera space where Q is V perspective projected onto the near plane.
-             * Our goal is to find Q_p in NDC space. So, we need to divide X and Y by the camera width and height.
-             *
-             * C_w : camera width
-             * C_h : camera height
-             *
-             * Q_px = Q_x / C_w = n / C_w
-             *                    ------- * V_x
-             *                    (-V_z)        
-             *
-             * Q_py = Q_y / C_h = n / C_h
-             *                    ------- * V_y
-             *                    (-V_z)
-             *
-             * Z should be between -1 and 1, so we need to divide by far plane - near plane. Use the vertex's Z coordinate instead of Q's Z coordinate
-             * (Q is already projected and will have a constant Z, so we can't use that).
-             * f : far plane dist
-             *
-             * Q_pz = (V_z - (-n)) * 2
-             *        ----------------  -  1
-             *           -f - (-n)
-             *
-             * Q_pz = (V_z + n) * 2
-             *        -------------  -  1
-             *           n - f
-             *
-             * Q_pz = V_z*2 + n*2
-             *        -----------  -  1
-             *           n - f
-             *
-             * Q_pz = V_z*2       n*2
-             *        ------  +  -----  -  1
-             *        n - f      n - f
-             *
-             * Q_pz =   2              n*2
-             *        ----- * V_z  +  -----  -  1
-             *        n - f           n - f
-             *
-             * https://www.desmos.com/calculator/frzetn7doc
-             *       
-             * Now, define as a matrix (keep in mind we will be dividing by the W component after matrix multiplication):
-             *
-             * | Q_px |   | n / C_w    0           0            0           |   |  V_x |   
-             * | Q_py | = |   0      n / C_h       0            0           | * |  V_y |
-             * | Q_pz |   |   0        0        2 / (n-f)    (n*2) / (n-f)  |   |  V_z |   
-             * | Q_pw |   |   0        0          -1            0           |   | 1.0f |   
-             *
-             * | Q_px |   |         (n / C_w) * V_x         |
-             * | Q_py | = |         (n / C_h) * V_y         |
-             * | Q_pz |   | 2 / (n-f) * V_z + (n*2) / (n-f) |
-             * | Q_pw |   |              -V_z               | <-- Will be dividing all the terms by -V_z
-             * 
-             * Dividing the depth by -V_z has the unfortunate consequence of reducing the NDC depth space.
-             *
-             */
-
-            f32 aspect_ratio = (float)g_opengl_state->screen_height / (float)g_opengl_state->screen_width;
-
-            f32 n = 0.1f;
-            f32 f = 1000.0f;
-            f32 C_w = 0.125f;
-            f32 C_h = C_w * aspect_ratio;
-            mtx4x4 proj_mtx = {
-                .m = {
-                    //    X         Y                Z                      W
-                    n / C_w,     0.0f,            0.0f,                  0.0f,
-                       0.0f,  n / C_h,            0.0f,                  0.0f,
-                       0.0f,     0.0f,  2.0f / (n - f),  (n * 2.0f) / (n - f),
-                       0.0f,     0.0f,           -1.0f,                  0.0f,
-                }
-            };
-
-            mtx4x4_m mvp_mtx;
-            mtx4x4_mul(&mvp_mtx, &proj_mtx, &world_to_cam_mtx);
-
-            CALL_GL(glUseProgram, g_opengl_state->shader_program);
-
-            GLint loc;
-            CALL_GL_RET(&loc, GLint, glGetUniformLocation, g_opengl_state->shader_program, "m_mvp");
-            CALL_GL(glUniformMatrix4fv, loc, 1, 1, &mvp_mtx.m[0]);
-            ASSERT(loc != -1, "Failed to bind uniform.");
-
-            CALL_GL(glBindVertexArray, g_opengl_state->vertex_array_object);
-
-            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->vertex_buffer_object_vx);
-            CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(terrain_vx), terrain_vx);
-
-            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->vertex_buffer_object_vy);
-            CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(terrain_vy), terrain_vy);
-
-            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->vertex_buffer_object_vz);
-            CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(terrain_vz), terrain_vz);
-
-            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->vertex_buffer_object_nx);
-            CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(terrain_nx), terrain_nx);
-
-            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->vertex_buffer_object_ny);
-            CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(terrain_ny), terrain_ny);
-
-            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->vertex_buffer_object_nz);
-            CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(terrain_nz), terrain_nz);
-
-            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->instanced_vertex_buffer_object_offset_x);
-            CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(offset_x), offset_x);
-
-            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->instanced_vertex_buffer_object_offset_y);
-            CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(offset_y), offset_y);
-
-            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->instanced_vertex_buffer_object_offset_z);
-            CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(offset_z), offset_z);
-
-            CALL_GL(glBindBuffer, GL_ELEMENT_ARRAY_BUFFER, g_opengl_state->index_buffer_object);
-            CALL_GL(glBufferSubData, GL_ELEMENT_ARRAY_BUFFER, 0, sizeof(terrain_indices), terrain_indices);
-
-            CALL_GL(glDrawElementsInstanced, GL_TRIANGLES, ARRAY_COUNT(terrain_indices), GL_UNSIGNED_INT, 0, 1/*batch_size*/);
-
-            CALL_GL(glBindVertexArray, 0);
-            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, 0);
-            CALL_GL(glBindBuffer, GL_ELEMENT_ARRAY_BUFFER, 0);
-            CALL_GL(glUseProgram, 0);
-
-
-            // Render debug lines.
+            s64 time_since_last_frame_us = get_timestamp_us() - last_frame_timestamp_us;
+            if(time_since_last_frame_us >= ENGINE_FRAME_DURATION_US)
             {
-                CALL_GL(glUseProgram, g_opengl_state->debug_line_shader_program);
-                
-                GLint debug_line_loc;
-                CALL_GL_RET(&debug_line_loc, GLint, glGetUniformLocation, g_opengl_state->shader_program, "m_mvp");
-                CALL_GL(glUniformMatrix4fv, loc, 1, 1, &mvp_mtx.m[0]);
-                ASSERT(debug_line_loc != -1, "Failed to bind uniform.");
-                
-                CALL_GL(glBindVertexArray, g_opengl_state->debug_line_vertex_array_object);
-
-                f32 line_vertices[6] = {
-                    0.0f, 0.0f, 0.0f,
-                    1.0f, 1.0f, 1.0f,
-                };
-                CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->debug_line_vertex_buffer_object_vertices);
-                CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(line_vertices), line_vertices);
-
-                CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->debug_line_instanced_vertex_buffer_object_start_x);
-                CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, draw_array->num_arrows * sizeof(*draw_array->arrows_start_x), draw_array->arrows_start_x);
-
-                CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->debug_line_instanced_vertex_buffer_object_start_y);
-                CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, draw_array->num_arrows * sizeof(*draw_array->arrows_start_y), draw_array->arrows_start_y);
-
-                CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->debug_line_instanced_vertex_buffer_object_start_z);
-                CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, draw_array->num_arrows * sizeof(*draw_array->arrows_start_z), draw_array->arrows_start_z);
-
-                CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->debug_line_instanced_vertex_buffer_object_end_x);
-                CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, draw_array->num_arrows * sizeof(*draw_array->arrows_end_x), draw_array->arrows_end_x);
-
-                CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->debug_line_instanced_vertex_buffer_object_end_y);
-                CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, draw_array->num_arrows * sizeof(*draw_array->arrows_end_y), draw_array->arrows_end_y);
-
-                CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->debug_line_instanced_vertex_buffer_object_end_z);
-                CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, draw_array->num_arrows * sizeof(*draw_array->arrows_end_z), draw_array->arrows_end_z);
-
-                CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->debug_line_instanced_vertex_buffer_object_color_r);
-                CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, draw_array->num_arrows * sizeof(*draw_array->arrows_color_r), draw_array->arrows_color_r);
-
-                CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->debug_line_instanced_vertex_buffer_object_color_g);
-                CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, draw_array->num_arrows * sizeof(*draw_array->arrows_color_g), draw_array->arrows_color_g);
-
-                CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->debug_line_instanced_vertex_buffer_object_color_b);
-                CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, draw_array->num_arrows * sizeof(*draw_array->arrows_color_b), draw_array->arrows_color_b);
-                
-                CALL_GL(glDrawArraysInstanced, GL_LINES, 0, 2, draw_array->num_arrows);
-
-                CALL_GL(glBindVertexArray, 0);
-                CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, 0);
-                CALL_GL(glBindBuffer, GL_ELEMENT_ARRAY_BUFFER, 0);
-                CALL_GL(glUseProgram, 0);
+                last_frame_timestamp_us += ENGINE_FRAME_DURATION_US;
+            }
+            else
+            {
+                continue;
             }
         }
+
+        do_one_frame();
 
         const HDC dc = GetDC(g_opengl_state->hwnd);
         BOOL swap_buffers_success = SwapBuffers(dc);
@@ -1713,4 +1596,636 @@ int WinMainCRTStartup()
 
     ExitProcess(0);
 }
+
+
+static void do_one_frame()
+{
+    {
+        struct InputState* input_state = g_input_state;
+
+        if(is_key_toggled_down(input_state, KB_E))
+        {
+            input_state->fps_mode = !input_state->fps_mode;
+
+            RECT clip_rect;
+            const BOOL get_client_rect_success = GetClientRect(g_opengl_state->hwnd, &clip_rect);
+            ASSERT(get_client_rect_success, "GetClientRect failed.");
+            s32 tx = (clip_rect.left + clip_rect.right) / 2;
+            s32 ty = (clip_rect.bottom + clip_rect.top) / 2;
+            POINT client_to_screen_point = {
+                .x = tx,
+                .y = ty,
+            };
+            const BOOL set_cursor_pos_success = SetCursorPos(client_to_screen_point.x, client_to_screen_point.y);
+            ASSERT(set_cursor_pos_success, "SetCursorPos failed.");
+            input_state->mouse_screen_pos_x = client_to_screen_point.x;
+            input_state->mouse_screen_pos_y = client_to_screen_point.y;
+        }
+
+
+        s32 last_mouse_screen_pos_x = input_state->mouse_screen_pos_x;
+        s32 last_mouse_screen_pos_y = input_state->mouse_screen_pos_y;
+        POINT p;
+        const BOOL get_cursor_pos_succes = GetCursorPos(&p);
+        ASSERT(get_cursor_pos_succes, "Failed GetCursorPos");
+        input_state->mouse_screen_pos_x = (s32_m)p.x;
+        input_state->mouse_screen_pos_y = (s32_m)p.y;
+
+        if(input_state->fps_mode)
+        {
+            show_cursor(1);
+            RECT clip_rect;
+            const BOOL get_client_rect_success = GetClientRect(g_opengl_state->hwnd, &clip_rect);
+            ASSERT(get_client_rect_success, "GetClientRect failed.");
+            s32 tx = (clip_rect.left + clip_rect.right) / 2;
+            s32 ty = (clip_rect.bottom + clip_rect.top) / 2;
+
+            POINT client_to_screen_point = {
+                .x = tx,
+                .y = ty,
+            };
+            const BOOL client_to_screen_success = ClientToScreen(g_opengl_state->hwnd, &client_to_screen_point);
+            ASSERT(client_to_screen_success, "ClientToScreen failed.");
+
+            input_state->mouse_screen_dx = input_state->mouse_screen_pos_x - last_mouse_screen_pos_x;
+            input_state->mouse_screen_dy = input_state->mouse_screen_pos_y - last_mouse_screen_pos_y;
+
+            const BOOL set_cursor_pos_success = SetCursorPos(client_to_screen_point.x, client_to_screen_point.y);
+            ASSERT(set_cursor_pos_success, "SetCursorPos failed.");
+
+            input_state->mouse_screen_pos_x = client_to_screen_point.x;
+            input_state->mouse_screen_pos_y = client_to_screen_point.y;
+        }
+        else
+        {
+            show_cursor(0);
+            input_state->mouse_screen_dx = input_state->mouse_screen_pos_x - last_mouse_screen_pos_x;
+            input_state->mouse_screen_dy = input_state->mouse_screen_pos_y - last_mouse_screen_pos_y;
+        }
+    }
+
+
+    reset_draw_data(g_draw_data);
+
+
+    // Draw world basis.
+    {
+        v3 s = {.m={0.0f, 0.0f, 0.0f}};
+        v3_m e = {.m={1.0f, 0.0f, 0.0f}};
+        draw_arrow(g_draw_data, s, e, e);
+        e.x = 0.0f;
+        e.y = 1.0f;
+        e.z = 0.0f;
+        draw_arrow(g_draw_data, s, e, e);
+        e.x = 0.0f;
+        e.y = 0.0f;
+        e.z = 1.0f;
+        draw_arrow(g_draw_data, s, e, e);
+    }
+
+
+    //                       0      1      2      3      4      5      6      7      8
+    f32 terrain_vx[9] = {-1.0f,  0.0f,  1.0f, -1.0f,  0.0f,  1.0f, -1.0f,  0.0f,  1.0f};
+    f32 terrain_vy[9] = { 0.0f,  0.0f,  0.0f,  0.0f,  0.0f,  0.0f, -1.0f,  0.0f,  1.0f};
+    f32 terrain_vz[9] = { 1.0f,  1.0f,  1.0f,  0.0f,  0.0f,  0.0f, -1.0f, -1.0f, -1.0f};
+
+    f32 terrain_nx[9] = { 0.0f,  0.0f,  0.0f,  0.0f,  0.0f,  0.0f, -0.7f,  0.0f, -0.7f};
+    f32 terrain_ny[9] = { 1.0f,  1.0f,  1.0f,  1.0f,  1.0f,  1.0f,  0.7f,  1.0f,  0.7f};
+    f32 terrain_nz[9] = { 0.0f,  0.0f,  0.0f,  0.0f,  0.0f,  0.0f, -0.7f,  0.0f,  0.7f};
+
+    u32 terrain_indices[] = {
+        0, 1, 3,
+        3, 1, 4,
+
+        1, 2, 4,
+        4, 2, 5,
+        
+        3, 4, 6,
+        6, 4, 7,
+
+        4, 5, 7,
+        7, 5, 8
+    };
+
+
+    f32 offset_x[] = { 0.0f };
+    f32 offset_y[] = { -1.0f };
+    f32 offset_z[] = { 0.0f };
+
+    glClearColor(0.0f, 161.0f/255.0f, 201.0f/255.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+
+
+    {
+        // Camera controls
+        static f32_m cam_pitch_turns = 0.0f;
+        cam_pitch_turns += (float)is_key_down(g_input_state, KB_I) * 0.001f;
+        cam_pitch_turns -= (float)is_key_down(g_input_state, KB_K) * 0.001f;
+
+
+        static f32_m cam_yaw_turns = 0.0f;
+        cam_yaw_turns += (float)is_key_down(g_input_state, KB_J) * 0.001f;
+        cam_yaw_turns -= (float)is_key_down(g_input_state, KB_L) * 0.001f;
+
+        if(g_input_state->fps_mode)
+        {
+            cam_pitch_turns -= (f32)(g_input_state->mouse_screen_dy) * 0.0005f;
+            cam_yaw_turns -= (f32)(g_input_state->mouse_screen_dx) * 0.0005f;
+        }
+
+        static v3_m cam_pos = {.m = {0.0f, 1.0f, 3.0f}};
+
+        mtx4x4_m y_rot_mtx;
+        make_y_axis_rotation_mtx(&y_rot_mtx, -cam_yaw_turns);
+
+        mtx4x4_m x_rot_mtx;
+        make_x_axis_rotation_mtx(&x_rot_mtx, -cam_pitch_turns);
+
+        mtx4x4_m translation_mtx;
+        make_translation_mtx(&translation_mtx, v3_scale(cam_pos, -1.0f));
+
+        mtx4x4_m world_to_cam_mtx_temp;
+        mtx4x4_mul(&world_to_cam_mtx_temp, &y_rot_mtx, &translation_mtx);
+
+        mtx4x4_m world_to_cam_mtx;
+        mtx4x4_mul(&world_to_cam_mtx, &x_rot_mtx, &world_to_cam_mtx_temp);
+
+        v3 I_cam = {.m={world_to_cam_mtx.m[0*4 + 0], world_to_cam_mtx.m[0*4 + 1], world_to_cam_mtx.m[0*4 + 2]}};
+        v3 J_cam = {.m={world_to_cam_mtx.m[1*4 + 0], world_to_cam_mtx.m[1*4 + 1], world_to_cam_mtx.m[1*4 + 2]}};
+        v3 K_cam = {.m={world_to_cam_mtx.m[2*4 + 0], world_to_cam_mtx.m[2*4 + 1], world_to_cam_mtx.m[2*4 + 2]}};
+
+        f32 speed = 0.05f;
+        cam_pos = v3_add(cam_pos, v3_scale(K_cam, -speed * (float)is_key_down(g_input_state, KB_W)));
+        cam_pos = v3_add(cam_pos, v3_scale(K_cam,  speed * (float)is_key_down(g_input_state, KB_S)));
+
+        cam_pos = v3_add(cam_pos, v3_scale(I_cam,  speed * (float)is_key_down(g_input_state, KB_D)));
+        cam_pos = v3_add(cam_pos, v3_scale(I_cam, -speed * (float)is_key_down(g_input_state, KB_A)));
+        
+        cam_pos = v3_add(cam_pos, v3_scale(J_cam,  speed * (float)is_key_down(g_input_state, KB_SPACE)));
+        cam_pos = v3_add(cam_pos, v3_scale(J_cam, -speed * (float)is_key_down(g_input_state, KB_LCTRL)));
+
+        /*
+         * Derivation for 3D perspective projection matrix
+         *        
+         *                                                    /
+         *                                                  /
+         *                                                /
+         *                                              /
+         *                                            /
+         *                                          /
+         *                                        /
+         *                                      /
+         *                                    /
+         *                                  /
+         *                                /
+         *                              /
+         *                            /
+         *                          /
+         *                        /
+         *                      / |               V
+         *                    /   |             .>+---------------+
+         *                  /     |       -----/ D|               |
+         *         Y      /       |  ----/        |               |
+         *         ^    /       --R-/             |               |
+         *         |  /    ----/  |               |               |
+         *         |/  ---/       |               |               |
+         *  Z <----C../           |----> N        |               |
+         *  F     / \             |               |               |
+         *       /    \           |               +---------------+
+         *      V       \         |
+         *     X          \       |
+         *                  \     |
+         *                    \   |
+         *                      \ |
+         *                        \
+         *                          \
+         *                            \
+         *                              \
+         *                                \
+         *                                  \
+         *                                    \
+         *                                      \
+         *                                        \
+         *                                          \
+         *                                            \
+         *                                              \
+         *                                                \
+         *                                                  \
+         *                                                    \
+         *        
+         *        
+         *        
+         * C : 3D camera point (Assume the camera is at the origin - (0, 0)
+         * F : Normalized camera forward vector (The camera looks along the -Z axis. For something to be seen, it must be more -Z than the near plane.)
+         *     In camera space, this will be (0, 0, 1)
+         * n : Camera's near plane distance. For something to be seen, it must have a Z coordinate < -n.
+         * V : Vertex to be projected
+         *
+         * The goal is to intersect the ray from the origin to the vertex with the near plane.
+         *
+         * Q : Point along the ray (solve for intersection)
+         * Q = C + unit(V)*t, but since C is just the origin
+         * Q = unit(V)*t
+         *
+         * Find the plane equation:
+         * N : The near plane normal (In camera space, this will be (0, 0, -1)
+         * S : a point on the near plane.
+         * S = N*n
+         * 
+         * New plane equation : (P - S) * N = 0
+         * We want to find where a point on the ray is equal to 0, so plug in Q for P:
+         * (Q - S) * N = 0
+         *
+         * Expand:
+         *
+         * (unit(V)*t - S) * N = 0
+         *
+         * Solve for t:
+         *
+         * unit(V)*t*N - S*N = 0
+         * t = S*N / (unit(V)*N)
+         *
+         * Plug t back in to the ray equation:
+         *
+         * Q = unit(V)*t
+         * Q = unit(V)*(S*N / (unit(V)*N))
+         *
+         * Find in terms of V
+         *
+         * Q = unit(V)*(S*N / (unit(V)*N))
+         *
+         * Q = unit(V)*S*N
+         *     -----------
+         *     (unit(V)*N)
+         *
+         * Q = unit(V)*(N*n)*N
+         *     ---------------
+         *       (unit(V)*N)
+         *      
+         * Q = N*n*N*unit(V)
+         *     -------------
+         *      (unit(V)*N)
+         *
+         * Q = N*n*N*(V / ||V*V||)
+         *     -------------------
+         *      ((V / ||V*V||)*N)
+         *
+         * Q = N*n*N*V
+         *     -------
+         *     (V*N)
+         *
+         * Q = N*N*n*V
+         *     -------
+         *     (V*N)
+         *
+         * In 3D:
+         * Q = (N_x*N_x*n + N_y*N_y*n * N_z*N_z*n)
+         *     -----------------------------------  *  V
+         *       (V_x*N_x + V_y*N_y + V_z*N_z)
+         *
+         * Q_x = (N_x*N_x*n + N_y*N_y*n * N_z*N_z*n)
+         *       -----------------------------------  *  V_x
+         *         (V_x*N_x + V_y*N_y + V_z*N_z)
+         *
+         * Q_y = (N_x*N_x*n + N_y*N_y*n * N_z*N_z*n)
+         *       -----------------------------------  *  V_y
+         *         (V_x*N_x + V_y*N_y + V_z*N_z)
+         *
+         * Q_z = (N_x*N_x*n + N_y*N_y*n * N_z*N_z*n)
+         *       -----------------------------------  *  V_z
+         *         (V_x*N_x + V_y*N_y + V_z*N_z)
+         * 
+         * Assume our object has been translated to camera space. In this case, N = (0, 0, -1) (Right-handed coordinate system)
+         * N_x = 0
+         * N_y = 0
+         * N_z = -1
+         *
+         * Q_x =   n
+         *       ------ * V_x
+         *       (-V_z)
+         *
+         * Q_y =   n
+         *       ------ * V_y
+         *       (-V_z)
+         *
+         * Q_z =   n
+         *       ------ * V_z
+         *       (-V_z)
+         *
+         *
+         * So now we have the point Q in camera space where Q is V perspective projected onto the near plane.
+         * Our goal is to find Q_p in NDC space. So, we need to divide X and Y by the camera width and height.
+         *
+         * C_w : camera width
+         * C_h : camera height
+         *
+         * Q_px = Q_x / C_w = n / C_w
+         *                    ------- * V_x
+         *                    (-V_z)        
+         *
+         * Q_py = Q_y / C_h = n / C_h
+         *                    ------- * V_y
+         *                    (-V_z)
+         *
+         * Z should be between -1 and 1, so we need to divide by far plane - near plane. Use the vertex's Z coordinate instead of Q's Z coordinate
+         * (Q is already projected and will have a constant Z, so we can't use that).
+         * f : far plane dist
+         *
+         * Q_pz = (V_z - (-n)) * 2
+         *        ----------------  -  1
+         *           -f - (-n)
+         *
+         * Q_pz = (V_z + n) * 2
+         *        -------------  -  1
+         *           n - f
+         *
+         * Q_pz = V_z*2 + n*2
+         *        -----------  -  1
+         *           n - f
+         *
+         * Q_pz = V_z*2       n*2
+         *        ------  +  -----  -  1
+         *        n - f      n - f
+         *
+         * Q_pz =   2              n*2
+         *        ----- * V_z  +  -----  -  1
+         *        n - f           n - f
+         *
+         * https://www.desmos.com/calculator/frzetn7doc
+         *       
+         * Now, define as a matrix (keep in mind we will be dividing by the W component after matrix multiplication):
+         *
+         * | Q_px |   | n / C_w    0           0            0           |   |  V_x |   
+         * | Q_py | = |   0      n / C_h       0            0           | * |  V_y |
+         * | Q_pz |   |   0        0        2 / (n-f)    (n*2) / (n-f)  |   |  V_z |   
+         * | Q_pw |   |   0        0          -1            0           |   | 1.0f |   
+         *
+         * | Q_px |   |         (n / C_w) * V_x         |
+         * | Q_py | = |         (n / C_h) * V_y         |
+         * | Q_pz |   | 2 / (n-f) * V_z + (n*2) / (n-f) |
+         * | Q_pw |   |              -V_z               | <-- Will be dividing all the terms by -V_z
+         * 
+         * Dividing the depth by -V_z has the unfortunate consequence of reducing the NDC depth space.
+         *
+         */
+
+        f32 aspect_ratio = (float)g_opengl_state->screen_height / (float)g_opengl_state->screen_width;
+
+        f32 n = 0.1f;
+        f32 f = 1000.0f;
+        f32 C_w = 0.125f;
+        f32 C_h = C_w * aspect_ratio;
+        mtx4x4 proj_mtx = {
+            .m = {
+                //    X         Y                Z                      W
+                n / C_w,     0.0f,            0.0f,                  0.0f,
+                   0.0f,  n / C_h,            0.0f,                  0.0f,
+                   0.0f,     0.0f,  2.0f / (n - f),  (n * 2.0f) / (n - f),
+                   0.0f,     0.0f,           -1.0f,                  0.0f,
+            }
+        };
+
+        mtx4x4_m mvp_mtx;
+        mtx4x4_mul(&mvp_mtx, &proj_mtx, &world_to_cam_mtx);
+
+        CALL_GL(glUseProgram, g_opengl_state->shader_program);
+
+        GLint loc;
+        CALL_GL_RET(&loc, GLint, glGetUniformLocation, g_opengl_state->shader_program, "m_mvp");
+        CALL_GL(glUniformMatrix4fv, loc, 1, 1, &mvp_mtx.m[0]);
+        ASSERT(loc != -1, "Failed to bind uniform.");
+
+        CALL_GL(glBindVertexArray, g_opengl_state->vertex_array_object);
+
+        CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->vertex_buffer_object_vx);
+        CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(terrain_vx), terrain_vx);
+
+        CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->vertex_buffer_object_vy);
+        CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(terrain_vy), terrain_vy);
+
+        CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->vertex_buffer_object_vz);
+        CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(terrain_vz), terrain_vz);
+
+        CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->vertex_buffer_object_nx);
+        CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(terrain_nx), terrain_nx);
+
+        CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->vertex_buffer_object_ny);
+        CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(terrain_ny), terrain_ny);
+
+        CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->vertex_buffer_object_nz);
+        CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(terrain_nz), terrain_nz);
+
+        CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->instanced_vertex_buffer_object_offset_x);
+        CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(offset_x), offset_x);
+
+        CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->instanced_vertex_buffer_object_offset_y);
+        CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(offset_y), offset_y);
+
+        CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->instanced_vertex_buffer_object_offset_z);
+        CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(offset_z), offset_z);
+
+        CALL_GL(glBindBuffer, GL_ELEMENT_ARRAY_BUFFER, g_opengl_state->index_buffer_object);
+        CALL_GL(glBufferSubData, GL_ELEMENT_ARRAY_BUFFER, 0, sizeof(terrain_indices), terrain_indices);
+
+        CALL_GL(glDrawElementsInstanced, GL_TRIANGLES, ARRAY_COUNT(terrain_indices), GL_UNSIGNED_INT, 0, 1/*batch_size*/);
+
+        CALL_GL(glBindVertexArray, 0);
+        CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, 0);
+        CALL_GL(glBindBuffer, GL_ELEMENT_ARRAY_BUFFER, 0);
+        CALL_GL(glUseProgram, 0);
+
+
+        // Render debug lines.
+        {
+            CALL_GL(glUseProgram, g_opengl_state->debug_line_shader_program);
+            
+            GLint debug_line_loc;
+            CALL_GL_RET(&debug_line_loc, GLint, glGetUniformLocation, g_opengl_state->shader_program, "m_mvp");
+            CALL_GL(glUniformMatrix4fv, loc, 1, 1, &mvp_mtx.m[0]);
+            ASSERT(debug_line_loc != -1, "Failed to bind uniform.");
+            
+            CALL_GL(glBindVertexArray, g_opengl_state->debug_line_vertex_array_object);
+
+            f32 line_vertices[6] = {
+                0.0f, 0.0f, 0.0f,
+                1.0f, 1.0f, 1.0f,
+            };
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->debug_line_vertex_buffer_object_vertices);
+            CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(line_vertices), line_vertices);
+
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->debug_line_instanced_vertex_buffer_object_start_x);
+            CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, g_draw_data->num_arrows * sizeof(*g_draw_data->arrows_start_x), g_draw_data->arrows_start_x);
+
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->debug_line_instanced_vertex_buffer_object_start_y);
+            CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, g_draw_data->num_arrows * sizeof(*g_draw_data->arrows_start_y), g_draw_data->arrows_start_y);
+
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->debug_line_instanced_vertex_buffer_object_start_z);
+            CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, g_draw_data->num_arrows * sizeof(*g_draw_data->arrows_start_z), g_draw_data->arrows_start_z);
+
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->debug_line_instanced_vertex_buffer_object_end_x);
+            CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, g_draw_data->num_arrows * sizeof(*g_draw_data->arrows_end_x), g_draw_data->arrows_end_x);
+
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->debug_line_instanced_vertex_buffer_object_end_y);
+            CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, g_draw_data->num_arrows * sizeof(*g_draw_data->arrows_end_y), g_draw_data->arrows_end_y);
+
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->debug_line_instanced_vertex_buffer_object_end_z);
+            CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, g_draw_data->num_arrows * sizeof(*g_draw_data->arrows_end_z), g_draw_data->arrows_end_z);
+
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->debug_line_instanced_vertex_buffer_object_color_r);
+            CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, g_draw_data->num_arrows * sizeof(*g_draw_data->arrows_color_r), g_draw_data->arrows_color_r);
+
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->debug_line_instanced_vertex_buffer_object_color_g);
+            CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, g_draw_data->num_arrows * sizeof(*g_draw_data->arrows_color_g), g_draw_data->arrows_color_g);
+
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->debug_line_instanced_vertex_buffer_object_color_b);
+            CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, g_draw_data->num_arrows * sizeof(*g_draw_data->arrows_color_b), g_draw_data->arrows_color_b);
+            
+            CALL_GL(glDrawArraysInstanced, GL_LINES, 0, 2, g_draw_data->num_arrows);
+
+            CALL_GL(glBindVertexArray, 0);
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, 0);
+            CALL_GL(glBindBuffer, GL_ELEMENT_ARRAY_BUFFER, 0);
+            CALL_GL(glUseProgram, 0);
+        }
+
+        // Debug texture
+        {
+
+            // random number betwee 0 and 4294967295
+            // 1026793478
+            // 2550638353
+            // 513730960
+            // 980227355
+            // 1575412276
+            // 668711287
+            // 3002072601
+            // 1157920987
+
+            CALL_GL(glUseProgram, g_opengl_state->textured_quad_shader_program);
+
+#if 0
+            {
+                u32 random_seed_8[] = {
+                    1026793478,
+                    2550638353,
+                    513730960,
+                    980227355,
+                    1575412276,
+                    668711287,
+                    3002072601,
+                    1157920987,
+                };
+                __m256i vrandom = _mm256_loadu_si256((__m256i*)random_seed_8);
+                for(u64_m y = 0; y < g_draw_data->frame_buffer_height; y++)
+                {
+                    for(u64_m x = 0; x < g_draw_data->frame_buffer_width - 8; x += 8)
+                    {
+                        u32_m storage8[8];
+                        _mm256_storeu_si256((__m256i*)storage8, vrandom);
+
+                        for(u64_m lane = 0; lane < 8; lane++)
+                        {
+                            u32 b = storage8[lane] & 0xFF;
+                            g_draw_data->frame_buffer[y * g_draw_data->frame_buffer_width + x + lane] = 0xFF << 24 | b << 16 | b << 8 | (b);
+                        }
+
+                        vrandom = rand8_u32(vrandom);
+                    }
+                }
+            }
+#elif 0
+            {
+                f32 offset = 32.0f;
+                f32 scale = g_input_state->mouse_screen_pos_x * 0.003f;
+                __m256 accum_x = _mm256_fmadd_ps(_mm256_setr_ps(0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f), _mm256_set1_ps(scale), _mm256_set1_ps(offset));
+                __m256 accum_y = _mm256_set1_ps(offset);
+                for(u64_m y = 0; y < g_draw_data->frame_buffer_height; y++)
+                {
+                    for(u64_m x = 0; x < g_draw_data->frame_buffer_width - 8; x += 8)
+                    {
+                        __m256 v = pnoise8(accum_x, accum_y, _mm256_set1_ps(0.0f));
+
+                        f32_m storage8[8];
+                        _mm256_storeu_ps(storage8, v);
+
+                        for(u64_m lane = 0; lane < 8; lane++)
+                        {
+                            u32 b = (u32)((storage8[lane] * 0.5f + 0.5f) * 255.0f);
+                            u32 color = 0xFF << 24 | b << 16 | b << 8 | (b);
+                            g_draw_data->frame_buffer[y * g_draw_data->frame_buffer_width + x + lane] = color;
+                        }
+
+                        accum_x = _mm256_add_ps(accum_x, _mm256_set1_ps(scale * 8.0f));
+                    }
+                    accum_y = _mm256_add_ps(accum_y, _mm256_set1_ps(scale));
+                    accum_x = _mm256_fmadd_ps(_mm256_setr_ps(0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f), _mm256_set1_ps(scale), _mm256_set1_ps(offset));
+                }
+            }
+#endif
+
+#if 0
+            {
+                for(u64_m y = 0; y < g_draw_data->frame_buffer_height; y++)
+                {
+                    for(u64_m x = 0; x < g_draw_data->frame_buffer_width; x++)
+                    {
+                        f32 in = (f32)x * 0.04f;
+                        __m256 v = approx_sin8(_mm256_set1_ps(in));
+                        f32_m storage8[8];
+                        _mm256_storeu_ps(storage8, v);
+                        u32 b = (u32)((storage8[0] * 0.5f + 0.5f) * 255.0f);
+                        g_draw_data->frame_buffer[y * g_draw_data->frame_buffer_width + x] = 0xFF << 24 | b << 16 | b << 8 | (b);
+                    }
+                }
+            }
+#endif
+
+
+
+#if 0
+            CALL_GL(glTexSubImage2D,
+                    GL_TEXTURE_2D, // GLenum target
+                    0, // GLint level
+                    0, // GLint xoffset
+                    0, // GLint yoffset
+                    g_draw_data->frame_buffer_width,  // GLsizei width
+                    g_draw_data->frame_buffer_height, // GLsizei height
+                    GL_RGBA,          // GLenum format
+                    GL_UNSIGNED_BYTE, // GLenum type
+                    g_draw_data->frame_buffer);
+            const GLuint asdferr = g_opengl_state->glGetError();
+            ASSERT(asdferr == 0, "failed"); \
+
+            CALL_GL(glBindVertexArray, g_opengl_state->fullscreen_quad_vertex_array_object);
+
+            f32 quad_vertices[] = {
+                -1.0f, -1.0f,
+                 1.0f, -1.0f,
+                 1.0f,  1.0f,
+
+                -1.0f, -1.0f,
+                 1.0f,  1.0f,
+                -1.0f,  1.0f,
+            };
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->fullscreen_quad_vertex_buffer_object_pos);
+            CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(quad_vertices), quad_vertices);
+
+            CALL_GL(glDrawArrays, GL_TRIANGLES, 0, 6);
+
+            CALL_GL(glBindVertexArray, 0);
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, 0);
+            CALL_GL(glBindBuffer, GL_ELEMENT_ARRAY_BUFFER, 0);
+            CALL_GL(glUseProgram, 0);
+#endif
+        }
+    }
+
+    {
+        struct InputState* input_state = g_input_state;
+        memcpy(input_state->last_key, input_state->key, sizeof(input_state->last_key));
+        memcpy(input_state->last_mouse_key, input_state->mouse_key, sizeof(input_state->last_mouse_key));
+    }
+}
+
 

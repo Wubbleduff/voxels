@@ -30,7 +30,7 @@ typedef unsigned int u32_m;
 typedef unsigned long long u64_m;
 typedef char s8_m;
 typedef short s16_m;
-typedef const int s32_m;
+typedef int s32_m;
 typedef long long s64_m;
 typedef float f32_m;
 typedef double f64_m;
