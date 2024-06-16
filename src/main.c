@@ -112,6 +112,11 @@ MAYBE_UNUSED static inline struct MemoryArena memory_arena_init(void* base, u64 
     return result;
 }
 
+MAYBE_UNUSED static inline void memory_arena_reset(struct MemoryArena* arena)
+{
+    arena->cur = (u8_m*)arena->start;
+}
+
 MAYBE_UNUSED static inline void* memory_arena_allocate(const char* file, s32 line, struct MemoryArena* arena, u64 req_bytes)
 {
     (void)file;
@@ -1044,7 +1049,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     return result;
 }
 
-static void do_one_frame();
+static void do_one_frame(struct MemoryArena*);
 
 int WinMainCRTStartup()
 {
@@ -1055,7 +1060,7 @@ int WinMainCRTStartup()
     
     // Init application memory.
     void* main_memory_arena_starting_address = (void*)0x100000;
-    u64 main_memory_arena_cap = MB(10);
+    u64 main_memory_arena_cap = MB(15);
     void* main_memory_arena_storage = VirtualAlloc(
         main_memory_arena_starting_address,
         main_memory_arena_cap,
@@ -1317,6 +1322,8 @@ int WinMainCRTStartup()
                 "void main()\n"
                 "{\n"
                 "    result_frag_color = vec4(v_color, 1.0f);\n"
+                //"    result_frag_color = vec4(0.05f, 0.5f, 0.0f, 1.0f);\n"
+                //"    result_frag_color = vec4(0.05f, 0.5f, 0.0f, 1.0f);\n"
                 "}\n"
                 "\n";
             g_opengl_state->shader_program = make_shader_program(vertex_source, fragment_source);
@@ -1548,6 +1555,10 @@ int WinMainCRTStartup()
     }
 
 
+    u64 frame_memory_arena_bytes = MB(5);
+    struct MemoryArena frame_memory_arena = memory_arena_init(MEMORY_ARENA_ALLOCATE(&main_memory_arena, frame_memory_arena_bytes), frame_memory_arena_bytes);
+
+
     // Main loop
     s64 engine_start_timestamp_us = get_timestamp_us();
     s64_m last_frame_timestamp_us = engine_start_timestamp_us;
@@ -1585,7 +1596,9 @@ int WinMainCRTStartup()
             }
         }
 
-        do_one_frame();
+        do_one_frame(&frame_memory_arena);
+
+        memory_arena_reset(&frame_memory_arena);
 
         const HDC dc = GetDC(g_opengl_state->hwnd);
         BOOL swap_buffers_success = SwapBuffers(dc);
@@ -1598,7 +1611,7 @@ int WinMainCRTStartup()
 }
 
 
-static void do_one_frame()
+static void do_one_frame(struct MemoryArena* memory_arena)
 {
     {
         struct InputState* input_state = g_input_state;
@@ -1684,28 +1697,93 @@ static void do_one_frame()
     }
 
 
-    //                       0      1      2      3      4      5      6      7      8
-    f32 terrain_vx[9] = {-1.0f,  0.0f,  1.0f, -1.0f,  0.0f,  1.0f, -1.0f,  0.0f,  1.0f};
-    f32 terrain_vy[9] = { 0.0f,  0.0f,  0.0f,  0.0f,  0.0f,  0.0f, -1.0f,  0.0f,  1.0f};
-    f32 terrain_vz[9] = { 1.0f,  1.0f,  1.0f,  0.0f,  0.0f,  0.0f, -1.0f, -1.0f, -1.0f};
 
-    f32 terrain_nx[9] = { 0.0f,  0.0f,  0.0f,  0.0f,  0.0f,  0.0f, -0.7f,  0.0f, -0.7f};
-    f32 terrain_ny[9] = { 1.0f,  1.0f,  1.0f,  1.0f,  1.0f,  1.0f,  0.7f,  1.0f,  0.7f};
-    f32 terrain_nz[9] = { 0.0f,  0.0f,  0.0f,  0.0f,  0.0f,  0.0f, -0.7f,  0.0f,  0.7f};
+    u32 terrain_width = 128;
+    u32 terrain_vertex_stride = terrain_width + 1;
+    u32 num_terrain_vertices = (terrain_width + 1) * (terrain_width + 1);
+    f32_m* terrain_vx = (f32_m*)MEMORY_ARENA_ALLOCATE(memory_arena, num_terrain_vertices * sizeof(f32));
+    f32_m* terrain_vy = (f32_m*)MEMORY_ARENA_ALLOCATE(memory_arena, num_terrain_vertices * sizeof(f32));
+    f32_m* terrain_vz = (f32_m*)MEMORY_ARENA_ALLOCATE(memory_arena, num_terrain_vertices * sizeof(f32));
+    f32_m* terrain_nx = (f32_m*)MEMORY_ARENA_ALLOCATE(memory_arena, num_terrain_vertices * sizeof(f32));
+    f32_m* terrain_ny = (f32_m*)MEMORY_ARENA_ALLOCATE(memory_arena, num_terrain_vertices * sizeof(f32));
+    f32_m* terrain_nz = (f32_m*)MEMORY_ARENA_ALLOCATE(memory_arena, num_terrain_vertices * sizeof(f32));
+    u32_m* terrain_indices = (u32_m*)MEMORY_ARENA_ALLOCATE(memory_arena, terrain_width * terrain_width * 6 * sizeof(u32));
 
-    u32 terrain_indices[] = {
-        0, 1, 3,
-        3, 1, 4,
+    u32_m num_terrain_indices = 0;
+    {
+        f32 offset = 32.0f;
+        f32 scale = 0.036f;
+        __m256 accum_x = _mm256_fmadd_ps(_mm256_setr_ps(0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f), _mm256_set1_ps(scale), _mm256_set1_ps(offset));
+        __m256 accum_z = _mm256_set1_ps(offset);
+        for(u64_m i_z = 0; i_z < terrain_vertex_stride; i_z++)
+        {
+            for(u64_m i_x = 0; i_x < terrain_vertex_stride - 8; i_x += 8)
+            {
+                __m256 v = pnoise8(accum_x, _mm256_set1_ps(0.0f), accum_z);
 
-        1, 2, 4,
-        4, 2, 5,
-        
-        3, 4, 6,
-        6, 4, 7,
+                f32_m storage8[8];
+                _mm256_storeu_ps(storage8, v);
 
-        4, 5, 7,
-        7, 5, 8
-    };
+                for(u64_m lane = 0; lane < 8; lane++)
+                {
+                    f32 x = (f32)i_x - (f32)terrain_width * 0.5f;
+                    f32 z = (f32)i_z - (f32)terrain_width * 0.5f;
+                    f32 n = storage8[lane] * 0.5f + 0.5f;
+                    terrain_vx[i_z * terrain_vertex_stride + i_x + lane] = x + (f32)lane;
+                    terrain_vy[i_z * terrain_vertex_stride + i_x + lane] = n * 100.0f;
+                    terrain_vz[i_z * terrain_vertex_stride + i_x + lane] = z;
+
+                    u32 c = rand_u32((u32)(i_z * terrain_vertex_stride + i_x + lane));
+                    terrain_nx[i_z * terrain_vertex_stride + i_x + lane] = (f32)((c >> 16) & 0xFF) / 256.0f;
+                    terrain_ny[i_z * terrain_vertex_stride + i_x + lane] = (f32)((c >>  8) & 0xFF) / 256.0f;
+                    terrain_nz[i_z * terrain_vertex_stride + i_x + lane] = (f32)((c >>  0) & 0xFF) / 256.0f;
+                }
+
+                accum_x = _mm256_add_ps(accum_x, _mm256_set1_ps(scale * 8.0f));
+            }
+
+            {
+                __m256 v = pnoise8(accum_x, _mm256_set1_ps(0.0f), accum_z);
+                f32_m storage8[8];
+                _mm256_storeu_ps(storage8, v);
+                for(u64_m i_x = terrain_vertex_stride & ~0b111, lane = 0; i_x < terrain_vertex_stride; i_x++, lane++)
+                {
+                    f32 x = (f32)i_x - (f32)terrain_width * 0.5f;
+                    f32 z = (f32)i_z - (f32)terrain_width * 0.5f;
+                    f32 n = storage8[lane] * 0.5f + 0.5f;
+                    terrain_vx[i_z * terrain_vertex_stride + i_x] = x + (f32)lane;
+                    terrain_vy[i_z * terrain_vertex_stride + i_x] = n * 100.0f;
+                    terrain_vz[i_z * terrain_vertex_stride + i_x] = z;
+
+                    terrain_nx[i_z * terrain_vertex_stride + i_x] = n;
+                    terrain_ny[i_z * terrain_vertex_stride + i_x] = n;
+                    terrain_nz[i_z * terrain_vertex_stride + i_x] = n;
+                }
+            }
+
+            accum_z = _mm256_add_ps(accum_z, _mm256_set1_ps(scale));
+            accum_x = _mm256_fmadd_ps(_mm256_setr_ps(0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f), _mm256_set1_ps(scale), _mm256_set1_ps(offset));
+        }
+
+        for(u32_m i_z = 0; i_z < terrain_width; i_z++)
+        {
+            for(u32_m i_x = 0; i_x < terrain_width; i_x++)
+            {
+                u32 bl = (i_z + 1) * terrain_vertex_stride + i_x;
+                u32 br = (i_z + 1) * terrain_vertex_stride + i_x + 1;
+                u32 tl = (i_z + 0) * terrain_vertex_stride + i_x;
+                u32 tr = (i_z + 0) * terrain_vertex_stride + i_x + 1;
+
+                terrain_indices[num_terrain_indices++] = bl;
+                terrain_indices[num_terrain_indices++] = br;
+                terrain_indices[num_terrain_indices++] = tl;
+
+                terrain_indices[num_terrain_indices++] = tl;
+                terrain_indices[num_terrain_indices++] = br;
+                terrain_indices[num_terrain_indices++] = tr;
+            }
+        }
+    }
 
 
     f32 offset_x[] = { 0.0f };
@@ -1755,7 +1833,7 @@ static void do_one_frame()
         v3 J_cam = {.m={world_to_cam_mtx.m[1*4 + 0], world_to_cam_mtx.m[1*4 + 1], world_to_cam_mtx.m[1*4 + 2]}};
         v3 K_cam = {.m={world_to_cam_mtx.m[2*4 + 0], world_to_cam_mtx.m[2*4 + 1], world_to_cam_mtx.m[2*4 + 2]}};
 
-        f32 speed = 0.05f;
+        f32 speed = 0.5f;
         cam_pos = v3_add(cam_pos, v3_scale(K_cam, -speed * (float)is_key_down(g_input_state, KB_W)));
         cam_pos = v3_add(cam_pos, v3_scale(K_cam,  speed * (float)is_key_down(g_input_state, KB_S)));
 
@@ -1999,22 +2077,22 @@ static void do_one_frame()
         CALL_GL(glBindVertexArray, g_opengl_state->vertex_array_object);
 
         CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->vertex_buffer_object_vx);
-        CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(terrain_vx), terrain_vx);
+        CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_terrain_vertices * sizeof(f32), terrain_vx);
 
         CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->vertex_buffer_object_vy);
-        CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(terrain_vy), terrain_vy);
+        CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_terrain_vertices * sizeof(f32), terrain_vy);
 
         CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->vertex_buffer_object_vz);
-        CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(terrain_vz), terrain_vz);
+        CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_terrain_vertices * sizeof(f32), terrain_vz);
 
         CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->vertex_buffer_object_nx);
-        CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(terrain_nx), terrain_nx);
+        CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_terrain_vertices * sizeof(f32), terrain_nx);
 
         CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->vertex_buffer_object_ny);
-        CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(terrain_ny), terrain_ny);
+        CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_terrain_vertices * sizeof(f32), terrain_ny);
 
         CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->vertex_buffer_object_nz);
-        CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(terrain_nz), terrain_nz);
+        CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_terrain_vertices * sizeof(f32), terrain_nz);
 
         CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, g_opengl_state->instanced_vertex_buffer_object_offset_x);
         CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(offset_x), offset_x);
@@ -2026,9 +2104,10 @@ static void do_one_frame()
         CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(offset_z), offset_z);
 
         CALL_GL(glBindBuffer, GL_ELEMENT_ARRAY_BUFFER, g_opengl_state->index_buffer_object);
-        CALL_GL(glBufferSubData, GL_ELEMENT_ARRAY_BUFFER, 0, sizeof(terrain_indices), terrain_indices);
+        CALL_GL(glBufferSubData, GL_ELEMENT_ARRAY_BUFFER, 0, num_terrain_indices * sizeof(u32), terrain_indices);
 
-        CALL_GL(glDrawElementsInstanced, GL_TRIANGLES, ARRAY_COUNT(terrain_indices), GL_UNSIGNED_INT, 0, 1/*batch_size*/);
+        CALL_GL(glDrawElementsInstanced, GL_TRIANGLES, num_terrain_indices, GL_UNSIGNED_INT, 0, 1/*batch_size*/);
+        //CALL_GL(glDrawElementsInstanced, GL_LINES, num_terrain_indices, GL_UNSIGNED_INT, 0, 1/*batch_size*/);
 
         CALL_GL(glBindVertexArray, 0);
         CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, 0);
@@ -2163,7 +2242,7 @@ static void do_one_frame()
                 }
             }
 #endif
-
+    
 #if 0
             {
                 for(u64_m y = 0; y < g_draw_data->frame_buffer_height; y++)
