@@ -12,6 +12,11 @@
     #define MAYBE_UNUSED 
 #endif
 
+#ifdef INTERNAL
+#error "INTERNAL" already defined.
+#endif
+#define INTERNAL MAYBE_UNUSED static
+
 
 typedef const unsigned char u8;
 typedef const unsigned short u16;
@@ -35,9 +40,50 @@ typedef long long s64_m;
 typedef float f32_m;
 typedef double f64_m;
 
+#define MAX_U32 ((u32)(-1))
+
 #define ARRAY_COUNT(N) (sizeof(N) / sizeof((N)[0]))
 
 #define KB(N) (N * 1024ULL)
 #define MB(N) (N * 1024ULL * 1024ULL)
 #define GB(N) (N * 1024ULL * 1024ULL * 1024ULL)
+
+
+static inline u64 cstr_len(const char* s)
+{
+    u64_m n = 0;
+    while(*s++) n++;
+    return n;
+}
+
+typedef struct
+{
+    // Last byte should always be 0 so we can trivially cast to C-string.
+    _Alignas(32) char buf[32];
+} StringBuf32;
+
+static inline const char* StringBuf32_to_cstr(const StringBuf32* s)
+{
+    return s->buf;
+}
+
+static inline StringBuf32 u32_to_StringBuf32(u32_m n)
+{
+    StringBuf32 result;
+    memset(result.buf, 0, sizeof(result));
+    u64_m size = 0;
+    while(n && size < 31)
+    {
+        u32 digit = n % 10;
+        result.buf[size++] = (char)('0' + digit);
+        n /= 10;
+    }
+    for(u64_m i = 0; i < size / 2; i++)
+    {
+        char tmp = result.buf[i];
+        result.buf[i] = result.buf[size - i - 1];
+        result.buf[size - i - 1] = tmp;
+    }
+    return result;
+}
 

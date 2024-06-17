@@ -28,10 +28,13 @@ set CLANG_DEPLOY_DEBUG_DIR=.\clang_deploy\debug
 mkdir %CLANG_INTERMEDIATE_DIR%
 mkdir %CLANG_DEPLOY_DEBUG_DIR%
 
-clang-cl %COMMON_COMPILE_FLAGS% %CLANG_COMPILE_FLAGS% %DEBUG_COMPILE_FLAGS% %INCLUDE_DIRS% /Fo%CLANG_INTERMEDIATE_DIR%\main.obj %SRC%\main.c
+clang-cl %COMMON_COMPILE_FLAGS% %CLANG_COMPILE_FLAGS% %DEBUG_COMPILE_FLAGS% %INCLUDE_DIRS% /Fo%CLANG_INTERMEDIATE_DIR%\engine.obj %SRC%\engine.c
 if %errorlevel% neq 0 exit /b %errorlevel%
 
-clang-cl %COMMON_COMPILE_FLAGS% %DEBUG_COMPILE_FLAGS% %INCLUDE_DIRS% /Fo%CLANG_INTERMEDIATE_DIR%\win32_crt.obj %SRC%\win32_crt.c
+clang-cl %COMMON_COMPILE_FLAGS% %CLANG_COMPILE_FLAGS% %DEBUG_COMPILE_FLAGS% %INCLUDE_DIRS% /Fo%CLANG_INTERMEDIATE_DIR%\win32_crt.obj %SRC%\win32_crt.c
+if %errorlevel% neq 0 exit /b %errorlevel%
+
+clang-cl %COMMON_COMPILE_FLAGS% %CLANG_COMPILE_FLAGS% %DEBUG_COMPILE_FLAGS% %INCLUDE_DIRS% /Fo%CLANG_INTERMEDIATE_DIR%\platform_win32_opengl.obj %SRC%\platform_win32_opengl.c
 if %errorlevel% neq 0 exit /b %errorlevel%
 
 lld-link %DEBUG_LINK_FLAGS% %LIBS% %CLANG_INTERMEDIATE_DIR%\*.obj /OUT:"%CLANG_INTERMEDIATE_DIR%\%NAME%.exe"
@@ -54,10 +57,13 @@ set MSVC_DEPLOY_DEBUG_DIR=.\msvc_deploy\debug
 mkdir %MSVC_INTERMEDIATE_DIR%
 mkdir %MSVC_DEPLOY_DEBUG_DIR%
 
-cl %COMMON_COMPILE_FLAGS% %DEBUG_COMPILE_FLAGS% %INCLUDE_DIRS% /Fo%MSVC_INTERMEDIATE_DIR%\main.obj %SRC%\main.c
+cl %COMMON_COMPILE_FLAGS% %DEBUG_COMPILE_FLAGS% %INCLUDE_DIRS% /Fo%MSVC_INTERMEDIATE_DIR%\engine.obj %SRC%\engine.c
 if %errorlevel% neq 0 exit /b %errorlevel%
 
 cl %COMMON_COMPILE_FLAGS% %DEBUG_COMPILE_FLAGS% %INCLUDE_DIRS% /Fo%MSVC_INTERMEDIATE_DIR%\win32_crt.obj %SRC%\win32_crt.c
+if %errorlevel% neq 0 exit /b %errorlevel%
+
+cl %COMMON_COMPILE_FLAGS% %DEBUG_COMPILE_FLAGS% %INCLUDE_DIRS% /Fo%MSVC_INTERMEDIATE_DIR%\platform_win32_opengl.obj %SRC%\platform_win32_opengl.c
 if %errorlevel% neq 0 exit /b %errorlevel%
 
 link %DEBUG_LINK_FLAGS% %LIBS% %MSVC_INTERMEDIATE_DIR%\*.obj /OUT:"%MSVC_INTERMEDIATE_DIR%\%NAME%.exe"
