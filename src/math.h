@@ -6,6 +6,11 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Math
 
+INTERNAL inline f32 absf(f32 a)
+{
+    return a < 0.0f ? -a : a;
+} 
+
 #define H_PI 1.57079637f
 #define PI 3.14159274f
 #define TAU 6.28318548f
@@ -267,7 +272,7 @@ INTERNAL inline void make_x_axis_rotation_mtx(mtx4x4* r, f32 turns)
     r->m[12] = 0.0f;  r->m[13] = 0.0f;  r->m[14] = 0.0f;   r->m[15] = 1.0f;
 }
 
-INTERNAL inline void make_y_axis_rotation_mtx(mtx4x4* r, float turns)
+INTERNAL inline void make_y_axis_rotation_mtx(mtx4x4* r, f32 turns)
 {
     __m256 a_v = approx_sin8(_mm256_setr_ps(TAU * turns, TAU * turns + H_PI, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f));
     _Alignas(32) f32_m a[8];

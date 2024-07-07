@@ -658,14 +658,14 @@ f32 get_screen_aspect_ratio()
     return (float)opengl_state->screen_height / (float)opengl_state->screen_width;
 }
 
-void draw_imm_Mesh_1M(const struct Mesh_1M* mesh, const mtx4x4* transform)
+void draw_Mesh_64(const struct Mesh_64* mesh, const mtx4x4* camera_and_clip_mtx, u64 num, f32* pos_x, f32* pos_y, f32* pos_z)
 {
     struct OpenGLState* opengl_state = &g_platform->opengl_state;
     CALL_GL(glUseProgram, opengl_state->shader_program);
 
     GLint loc;
     CALL_GL_RET(&loc, GLint, glGetUniformLocation, opengl_state->shader_program, "m_mvp");
-    CALL_GL(glUniformMatrix4fv, loc, 1, 1, &transform->m[0]);
+    CALL_GL(glUniformMatrix4fv, loc, 1, 1, &camera_and_clip_mtx->m[0]);
     ASSERT(loc != -1, "Failed to bind uniform.");
 
     CALL_GL(glBindVertexArray, opengl_state->vertex_array_object);
@@ -688,20 +688,20 @@ void draw_imm_Mesh_1M(const struct Mesh_1M* mesh, const mtx4x4* transform)
     CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->vertex_buffer_object_nz);
     CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, mesh->num_vertices * sizeof(f32), mesh->nz);
 
-    // CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->instanced_vertex_buffer_object_offset_x);
-    // CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(offset_x), offset_x);
+    ASSERT(num * sizeof(f32) <= VERTEX_ARRAY_BYTES, "Instanced buffer overflow.");
+    CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->instanced_vertex_buffer_object_offset_x);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num * sizeof(f32), pos_x);
 
-    // CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->instanced_vertex_buffer_object_offset_y);
-    // CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(offset_y), offset_y);
+    CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->instanced_vertex_buffer_object_offset_y);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num * sizeof(f32), pos_y);
 
-    // CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->instanced_vertex_buffer_object_offset_z);
-    // CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(offset_z), offset_z);
+    CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->instanced_vertex_buffer_object_offset_z);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num * sizeof(f32), pos_z);
 
     CALL_GL(glBindBuffer, GL_ELEMENT_ARRAY_BUFFER, opengl_state->index_buffer_object);
     CALL_GL(glBufferSubData, GL_ELEMENT_ARRAY_BUFFER, 0, mesh->num_indices * sizeof(u32), mesh->indices);
 
-    CALL_GL(glDrawElementsInstanced, GL_TRIANGLES, mesh->num_indices, GL_UNSIGNED_INT, 0, 1/*batch_size*/);
-    //CALL_GL(glDrawElementsInstanced, GL_LINES, mesh->num_indices, GL_UNSIGNED_INT, 0, 1);
+    CALL_GL(glDrawElementsInstanced, GL_TRIANGLES, mesh->num_indices, GL_UNSIGNED_INT, 0, (GLsizei)num);
 
     CALL_GL(glBindVertexArray, 0);
     CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, 0);
@@ -710,14 +710,66 @@ void draw_imm_Mesh_1M(const struct Mesh_1M* mesh, const mtx4x4* transform)
 
 }
 
-void debug_draw_imm_line(const mtx4x4* transform, v3 a, v3 b, v3 c)
+void draw_Mesh_1M(const struct Mesh_1M* mesh, const mtx4x4* camera_and_clip_mtx, u64 num, f32* pos_x, f32* pos_y, f32* pos_z)
+{
+    struct OpenGLState* opengl_state = &g_platform->opengl_state;
+    CALL_GL(glUseProgram, opengl_state->shader_program);
+
+    GLint loc;
+    CALL_GL_RET(&loc, GLint, glGetUniformLocation, opengl_state->shader_program, "m_mvp");
+    CALL_GL(glUniformMatrix4fv, loc, 1, 1, &camera_and_clip_mtx->m[0]);
+    ASSERT(loc != -1, "Failed to bind uniform.");
+
+    CALL_GL(glBindVertexArray, opengl_state->vertex_array_object);
+
+    CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->vertex_buffer_object_vx);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, mesh->num_vertices * sizeof(f32), mesh->vx);
+
+    CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->vertex_buffer_object_vy);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, mesh->num_vertices * sizeof(f32), mesh->vy);
+
+    CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->vertex_buffer_object_vz);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, mesh->num_vertices * sizeof(f32), mesh->vz);
+
+    CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->vertex_buffer_object_nx);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, mesh->num_vertices * sizeof(f32), mesh->nx);
+
+    CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->vertex_buffer_object_ny);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, mesh->num_vertices * sizeof(f32), mesh->ny);
+
+    CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->vertex_buffer_object_nz);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, mesh->num_vertices * sizeof(f32), mesh->nz);
+
+    ASSERT(num * sizeof(f32) <= VERTEX_ARRAY_BYTES, "Instanced buffer overflow.");
+    CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->instanced_vertex_buffer_object_offset_x);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num * sizeof(f32), pos_x);
+
+    CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->instanced_vertex_buffer_object_offset_y);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num * sizeof(f32), pos_y);
+
+    CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->instanced_vertex_buffer_object_offset_z);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num * sizeof(f32), pos_z);
+
+    CALL_GL(glBindBuffer, GL_ELEMENT_ARRAY_BUFFER, opengl_state->index_buffer_object);
+    CALL_GL(glBufferSubData, GL_ELEMENT_ARRAY_BUFFER, 0, mesh->num_indices * sizeof(u32), mesh->indices);
+
+    CALL_GL(glDrawElementsInstanced, GL_TRIANGLES, mesh->num_indices, GL_UNSIGNED_INT, 0, (GLsizei)num);
+
+    CALL_GL(glBindVertexArray, 0);
+    CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, 0);
+    CALL_GL(glBindBuffer, GL_ELEMENT_ARRAY_BUFFER, 0);
+    CALL_GL(glUseProgram, 0);
+
+}
+
+void debug_draw_line(const mtx4x4* camera_and_clip_mtx, v3 a, v3 b, v3 c)
 {
     struct OpenGLState* opengl_state = &g_platform->opengl_state;
     CALL_GL(glUseProgram, opengl_state->debug_line_shader_program);
     
     GLint debug_line_loc;
     CALL_GL_RET(&debug_line_loc, GLint, glGetUniformLocation, opengl_state->shader_program, "m_mvp");
-    CALL_GL(glUniformMatrix4fv, debug_line_loc, 1, 1, &transform->m[0]);
+    CALL_GL(glUniformMatrix4fv, debug_line_loc, 1, 1, &camera_and_clip_mtx->m[0]);
     ASSERT(debug_line_loc != -1, "Failed to bind uniform.");
     
     CALL_GL(glBindVertexArray, opengl_state->debug_line_vertex_array_object);
@@ -766,7 +818,7 @@ void debug_draw_imm_line(const mtx4x4* transform, v3 a, v3 b, v3 c)
 }
 
 #if 0
-void draw_imm_frame_buffer(struct FrameBuffer* fb)
+void draw_frame_buffer(struct FrameBuffer* fb)
 {
     CALL_GL(glUseProgram, g_opengl_state->textured_quad_shader_program);
     CALL_GL(glTexSubImage2D,
@@ -1040,7 +1092,7 @@ void WinMainCRTStartup()
         opengl_state->glTexSubImage2D = (fnptr_glTexSubImage2D)load_gl_fn(opengl32_dll_module, "glTexSubImage2D");
 
         glViewport(0, 0, (GLsizei)opengl_state->screen_width, (GLsizei)opengl_state->screen_height);
-        glEnable(GL_CULL_FACE);
+        //glEnable(GL_CULL_FACE);
         glCullFace(GL_BACK);
         glFrontFace(GL_CCW);
         glEnable(GL_DEPTH_TEST);
