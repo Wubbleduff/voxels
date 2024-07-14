@@ -109,6 +109,17 @@ struct OpenGLState
     GLuint debug_line_instanced_vertex_buffer_object_color_b;
     GLuint debug_line_shader_program;
 
+    GLuint debug_sphere_vertex_array_object;
+    GLuint debug_sphere_vertex_buffer_object_vertices;
+    GLuint debug_sphere_instanced_vertex_buffer_object_pos_x;
+    GLuint debug_sphere_instanced_vertex_buffer_object_pos_y;
+    GLuint debug_sphere_instanced_vertex_buffer_object_pos_z;
+    GLuint debug_sphere_instanced_vertex_buffer_object_radius;
+    GLuint debug_sphere_instanced_vertex_buffer_object_color_r;
+    GLuint debug_sphere_instanced_vertex_buffer_object_color_g;
+    GLuint debug_sphere_instanced_vertex_buffer_object_color_b;
+    GLuint debug_sphere_shader_program;
+
     GLuint fullscreen_quad_vertex_array_object;
     GLuint fullscreen_quad_vertex_buffer_object_pos;
     GLuint fullscreen_quad_texture;
@@ -627,7 +638,7 @@ INTERNAL GLuint make_shader_program(const char* vertex_source, const char* fragm
     CALL_GL(glGetShaderiv, fragment_shader, GL_COMPILE_STATUS, &shader_compile_success);
     if(!shader_compile_success)
     {
-        CALL_GL(glGetShaderInfoLog, vertex_shader, sizeof(debug_info_buf), &debug_info_len, debug_info_buf);
+        CALL_GL(glGetShaderInfoLog, fragment_shader, sizeof(debug_info_buf), &debug_info_len, debug_info_buf);
         WriteFile(g_platform->log_file, debug_info_buf, debug_info_len, NULL, NULL);
         ASSERT(0, "Failed to compile fragment shader.");
     }
@@ -810,6 +821,67 @@ void debug_draw_line(const mtx4x4* camera_and_clip_mtx, v3 a, v3 b, v3 c)
     CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_lines * sizeof(float), c.m + 2);
     
     CALL_GL(glDrawArraysInstanced, GL_LINES, 0, 2, num_lines);
+
+    CALL_GL(glBindVertexArray, 0);
+    CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, 0);
+    CALL_GL(glBindBuffer, GL_ELEMENT_ARRAY_BUFFER, 0);
+    CALL_GL(glUseProgram, 0);
+}
+
+void debug_draw_sphere(const mtx4x4* proj_mtx, const mtx4x4* cam_mtx, v3 pos, f32 r, v3 c)
+{
+    struct OpenGLState* opengl_state = &g_platform->opengl_state;
+    CALL_GL(glUseProgram, opengl_state->debug_sphere_shader_program);
+    
+    GLint loc;
+    CALL_GL_RET(&loc, GLint, glGetUniformLocation, opengl_state->debug_sphere_shader_program, "m_cam");
+    CALL_GL(glUniformMatrix4fv, loc, 1, 1, &cam_mtx->m[0]);
+    ASSERT(loc != -1, "Failed to bind uniform.");
+
+    CALL_GL_RET(&loc, GLint, glGetUniformLocation, opengl_state->debug_sphere_shader_program, "m_proj");
+    CALL_GL(glUniformMatrix4fv, loc, 1, 1, &proj_mtx->m[0]);
+    ASSERT(loc != -1, "Failed to bind uniform.");
+    
+    CALL_GL(glBindVertexArray, opengl_state->debug_sphere_vertex_array_object);
+
+    /*
+      3----4
+      |    |
+      1----2
+    */
+    f32 verts[3 * 4] = {
+        // X      Y     Z
+        -1.0f, -1.0f, 0.0f,
+         1.0f, -1.0f, 0.0f,
+        -1.0f,  1.0f, 0.0f,
+         1.0f,  1.0f, 0.0f,
+    };
+    CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->debug_sphere_vertex_buffer_object_vertices);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
+
+    u32 num_spheres = 1;
+    CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->debug_sphere_instanced_vertex_buffer_object_pos_x);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_spheres * sizeof(float), pos.m + 0);
+
+    CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->debug_sphere_instanced_vertex_buffer_object_pos_y);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_spheres * sizeof(float), pos.m + 1);
+
+    CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->debug_sphere_instanced_vertex_buffer_object_pos_z);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_spheres * sizeof(float), pos.m + 2);
+
+    CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->debug_sphere_instanced_vertex_buffer_object_radius);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_spheres * sizeof(float), &r);
+
+    CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->debug_sphere_instanced_vertex_buffer_object_color_r);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_spheres * sizeof(float), c.m + 0);
+
+    CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->debug_sphere_instanced_vertex_buffer_object_color_g);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_spheres * sizeof(float), c.m + 1);
+
+    CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->debug_sphere_instanced_vertex_buffer_object_color_b);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_spheres * sizeof(float), c.m + 2);
+    
+    CALL_GL(glDrawArraysInstanced, GL_TRIANGLE_STRIP, 0, 4, num_spheres);
 
     CALL_GL(glBindVertexArray, 0);
     CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, 0);
@@ -1360,6 +1432,143 @@ void WinMainCRTStartup()
                 "}\n"
                 "\n";
             opengl_state->debug_line_shader_program = make_shader_program(vertex_source, fragment_source);
+        }
+
+        {
+            // Debug spheres
+            // Vertex array object
+            CALL_GL(glGenVertexArrays, 1, &opengl_state->debug_sphere_vertex_array_object);
+            CALL_GL(glBindVertexArray, opengl_state->debug_sphere_vertex_array_object);
+
+            u32_m attr_idx = 0;
+
+            // Vertex buffer: vertices
+            CALL_GL(glGenBuffers, 1, &opengl_state->debug_sphere_vertex_buffer_object_vertices);
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->debug_sphere_vertex_buffer_object_vertices);
+            CALL_GL(glBufferData, GL_ARRAY_BUFFER, 12 * sizeof(f32), NULL, GL_DYNAMIC_DRAW);
+            CALL_GL(glVertexAttribPointer, attr_idx, 3, GL_FLOAT, GL_FALSE, 0, 0);
+            CALL_GL(glEnableVertexAttribArray, attr_idx);
+            attr_idx++;
+
+            // Vertex buffer: pos x
+            CALL_GL(glGenBuffers, 1, &opengl_state->debug_sphere_instanced_vertex_buffer_object_pos_x);
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->debug_sphere_instanced_vertex_buffer_object_pos_x);
+            CALL_GL(glBufferData, GL_ARRAY_BUFFER, VERTEX_ARRAY_BYTES, NULL, GL_DYNAMIC_DRAW);
+            CALL_GL(glVertexAttribPointer, attr_idx, 1, GL_FLOAT, GL_FALSE, 0, 0);
+            CALL_GL(glEnableVertexAttribArray, attr_idx);
+            CALL_GL(glVertexAttribDivisor, attr_idx, 1);
+            attr_idx++;
+
+            // Vertex buffer: pos y
+            CALL_GL(glGenBuffers, 1, &opengl_state->debug_sphere_instanced_vertex_buffer_object_pos_y);
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->debug_sphere_instanced_vertex_buffer_object_pos_y);
+            CALL_GL(glBufferData, GL_ARRAY_BUFFER, VERTEX_ARRAY_BYTES, NULL, GL_DYNAMIC_DRAW);
+            CALL_GL(glVertexAttribPointer, attr_idx, 1, GL_FLOAT, GL_FALSE, 0, 0);
+            CALL_GL(glEnableVertexAttribArray, attr_idx);
+            CALL_GL(glVertexAttribDivisor, attr_idx, 1);
+            attr_idx++;
+
+            // Vertex buffer: pos z
+            CALL_GL(glGenBuffers, 1, &opengl_state->debug_sphere_instanced_vertex_buffer_object_pos_z);
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->debug_sphere_instanced_vertex_buffer_object_pos_z);
+            CALL_GL(glBufferData, GL_ARRAY_BUFFER, VERTEX_ARRAY_BYTES, NULL, GL_DYNAMIC_DRAW);
+            CALL_GL(glVertexAttribPointer, attr_idx, 1, GL_FLOAT, GL_FALSE, 0, 0);
+            CALL_GL(glEnableVertexAttribArray, attr_idx);
+            CALL_GL(glVertexAttribDivisor, attr_idx, 1);
+            attr_idx++;
+
+            // Vertex buffer: radius
+            CALL_GL(glGenBuffers, 1, &opengl_state->debug_sphere_instanced_vertex_buffer_object_radius);
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->debug_sphere_instanced_vertex_buffer_object_radius);
+            CALL_GL(glBufferData, GL_ARRAY_BUFFER, VERTEX_ARRAY_BYTES, NULL, GL_DYNAMIC_DRAW);
+            CALL_GL(glVertexAttribPointer, attr_idx, 1, GL_FLOAT, GL_FALSE, 0, 0);
+            CALL_GL(glEnableVertexAttribArray, attr_idx);
+            CALL_GL(glVertexAttribDivisor, attr_idx, 1);
+            attr_idx++;
+
+            // Vertex buffer: color r
+            CALL_GL(glGenBuffers, 1, &opengl_state->debug_sphere_instanced_vertex_buffer_object_color_r);
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->debug_sphere_instanced_vertex_buffer_object_color_r);
+            CALL_GL(glBufferData, GL_ARRAY_BUFFER, VERTEX_ARRAY_BYTES, NULL, GL_DYNAMIC_DRAW);
+            CALL_GL(glVertexAttribPointer, attr_idx, 1, GL_FLOAT, GL_FALSE, 0, 0);
+            CALL_GL(glEnableVertexAttribArray, attr_idx);
+            CALL_GL(glVertexAttribDivisor, attr_idx, 1);
+            attr_idx++;
+
+            // Vertex buffer: color g
+            CALL_GL(glGenBuffers, 1, &opengl_state->debug_sphere_instanced_vertex_buffer_object_color_g);
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->debug_sphere_instanced_vertex_buffer_object_color_g);
+            CALL_GL(glBufferData, GL_ARRAY_BUFFER, VERTEX_ARRAY_BYTES, NULL, GL_DYNAMIC_DRAW);
+            CALL_GL(glVertexAttribPointer, attr_idx, 1, GL_FLOAT, GL_FALSE, 0, 0);
+            CALL_GL(glEnableVertexAttribArray, attr_idx);
+            CALL_GL(glVertexAttribDivisor, attr_idx, 1);
+            attr_idx++;
+
+            // Vertex buffer: color b
+            CALL_GL(glGenBuffers, 1, &opengl_state->debug_sphere_instanced_vertex_buffer_object_color_b);
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->debug_sphere_instanced_vertex_buffer_object_color_b);
+            CALL_GL(glBufferData, GL_ARRAY_BUFFER, VERTEX_ARRAY_BYTES, NULL, GL_DYNAMIC_DRAW);
+            CALL_GL(glVertexAttribPointer, attr_idx, 1, GL_FLOAT, GL_FALSE, 0, 0);
+            CALL_GL(glEnableVertexAttribArray, attr_idx);
+            CALL_GL(glVertexAttribDivisor, attr_idx, 1);
+            attr_idx++;
+
+            CALL_GL(glBindVertexArray, 0);
+            CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, 0);
+
+            // Shaders
+            const char* vertex_source =
+                "#version 330 core\n"
+                "layout (location = 0) in vec3 a_vertex;\n"
+                "layout (location = 1) in float a_pos_x;\n"
+                "layout (location = 2) in float a_pos_y;\n"
+                "layout (location = 3) in float a_pos_z;\n"
+                "layout (location = 4) in float a_radius;\n"
+                "layout (location = 5) in float a_color_r;\n"
+                "layout (location = 6) in float a_color_g;\n"
+                "layout (location = 7) in float a_color_b;\n"
+                "uniform mat4 m_cam;\n"
+                "uniform mat4 m_proj;\n"
+                "out vec3 v_color;\n"
+                "out vec3 v_circle_center;\n"
+                "out float v_circle_radius;\n"
+                "out vec3 v_pos_worldspace;\n"
+                "void main()\n"
+                "{\n"
+                "    v_color = vec3(a_color_r, a_color_g, a_color_b);\n"
+                "    vec3 circle_center = vec3(a_pos_x, a_pos_y, a_pos_z);\n"
+                "    vec3 vertex_pos_worldspace = \n"
+                "        vec3(m_cam[0][0], m_cam[1][0], m_cam[2][0]) * a_vertex.x * a_radius + \n"
+                "        vec3(m_cam[0][1], m_cam[1][1], m_cam[2][1]) * a_vertex.y * a_radius + \n"
+                "        circle_center;    \n"
+                "    v_circle_center = circle_center;\n"
+                "    v_circle_radius = a_radius;\n"
+                "    v_pos_worldspace = vertex_pos_worldspace;\n"
+                "    gl_Position = m_proj * m_cam * vec4(vertex_pos_worldspace, 1.0f);\n"
+                "}\n"
+                "\n";
+            const char* fragment_source =
+                "#version 330 core\n"
+                "in vec3 v_color;\n"
+                "in vec3 v_circle_center;\n"
+                "in float v_circle_radius;\n"
+                "in vec3 v_pos_worldspace;\n"
+                "out vec4 result_frag_color;\n"
+                "void main()\n"
+                "{\n"
+                "    vec3 d = v_pos_worldspace - v_circle_center;\n"
+                "    if(dot(d, d) < v_circle_radius*v_circle_radius)\n"
+                "    {\n"
+                "        result_frag_color = vec4(v_color, 1.0f);\n"
+                "    }\n"
+                "    else\n"
+                "    {\n"
+                "        discard;\n"
+                "    }\n"
+                "    \n"
+                "}\n"
+                "\n";
+            opengl_state->debug_sphere_shader_program = make_shader_program(vertex_source, fragment_source);
         }
 
 

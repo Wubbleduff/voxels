@@ -50,5 +50,6 @@ void draw_Mesh_64(const struct Mesh_64* mesh, const mtx4x4* camera_and_clip_mtx,
 void draw_Mesh_1M(const struct Mesh_1M* mesh, const mtx4x4* camera_and_clip_mtx, u64 num, f32* pos_x, f32* pos_y, f32* pos_z);
 
 void debug_draw_line(const mtx4x4* camera_and_clip_mtx, v3 a, v3 b, v3 c);
+void debug_draw_sphere(const mtx4x4* proj_mtx, const mtx4x4* cam_mtx, v3 pos, f32 r, v3 c);
 
 
