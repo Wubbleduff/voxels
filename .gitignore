@@ -2,3 +2,5 @@
 *deploy
 *.exe
 *.pdb
+*.obj
+tools/marching_cubes_data.h

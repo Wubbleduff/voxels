@@ -86,19 +86,34 @@ void do_one_frame(struct MemoryArena* memory_arena)
 {
     (void)memory_arena;
 
-
-    /*
-     * 1. Create a table mapping 8-bit int -> triangulation
-     * 2. Create a test grid with perlin noise values
-     * 3. Display
-     */
-
-#if 1
+#if 0
 
 
-    static u8_m mc_val = 4;
-    mc_val += (u8_m)is_key_toggled_down(KB_N);
+    static u8_m my_counter = 0xEE;
+    my_counter += (u8_m)is_key_toggled_down(KB_N);
+    u8 mc_idx = my_counter;
 
+    u32_m num_grid_points = 8;
+    v3* grid_points = (v3*)MEMORY_ARENA_ALLOCATE(memory_arena, sizeof(v3) * 8);
+    u8_m* grid_points_filled = (u8_m*)MEMORY_ARENA_ALLOCATE(memory_arena, sizeof(u8) * 8);
+
+    grid_points[0] = make_v3(0.0f, 0.0f, 0.0f);
+    grid_points[1] = make_v3(2.0f, 0.0f, 0.0f);
+    grid_points[2] = make_v3(0.0f, 0.0f, 2.0f);
+    grid_points[3] = make_v3(2.0f, 0.0f, 2.0f);
+    grid_points[4] = make_v3(0.0f, 2.0f, 0.0f);
+    grid_points[5] = make_v3(2.0f, 2.0f, 0.0f);
+    grid_points[6] = make_v3(0.0f, 2.0f, 2.0f);
+    grid_points[7] = make_v3(2.0f, 2.0f, 2.0f);
+
+    grid_points_filled[0] = mc_idx & (1 << 0);
+    grid_points_filled[1] = mc_idx & (1 << 1);
+    grid_points_filled[2] = mc_idx & (1 << 2);
+    grid_points_filled[3] = mc_idx & (1 << 3);
+    grid_points_filled[4] = mc_idx & (1 << 4);
+    grid_points_filled[5] = mc_idx & (1 << 5);
+    grid_points_filled[6] = mc_idx & (1 << 6);
+    grid_points_filled[7] = mc_idx & (1 << 7);
 
     struct Mesh_1M* terrain_mesh = (struct Mesh_1M*)MEMORY_ARENA_ALLOCATE(memory_arena, sizeof(struct Mesh_1M));
 
@@ -140,14 +155,110 @@ void do_one_frame(struct MemoryArena* memory_arena)
         terrain_mesh->nz[i] = (f32)((c >>  0) & 0xFF) / 256.0f;
     }
 
-    u32 num_tris = MARCHING_CUBES_NUM_TRIS[mc_val];
+    u32 num_tris = MARCHING_CUBES_NUM_TRIS[mc_idx];
     terrain_mesh->num_indices = num_tris * 3;
     for(u8_m i_tri = 0; i_tri < num_tris; i_tri++)
     {
-        terrain_mesh->indices[3*i_tri + 0] = MARCHING_CUBES_TRIS_INDICES[mc_val][i_tri][0];
-        terrain_mesh->indices[3*i_tri + 1] = MARCHING_CUBES_TRIS_INDICES[mc_val][i_tri][1];
-        terrain_mesh->indices[3*i_tri + 2] = MARCHING_CUBES_TRIS_INDICES[mc_val][i_tri][2];
+        terrain_mesh->indices[3*i_tri + 0] = MARCHING_CUBES_TRIS_INDICES[mc_idx][i_tri][0];
+        terrain_mesh->indices[3*i_tri + 1] = MARCHING_CUBES_TRIS_INDICES[mc_idx][i_tri][1];
+        terrain_mesh->indices[3*i_tri + 2] = MARCHING_CUBES_TRIS_INDICES[mc_idx][i_tri][2];
     }
+
+#elif 1
+
+    struct Mesh_1M* terrain_mesh = (struct Mesh_1M*)MEMORY_ARENA_ALLOCATE(memory_arena, sizeof(struct Mesh_1M));
+
+    s32 terrain_width = 64;
+    s32 terrain_height = 8;
+    s32 terrain_depth = 64;
+
+    u32_m num_grid_points = 0;
+    v3* grid_points = (v3*)MEMORY_ARENA_ALLOCATE(memory_arena, sizeof(v3) * terrain_width * terrain_height * terrain_depth);
+    u8_m* grid_points_filled = (u8_m*)MEMORY_ARENA_ALLOCATE(memory_arena, sizeof(u8) * terrain_width * terrain_height * terrain_depth);
+
+    u32_m out_num_indices = 0;
+    u32_m* out_indices = terrain_mesh->indices;
+    u32_m out_num_vertices = 0;
+    f32_m* out_vx = terrain_mesh->vx;
+    f32_m* out_vy = terrain_mesh->vy;
+    f32_m* out_vz = terrain_mesh->vz;
+    f32_m* out_nx = terrain_mesh->nx;
+    f32_m* out_ny = terrain_mesh->ny;
+    f32_m* out_nz = terrain_mesh->nz;
+    for(s32_m sample_y = 0; sample_y < terrain_height; sample_y += 2)
+    {
+        for(s32_m sample_z = 0; sample_z < terrain_depth; sample_z += 2)
+        {
+            for(s32_m sample_x = 0; sample_x < terrain_width; sample_x += 2)
+            {
+                __m256 samples_x = _mm256_setr_ps((f32)sample_x + 0.0f, (f32)sample_x + 2.0f, (f32)sample_x + 0.0f, (f32)sample_x + 2.0f, (f32)sample_x + 0.0f, (f32)sample_x + 2.0f, (f32)sample_x + 0.0f, (f32)sample_x + 2.0f);
+                __m256 samples_y = _mm256_setr_ps((f32)sample_y + 0.0f, (f32)sample_y + 0.0f, (f32)sample_y + 0.0f, (f32)sample_y + 0.0f, (f32)sample_y + 2.0f, (f32)sample_y + 2.0f, (f32)sample_y + 2.0f, (f32)sample_y + 2.0f);
+                __m256 samples_z = _mm256_setr_ps((f32)sample_z + 0.0f, (f32)sample_z + 0.0f, (f32)sample_z + 2.0f, (f32)sample_z + 2.0f, (f32)sample_z + 0.0f, (f32)sample_z + 0.0f, (f32)sample_z + 2.0f, (f32)sample_z + 2.0f);
+
+                samples_x = _mm256_mul_ps(samples_x, _mm256_set1_ps(0.1f));
+                samples_y = _mm256_mul_ps(samples_y, _mm256_set1_ps(0.1f));
+                samples_z = _mm256_mul_ps(samples_z, _mm256_set1_ps(0.1f));
+
+                __m256 noise = pnoise8(samples_x, samples_y, samples_z);
+                u8 mc_idx = (u8)_mm256_movemask_ps(noise);
+                u32 num_tris = MARCHING_CUBES_NUM_TRIS[mc_idx];
+
+                ///////////////////////////////
+                v3 sample_pos = {.x = (f32)sample_x, .y = (f32)sample_y, .z = (f32)sample_z };
+                grid_points[num_grid_points] = sample_pos;
+                grid_points_filled[num_grid_points] = mc_idx & 1;
+                num_grid_points++;
+                ///////////////////////////////
+
+                for(u64_m i_tri = 0; i_tri < num_tris; i_tri++)
+                {
+                    u32 v0_idx = MARCHING_CUBES_TRIS_INDICES[mc_idx][i_tri][0];
+                    u32 v1_idx = MARCHING_CUBES_TRIS_INDICES[mc_idx][i_tri][1];
+                    u32 v2_idx = MARCHING_CUBES_TRIS_INDICES[mc_idx][i_tri][2];
+
+                    v3 vert0 = { .x = MARCHING_CUBES_TRIS_VERTICES[v0_idx][0], .y = MARCHING_CUBES_TRIS_VERTICES[v0_idx][1], .z = MARCHING_CUBES_TRIS_VERTICES[v0_idx][2] };
+                    v3 vert1 = { .x = MARCHING_CUBES_TRIS_VERTICES[v1_idx][0], .y = MARCHING_CUBES_TRIS_VERTICES[v1_idx][1], .z = MARCHING_CUBES_TRIS_VERTICES[v1_idx][2] };
+                    v3 vert2 = { .x = MARCHING_CUBES_TRIS_VERTICES[v2_idx][0], .y = MARCHING_CUBES_TRIS_VERTICES[v2_idx][1], .z = MARCHING_CUBES_TRIS_VERTICES[v2_idx][2] };
+
+                    v3 normal = v3_cross(v3_sub(vert2, vert0), v3_sub(vert1, vert0));
+
+                    v3 sample_offset = {.x = (f32)sample_x, .y = (f32)sample_y, .z = (f32)sample_z };
+                    vert0 = v3_add(vert0, sample_offset);
+                    vert1 = v3_add(vert1, sample_offset);
+                    vert2 = v3_add(vert2, sample_offset);
+                    
+                    *out_vx++ = vert0.x;
+                    *out_vy++ = vert0.y;
+                    *out_vz++ = vert0.z;
+                    *out_nx++ = normal.x;
+                    *out_ny++ = normal.y;
+                    *out_nz++ = normal.z;
+
+                    *out_vx++ = vert1.x;
+                    *out_vy++ = vert1.y;
+                    *out_vz++ = vert1.z;
+                    *out_nx++ = normal.x;
+                    *out_ny++ = normal.y;
+                    *out_nz++ = normal.z;
+
+                    *out_vx++ = vert2.x;
+                    *out_vy++ = vert2.y;
+                    *out_vz++ = vert2.z;
+                    *out_nx++ = normal.x;
+                    *out_ny++ = normal.y;
+                    *out_nz++ = normal.z;
+
+                    out_num_vertices += 3;
+
+                    *out_indices++ = out_num_indices++;
+                    *out_indices++ = out_num_indices++;
+                    *out_indices++ = out_num_indices++;
+                }
+            }
+        }
+    }
+    terrain_mesh->num_vertices = out_num_vertices;
+    terrain_mesh->num_indices = out_num_indices;
 
 #else
 
@@ -512,28 +623,19 @@ void do_one_frame(struct MemoryArena* memory_arena)
         f32 pos[3] = {0};
         draw_Mesh_1M(terrain_mesh, &camera_and_clip_mtx, 1, pos + 0, pos + 1, pos + 2);
 
+#if 1
         // Draw marching cube vertices
         {
-            const v3 circle_pos[] =
-            {
-                { .m={0.0f, 0.0f, 0.0f} },
-                { .m={2.0f, 0.0f, 0.0f} },
-                { .m={0.0f, 0.0f, 2.0f} },
-                { .m={2.0f, 0.0f, 2.0f} },
-                { .m={0.0f, 2.0f, 0.0f} },
-                { .m={2.0f, 2.0f, 0.0f} },
-                { .m={0.0f, 2.0f, 2.0f} },
-                { .m={2.0f, 2.0f, 2.0f} }
-            };
             f32 circle_radius = 0.05f;
             v3 c_white = {.m={1.0f, 1.0f, 1.0f}};
             v3 c_black = {.m={0.0f, 0.0f, 0.0f}};
 
-            for(u64_m i = 0; i < 8; i++)
+            for(u64_m i = 0; i < num_grid_points; i++)
             {
-                debug_draw_sphere(&proj_mtx, &world_to_cam_mtx, circle_pos[i], circle_radius, (1 << i) & mc_val ? c_white : c_black);
+                debug_draw_sphere(&proj_mtx, &world_to_cam_mtx, grid_points[i], circle_radius, grid_points_filled[i] ? c_white : c_black);
             }
         }
+#endif
 
         // Draw world basis.
         {

@@ -72,6 +72,15 @@ typedef struct v4Tag
     };
 } v4;
 
+INTERNAL inline v3 make_v3(f32 x, f32 y, f32 z)
+{
+    v3 r;
+    r.x = x;
+    r.y = y;
+    r.z = z;
+    return r;
+}
+
 INTERNAL inline f32 v3_dot(v3 a, v3 b)
 {
     // | a.x | a.y | a.z | - |
@@ -114,6 +123,13 @@ INTERNAL inline v3 v3_add(v3 a, v3 b)
 {
     v3 r;
     r.v = _mm_add_ps(a.v, b.v);
+    return r;
+}
+
+INTERNAL inline v3 v3_sub(v3 a, v3 b)
+{
+    v3 r;
+    r.v = _mm_sub_ps(a.v, b.v);
     return r;
 }
 

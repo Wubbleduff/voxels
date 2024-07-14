@@ -1164,7 +1164,7 @@ void WinMainCRTStartup()
         opengl_state->glTexSubImage2D = (fnptr_glTexSubImage2D)load_gl_fn(opengl32_dll_module, "glTexSubImage2D");
 
         glViewport(0, 0, (GLsizei)opengl_state->screen_width, (GLsizei)opengl_state->screen_height);
-        //glEnable(GL_CULL_FACE);
+        glEnable(GL_CULL_FACE);
         glCullFace(GL_BACK);
         glFrontFace(GL_CCW);
         glEnable(GL_DEPTH_TEST);

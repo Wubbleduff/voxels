@@ -391,33 +391,21 @@ u32 Polygonise(GRIDCELL grid, f32 isolevel, TRIANGLE *triangles)
 int main()
 {
     FILE* f = fopen("marching_cubes_data.h", "wb");
-    /*
-       
-      z                 z                                                                       
-      ^   3       2      ^   7      6                                                                       
-      |    *  .  *       |    *  .  *                                                                       
-      |    .     .       |    .     .                                                                 
-      |                  |
-      |    *  .  *       |    *  .  *                                                                       
-      |   0       1      |   4      5                                                                       
-       ----------> x     ----------> x                                                                       
 
-    */
-
-    /*
-            y = 0              y = 1               y = 2    
-                                              
-      z                 z                    z                                                                   
-      ^   5   6   7      ^  13   14  15      ^  21   22  23                                                                    
-      |    *  .  *       |    *  .  *        |    *  .  *                                                                    
-      |   3.     .4      |  11.     .12      |  19.     .20                                                              
-      |                  |                   |              
-      |    *  .  *       |    *  .  *        |    *  .  *                                                                    
-      |   0   1   2      |   8   9   10      |  16   17  18                                                                     
-       ----------> x     ----------> x        ----------> x                                                                   
-
-    */
-
+    // Generates indices for cube with 24 vertices as follows:
+    // 
+    //            y = 0                y = 1                y = 2
+    //
+    //   ^   5------6------7     13-----14-----15     21-----22-----23
+    //  Z|   |             |      |             |      |             |
+    //   |   |             |      |             |      |             |
+    //   |   3             4     11            12     19            20
+    //   |   |             |      |             |      |             |
+    //   |   |             |      |             |      |             |
+    //   |   0------1------2      8------9-----10     16-----17-----18
+    //   |   
+    //   +----------------->      
+    //                     X
 
     u32 tri_lut[3][3][3] = {
         {
@@ -446,13 +434,47 @@ int main()
     grid.p[5].x = 2.0f;  grid.p[5].y = 2.0f;  grid.p[5].z = 0.0f;
     grid.p[6].x = 2.0f;  grid.p[6].y = 2.0f;  grid.p[6].z = 2.0f;
     grid.p[7].x = 0.0f;  grid.p[7].y = 2.0f;  grid.p[7].z = 2.0f;
+
+    // Want to re map indices like so:
+    // 7-------------6      6-------------7
+    // |             |      |             |
+    // |             |      |             |
+    // |             |      |             |
+    // |             |      |             |
+    // |             |      |             |
+    // 4-------------5      4-------------5
+    //                  ->
+    // 3-------------2      2-------------3
+    // |             |      |             |
+    // |             |      |             |
+    // |             |      |             |
+    // |             |      |             |
+    // |             |      |             |
+    // 0-------------1      0-------------1
+    // 
+    // Radix goes from
+    // 7 6 5 4 3 2 1 0
+    // to
+    // 6 7 5 4 2 3 1 0
+    u32 radix_map[] = {0, 1, 3, 2, 4, 5, 7, 6};
+
     u32_m max_tris = 0;
     fprintf(f, "{\n");
     for(u32_m iter = 0; iter < 256; iter++)
     {
+        u32_m mapped_val = 0;
         for(u32_m i = 0; i < 8; i++)
         {
-            grid.val[i] = ((1 << i) & iter) ? 1.0f : -1.0f;
+            mapped_val +=
+                (1 << i) & iter ?
+                (1 << radix_map[i]) :
+                0;
+        }
+        u32 mc_idx = mapped_val;
+
+        for(u32_m i = 0; i < 8; i++)
+        {
+            grid.val[i] = ((1 << i) & mc_idx) ? 1.0f : -1.0f;
         }
 
         TRIANGLE out_tris[5];
@@ -471,9 +493,19 @@ int main()
     fprintf(f, "{\n");
     for(u32_m iter = 0; iter < 256; iter++)
     {
+        u32_m mapped_val = 0;
         for(u32_m i = 0; i < 8; i++)
         {
-            grid.val[i] = ((1 << i) & iter) ? 1.0f : -1.0f;
+            mapped_val +=
+                (1 << i) & iter ?
+                (1 << radix_map[i]) :
+                0;
+        }
+        u32 mc_idx = mapped_val;
+
+        for(u32_m i = 0; i < 8; i++)
+        {
+            grid.val[i] = ((1 << i) & mc_idx) ? 1.0f : -1.0f;
         }
 
         TRIANGLE out_tris[5];
@@ -490,7 +522,7 @@ int main()
         //printf("(%i, %i, %i)\n", (s32)out_tris[0].p[0].x, (s32)out_tris[0].p[0].y, (s32)out_tris[0].p[0].z);
 
         //printf("Tri val %3i:\n", iter);
-        fprintf(f, "    {\n", iter);
+        fprintf(f, "    {\n");
         for(u32_m i_tri = 0; i_tri < 5; i_tri++)
         {
             if(i_tri < num_tris)
@@ -518,11 +550,9 @@ int main()
                 fprintf(f, "        {%2i, %2i, %2i}%c\n", 255, 255, 255, i_tri == 4 ? ' ' : ',');
             }
         }
-        fprintf(f, "    },\n", iter);
+        fprintf(f, "    },\n");
     }
     fprintf(f, "};\n\n\n");
     
 }
-
-
 
