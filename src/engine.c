@@ -4,7 +4,7 @@
 #include "graphics.h"
 #include "math.h"
 
-#include "marching_cubes_data.h"
+#include "marching_cubes.h"
 
 
 INTERNAL inline __m256 pnoise8_calc_gradient(__m256 x, __m256 y, __m256 z, __m256 vx, __m256 vy, __m256 vz)
@@ -85,6 +85,8 @@ INTERNAL inline __m256 pnoise8(const __m256 x, const __m256 y, const __m256 z)
 void do_one_frame(struct MemoryArena* memory_arena)
 {
     (void)memory_arena;
+
+    static v3 cam_pos = {.m = {0.0f, 1.0f, 3.0f}};
 
 #if 0
 
@@ -169,8 +171,12 @@ void do_one_frame(struct MemoryArena* memory_arena)
     struct Mesh_1M* terrain_mesh = (struct Mesh_1M*)MEMORY_ARENA_ALLOCATE(memory_arena, sizeof(struct Mesh_1M));
 
     s32 terrain_width = 64;
-    s32 terrain_height = 8;
+    s32 terrain_height = 64;
     s32 terrain_depth = 64;
+
+    f32 x_freq = 0.06f;
+    f32 y_freq = 0.06f;
+    f32 z_freq = 0.06f;
 
     u32_m num_grid_points = 0;
     v3* grid_points = (v3*)MEMORY_ARENA_ALLOCATE(memory_arena, sizeof(v3) * terrain_width * terrain_height * terrain_depth);
@@ -185,44 +191,80 @@ void do_one_frame(struct MemoryArena* memory_arena)
     f32_m* out_nx = terrain_mesh->nx;
     f32_m* out_ny = terrain_mesh->ny;
     f32_m* out_nz = terrain_mesh->nz;
-    for(s32_m sample_y = 0; sample_y < terrain_height; sample_y += 2)
+
+
+    // sample_x = round_neg_inf(cam_pos.x) - (f32)terrain_width * 0.5f + offset;
+    const __m256 samples_x_start = _mm256_add_ps(
+            _mm256_sub_ps(
+                _mm256_round_ps(_mm256_set1_ps(cam_pos.x), _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC),
+                _mm256_set1_ps((f32)terrain_width * 0.5f)
+            ),
+            _mm256_setr_ps(0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f)
+        );
+    // sample_y = round_neg_inf(cam_pos.y) - (f32)terrain_height * 0.5f + offset;
+    const __m256 samples_y_start = _mm256_add_ps(
+            _mm256_sub_ps(
+                _mm256_round_ps(_mm256_set1_ps(cam_pos.y), _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC),
+                _mm256_set1_ps((f32)terrain_height * 0.5f)
+            ),
+            _mm256_setr_ps(0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f)
+        );
+    // sample_z = round_neg_inf(cam_pos.z) - (f32)terrain_depth * 0.5f + offset;
+    const __m256 samples_z_start = _mm256_add_ps(
+            _mm256_sub_ps(
+                _mm256_round_ps(_mm256_set1_ps(cam_pos.z), _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC),
+                _mm256_set1_ps((f32)terrain_depth * 0.5f)
+            ),
+            _mm256_setr_ps(0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f)
+        );
+    for(s32_m i_y = 0; i_y < terrain_height; i_y++)
     {
-        for(s32_m sample_z = 0; sample_z < terrain_depth; sample_z += 2)
+        for(s32_m i_z = 0; i_z < terrain_depth; i_z++)
         {
-            for(s32_m sample_x = 0; sample_x < terrain_width; sample_x += 2)
+            for(s32_m i_x = 0; i_x < terrain_width; i_x++)
             {
-                __m256 samples_x = _mm256_setr_ps((f32)sample_x + 0.0f, (f32)sample_x + 2.0f, (f32)sample_x + 0.0f, (f32)sample_x + 2.0f, (f32)sample_x + 0.0f, (f32)sample_x + 2.0f, (f32)sample_x + 0.0f, (f32)sample_x + 2.0f);
-                __m256 samples_y = _mm256_setr_ps((f32)sample_y + 0.0f, (f32)sample_y + 0.0f, (f32)sample_y + 0.0f, (f32)sample_y + 0.0f, (f32)sample_y + 2.0f, (f32)sample_y + 2.0f, (f32)sample_y + 2.0f, (f32)sample_y + 2.0f);
-                __m256 samples_z = _mm256_setr_ps((f32)sample_z + 0.0f, (f32)sample_z + 0.0f, (f32)sample_z + 2.0f, (f32)sample_z + 2.0f, (f32)sample_z + 0.0f, (f32)sample_z + 0.0f, (f32)sample_z + 2.0f, (f32)sample_z + 2.0f);
+                const __m256 samples_x = _mm256_add_ps(_mm256_set1_ps((f32)i_x), samples_x_start);
+                const __m256 samples_y = _mm256_add_ps(_mm256_set1_ps((f32)i_y), samples_y_start);
+                const __m256 samples_z = _mm256_add_ps(_mm256_set1_ps((f32)i_z), samples_z_start);
 
-                samples_x = _mm256_mul_ps(samples_x, _mm256_set1_ps(0.1f));
-                samples_y = _mm256_mul_ps(samples_y, _mm256_set1_ps(0.1f));
-                samples_z = _mm256_mul_ps(samples_z, _mm256_set1_ps(0.1f));
+                __m256 noise = pnoise8(
+                        _mm256_mul_ps(samples_x, _mm256_set1_ps(x_freq)),
+                        _mm256_mul_ps(samples_y, _mm256_set1_ps(y_freq)),
+                        _mm256_mul_ps(samples_z, _mm256_set1_ps(z_freq))
+                    );
+                noise = _mm256_sub_ps(noise, _mm256_mul_ps(samples_y, _mm256_set1_ps(0.02f)));
 
-                __m256 noise = pnoise8(samples_x, samples_y, samples_z);
-                u8 mc_idx = (u8)_mm256_movemask_ps(noise);
-                u32 num_tris = MARCHING_CUBES_NUM_TRIS[mc_idx];
+                f32_m tris_x[5 * 3];
+                f32_m tris_y[5 * 3];
+                f32_m tris_z[5 * 3];
+                u32 num_tris = marching_cube(tris_x, tris_y, tris_z, noise);
 
                 ///////////////////////////////
-                v3 sample_pos = {.x = (f32)sample_x, .y = (f32)sample_y, .z = (f32)sample_z };
-                grid_points[num_grid_points] = sample_pos;
-                grid_points_filled[num_grid_points] = mc_idx & 1;
-                num_grid_points++;
+                (void)num_grid_points;
+                (void)grid_points;
+                (void)grid_points_filled;
+                //v3 sample_pos = {.x = (f32)sample_x, .y = (f32)sample_y, .z = (f32)sample_z };
+                //grid_points[num_grid_points] = sample_pos;
+                //grid_points_filled[num_grid_points] = mc_idx & 1;
+                //num_grid_points++;
                 ///////////////////////////////
+
+                _Alignas(32) f32_m samples_x_arr[8];
+                _Alignas(32) f32_m samples_y_arr[8];
+                _Alignas(32) f32_m samples_z_arr[8];
+                _mm256_store_ps(samples_x_arr, samples_x);
+                _mm256_store_ps(samples_y_arr, samples_y);
+                _mm256_store_ps(samples_z_arr, samples_z);
 
                 for(u64_m i_tri = 0; i_tri < num_tris; i_tri++)
                 {
-                    u32 v0_idx = MARCHING_CUBES_TRIS_INDICES[mc_idx][i_tri][0];
-                    u32 v1_idx = MARCHING_CUBES_TRIS_INDICES[mc_idx][i_tri][1];
-                    u32 v2_idx = MARCHING_CUBES_TRIS_INDICES[mc_idx][i_tri][2];
+                    v3 vert0 = { .x = tris_x[i_tri * 3 + 2], .y = tris_y[i_tri * 3 + 2], .z = tris_z[i_tri * 3 + 2] };
+                    v3 vert1 = { .x = tris_x[i_tri * 3 + 1], .y = tris_y[i_tri * 3 + 1], .z = tris_z[i_tri * 3 + 1] };
+                    v3 vert2 = { .x = tris_x[i_tri * 3 + 0], .y = tris_y[i_tri * 3 + 0], .z = tris_z[i_tri * 3 + 0] };
 
-                    v3 vert0 = { .x = MARCHING_CUBES_TRIS_VERTICES[v0_idx][0], .y = MARCHING_CUBES_TRIS_VERTICES[v0_idx][1], .z = MARCHING_CUBES_TRIS_VERTICES[v0_idx][2] };
-                    v3 vert1 = { .x = MARCHING_CUBES_TRIS_VERTICES[v1_idx][0], .y = MARCHING_CUBES_TRIS_VERTICES[v1_idx][1], .z = MARCHING_CUBES_TRIS_VERTICES[v1_idx][2] };
-                    v3 vert2 = { .x = MARCHING_CUBES_TRIS_VERTICES[v2_idx][0], .y = MARCHING_CUBES_TRIS_VERTICES[v2_idx][1], .z = MARCHING_CUBES_TRIS_VERTICES[v2_idx][2] };
+                    v3 normal = v3_normalize(v3_cross(v3_sub(vert2, vert0), v3_sub(vert1, vert0)));
 
-                    v3 normal = v3_cross(v3_sub(vert2, vert0), v3_sub(vert1, vert0));
-
-                    v3 sample_offset = {.x = (f32)sample_x, .y = (f32)sample_y, .z = (f32)sample_z };
+                    v3 sample_offset = {.x = samples_x_arr[0], .y = samples_y_arr[0], .z = samples_z_arr[0] };
                     vert0 = v3_add(vert0, sample_offset);
                     vert1 = v3_add(vert1, sample_offset);
                     vert2 = v3_add(vert2, sample_offset);
@@ -365,7 +407,6 @@ void do_one_frame(struct MemoryArena* memory_arena)
             cam_yaw_turns -= (f32)(mouse_screen_dx) * 0.0005f;
         }
 
-        static v3 cam_pos = {.m = {0.0f, 1.0f, 3.0f}};
 
         mtx4x4 y_rot_mtx;
         make_y_axis_rotation_mtx(&y_rot_mtx, -cam_yaw_turns);
@@ -386,7 +427,7 @@ void do_one_frame(struct MemoryArena* memory_arena)
         v3 J_cam = {.m={world_to_cam_mtx.m[1*4 + 0], world_to_cam_mtx.m[1*4 + 1], world_to_cam_mtx.m[1*4 + 2]}};
         v3 K_cam = {.m={world_to_cam_mtx.m[2*4 + 0], world_to_cam_mtx.m[2*4 + 1], world_to_cam_mtx.m[2*4 + 2]}};
 
-        f32 speed = 0.1f;
+        f32 speed = 1.0f;
         cam_pos = v3_add(cam_pos, v3_scale(K_cam, -speed * (f32)is_key_down(KB_W)));
         cam_pos = v3_add(cam_pos, v3_scale(K_cam,  speed * (f32)is_key_down(KB_S)));
 
@@ -623,7 +664,7 @@ void do_one_frame(struct MemoryArena* memory_arena)
         f32 pos[3] = {0};
         draw_Mesh_1M(terrain_mesh, &camera_and_clip_mtx, 1, pos + 0, pos + 1, pos + 2);
 
-#if 1
+#if 0
         // Draw marching cube vertices
         {
             f32 circle_radius = 0.05f;

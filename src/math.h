@@ -11,6 +11,11 @@ INTERNAL inline f32 absf(f32 a)
     return a < 0.0f ? -a : a;
 } 
 
+INTERNAL inline f32 round_neg_inf(f32 a)
+{
+    return _mm_cvtss_f32(_mm_round_ps(_mm_set1_ps(a), _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
+}
+
 #define H_PI 1.57079637f
 #define PI 3.14159274f
 #define TAU 6.28318548f
