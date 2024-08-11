@@ -96,11 +96,6 @@
 #define LOD0_WIDTH 128
 #define MAX_LOD 18
 
-struct TerrainSamples
-{
-    float samples[LOD0_WIDTH*LOD0_WIDTH*LOD0_WIDTH];
-};
-
 INTERNAL inline __m256 pnoise8_calc_gradient(__m256 x, __m256 y, __m256 z, __m256 vx, __m256 vy, __m256 vz)
 {
     u32 num_sphere_points = 1 << 16;
@@ -194,7 +189,8 @@ void generate_terrain(
         u32_m* out_indices,
         f32 cam_pos_x,
         f32 cam_pos_y,
-        f32 cam_pos_z)
+        f32 cam_pos_z,
+        u8 lod)
 {
     u32_m num_vertices = 0;
     u32_m num_indices = 0;
@@ -205,7 +201,7 @@ void generate_terrain(
     f32 y_bias = 0.02f;
 
     f32 region_width = LOD0_WIDTH;
-    f32 region_scale = 1.0f;
+    f32 region_scale = (float)(1 << (u32)lod);
 
 
     // sample_x = round_neg_inf(cam_pos.x / region_scale) - (f32)region_width * 0.5f * region_scale + offset;

@@ -1,6 +1,7 @@
 
 #include "platform.h"
 #include "graphics.h"
+#include "game_state.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -1013,7 +1014,8 @@ void show_cursor(u32_m show)
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /// Main
 
-void do_one_frame(struct MemoryArena*);
+void do_one_frame(struct GameState* prev_game_state, struct GameState* next_game_state, struct MemoryArena*);
+void draw_game_state(struct GameState* game_state, struct MemoryArena* memory_arena);
 
 void WinMainCRTStartup()
 {
@@ -1658,6 +1660,11 @@ void WinMainCRTStartup()
 
     u64 frame_memory_arena_bytes = MB(500);
     struct MemoryArena frame_memory_arena = memory_arena_init(MEMORY_ARENA_ALLOCATE(&main_memory_arena, frame_memory_arena_bytes), frame_memory_arena_bytes);
+    struct GameState* game_state_buffer = (struct GameState*)MEMORY_ARENA_ALLOCATE(&main_memory_arena, 2 * sizeof(struct GameState));
+    struct GameState* game_state_A = game_state_buffer;
+    struct GameState* game_state_B = game_state_buffer + 1;
+    reset_game_state(game_state_A);
+    reset_game_state(game_state_B);
 
     // Main loop
     s64 engine_start_timestamp_us = get_timestamp_us();
@@ -1744,7 +1751,20 @@ void WinMainCRTStartup()
             }
         }
 
-        do_one_frame(&frame_memory_arena);
+        do_one_frame(
+            game_state_A,
+            game_state_B,
+            &frame_memory_arena
+        );
+
+        draw_game_state(game_state_A, &frame_memory_arena);
+
+        // Rotate game state double buffer.
+        {
+            struct GameState* tmp = game_state_A;
+            game_state_A = game_state_B;
+            game_state_B = tmp;
+        }
 
         memory_arena_reset(&frame_memory_arena);
 

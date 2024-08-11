@@ -17,7 +17,6 @@
 #endif
 #define INTERNAL MAYBE_UNUSED static
 
-
 typedef const unsigned char u8;
 typedef const unsigned short u16;
 typedef const unsigned int u32;
@@ -40,9 +39,20 @@ typedef long long s64_m;
 typedef float f32_m;
 typedef double f64_m;
 
+void assert_fn(const char* file, int line, u64 c, const char* msg);
+#define ASSERT(c, msg) assert_fn(__FILE__, __LINE__, (u64)(c), (msg))
+
 #define MAX_U32 ((u32)(-1))
 
 #define ARRAY_COUNT(N) (sizeof(N) / sizeof((N)[0]))
+
+#define ARRAY_COPY(DST, SRC, NUM) \
+    do { \
+        _Static_assert(sizeof((DST)[0]) == sizeof((SRC)[0]), "Array element sizes do not match."); \
+        ASSERT(NUM <= ARRAY_COUNT(SRC), "Number of elements is larger than array size."); \
+        ASSERT(NUM <= ARRAY_COUNT(DST), "Number of elements is larger than array size."); \
+        memcpy((DST), (SRC), sizeof((SRC)[0]) * NUM); \
+    } while(0)
 
 #define KB(N) (N * 1024ULL)
 #define MB(N) (N * 1024ULL * 1024ULL)

@@ -86,6 +86,15 @@ INTERNAL inline v3 make_v3(f32 x, f32 y, f32 z)
     return r;
 }
 
+INTERNAL inline v3 v3_zero()
+{
+    v3 r;
+    r.x = 0.0f;
+    r.y = 0.0f;
+    r.z = 0.0f;
+    return r;
+}
+
 INTERNAL inline f32 v3_dot(v3 a, v3 b)
 {
     // | a.x | a.y | a.z | - |

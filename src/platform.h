@@ -5,8 +5,6 @@
 
 
 
-void assert_fn(const char* file, int line, u64 c, const char* msg);
-#define ASSERT(c, msg) assert_fn(__FILE__, __LINE__, (u64)(c), (msg))
 
 
 
