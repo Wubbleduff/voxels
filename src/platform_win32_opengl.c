@@ -1751,6 +1751,8 @@ void WinMainCRTStartup()
             }
         }
 
+        reset_game_state(game_state_A);
+
         do_one_frame(
             game_state_A,
             game_state_B,

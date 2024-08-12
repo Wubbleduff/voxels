@@ -6,9 +6,14 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Math
 
-INTERNAL inline f32 absf(f32 a)
+INTERNAL inline f32 abs_f32(f32 a)
 {
     return a < 0.0f ? -a : a;
+} 
+
+INTERNAL inline s32 abs_s32(s32 a)
+{
+    return a < 0 ? -a : a;
 } 
 
 INTERNAL inline f32 round_neg_inf(f32 a)

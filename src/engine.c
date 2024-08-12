@@ -72,51 +72,25 @@ void do_one_frame(
         next_game_state->player_yaw_turns = player_yaw_turns;
     }
 
-    for(u64_m i = 0; i < 10; i++)
+    if(prev_game_state->terrain_generated)
     {
-        if(prev_game_state->terrain_loaded[i])
-        {
-            struct Terrain* src_terrain = prev_game_state->terrain_lod_list + i;
-            struct Terrain* dst_terrain = next_game_state->terrain_lod_list + i;
-            copy_terrain(dst_terrain, src_terrain);
-            next_game_state->terrain_loaded[i] = 1;
-        }
-
-        if(!next_game_state->terrain_loaded[i])
-        {
-            struct Terrain* dst_terrain = next_game_state->terrain_lod_list + i;
-            generate_terrain(
-                &dst_terrain->num_vertices,
-                dst_terrain->vx,
-                dst_terrain->vy,
-                dst_terrain->vz,
-                dst_terrain->nx,
-                dst_terrain->ny,
-                dst_terrain->nz,
-                &dst_terrain->num_indices,
-                dst_terrain->indices,
+        copy_terrain(&next_game_state->terrain, &prev_game_state->terrain);
+        next_game_state->terrain_generated = 1;
+    }
+    if(!next_game_state->terrain_generated)
+    {
+        generate_terrain(
+                &next_game_state->terrain,
                 player_pos.x,
                 player_pos.y,
-                player_pos.z,
-                (u8)i
-            );
-            next_game_state->terrain_loaded[i] = 1;
-        }
-    }
-    next_game_state->terrain_active_lod = prev_game_state->terrain_active_lod;
-    if(is_key_toggled_down(KB_N))
-    {
-        next_game_state->terrain_active_lod++;
-        next_game_state->terrain_active_lod %= 10;
-    }
-    if(is_key_toggled_down(KB_P))
-    {
-        next_game_state->terrain_active_lod = next_game_state->terrain_active_lod == 0 ? 9 : next_game_state->terrain_active_lod - 1;
+                player_pos.z);
+        next_game_state->terrain_generated = 1;
     }
 }
 
 void draw_game_state(struct GameState* game_state, struct MemoryArena* memory_arena)
 {
+    (void)memory_arena;
     /*
      * Derivation for 3D perspective projection matrix
      *        
@@ -361,7 +335,7 @@ void draw_game_state(struct GameState* game_state, struct MemoryArena* memory_ar
     f32 aspect_ratio = get_screen_aspect_ratio();
 
     f32 n = 0.1f;
-    f32 f = 1000.0f;
+    f32 f = 10000.0f;
     f32 C_w = 0.125f;
     f32 C_h = C_w * aspect_ratio;
     mtx4x4 proj_mtx = {
@@ -378,16 +352,93 @@ void draw_game_state(struct GameState* game_state, struct MemoryArena* memory_ar
     mtx4x4_mul(&camera_and_clip_mtx, &proj_mtx, &world_to_cam_mtx);
 
     struct Mesh_1M* terrain_mesh = (struct Mesh_1M*)MEMORY_ARENA_ALLOCATE(memory_arena, sizeof(struct Mesh_1M));
-    struct Terrain* terrain = game_state->terrain_lod_list + game_state->terrain_active_lod;
-    terrain_mesh->num_vertices = terrain->num_vertices;
-    ARRAY_COPY(terrain_mesh->vx, terrain->vx, terrain->num_vertices);
-    ARRAY_COPY(terrain_mesh->vy, terrain->vy, terrain->num_vertices);
-    ARRAY_COPY(terrain_mesh->vz, terrain->vz, terrain->num_vertices);
-    ARRAY_COPY(terrain_mesh->nx, terrain->nx, terrain->num_vertices);
-    ARRAY_COPY(terrain_mesh->ny, terrain->ny, terrain->num_vertices);
-    ARRAY_COPY(terrain_mesh->nz, terrain->nz, terrain->num_vertices);
-    terrain_mesh->num_indices = terrain->num_indices;
-    ARRAY_COPY(terrain_mesh->indices, terrain->indices, terrain->num_indices);
+
+    {
+        f32_m* dst_vx = terrain_mesh->vx;
+        f32_m* dst_vy = terrain_mesh->vy;
+        f32_m* dst_vz = terrain_mesh->vz;
+        f32_m* dst_nx = terrain_mesh->nx;
+        f32_m* dst_ny = terrain_mesh->ny;
+        f32_m* dst_nz = terrain_mesh->nz;
+        u32_m* dst_indices = terrain_mesh->indices;
+        u32_m num_vertices = 0;
+        u32_m num_indices = 0;
+
+
+        for(u8_m lod = 0; lod < TERRAIN_MAX_NUM_LOD; lod++)
+        {
+            struct TerrainVoxels* voxels = game_state->terrain.terrain_lod + lod;
+            for(u64_m i_voxel = 0; i_voxel < voxels->num_voxels; i_voxel++)
+            {
+                u64 key = voxels->keys[i_voxel];
+                s32_m voxel_x;
+                s32_m voxel_y;
+                s32_m voxel_z;
+                unpack_voxel_key(&voxel_x, &voxel_y, &voxel_z, key);
+
+                s32 pow = 1 << lod;
+                s32 cur_region_dim = LOD_REGION_DIM * pow;
+                s32 child_region_bl_c = -cur_region_dim / 4;
+                s32 child_region_tr_c =  cur_region_dim / 4;
+
+                if(lod == 0 ||
+                   voxel_x <  child_region_bl_c ||
+                   voxel_x >= child_region_tr_c ||
+                   voxel_y <  child_region_bl_c ||
+                   voxel_y >= child_region_tr_c ||
+                   voxel_z <  child_region_bl_c ||
+                   voxel_z >= child_region_tr_c)
+                {
+                    for(u64_m i_tri = 0; i_tri < voxels->num_tris[i_voxel]; i_tri++)
+                    {
+                        *dst_vx++ = voxels->tris_x[i_voxel * (5 * 3) + i_tri * 3 + 0];
+                        *dst_vy++ = voxels->tris_y[i_voxel * (5 * 3) + i_tri * 3 + 0];
+                        *dst_vz++ = voxels->tris_z[i_voxel * (5 * 3) + i_tri * 3 + 0];
+                        *dst_nx++ = voxels->normals_x[i_voxel * (5 * 3) + i_tri * 3 + 0];
+                        *dst_ny++ = voxels->normals_y[i_voxel * (5 * 3) + i_tri * 3 + 0];
+                        *dst_nz++ = voxels->normals_z[i_voxel * (5 * 3) + i_tri * 3 + 0];
+                        *dst_indices++ = num_indices;
+                        num_indices++;
+                        num_vertices++;
+
+                        *dst_vx++ = voxels->tris_x[i_voxel * (5 * 3) + i_tri * 3 + 1];
+                        *dst_vy++ = voxels->tris_y[i_voxel * (5 * 3) + i_tri * 3 + 1];
+                        *dst_vz++ = voxels->tris_z[i_voxel * (5 * 3) + i_tri * 3 + 1];
+                        *dst_nx++ = voxels->normals_x[i_voxel * (5 * 3) + i_tri * 3 + 1];
+                        *dst_ny++ = voxels->normals_y[i_voxel * (5 * 3) + i_tri * 3 + 1];
+                        *dst_nz++ = voxels->normals_z[i_voxel * (5 * 3) + i_tri * 3 + 1];
+                        *dst_indices++ = num_indices;
+                        num_indices++;
+                        num_vertices++;
+
+                        *dst_vx++ = voxels->tris_x[i_voxel * (5 * 3) + i_tri * 3 + 2];
+                        *dst_vy++ = voxels->tris_y[i_voxel * (5 * 3) + i_tri * 3 + 2];
+                        *dst_vz++ = voxels->tris_z[i_voxel * (5 * 3) + i_tri * 3 + 2];
+                        *dst_nx++ = voxels->normals_x[i_voxel * (5 * 3) + i_tri * 3 + 2];
+                        *dst_ny++ = voxels->normals_y[i_voxel * (5 * 3) + i_tri * 3 + 2];
+                        *dst_nz++ = voxels->normals_z[i_voxel * (5 * 3) + i_tri * 3 + 2];
+                        *dst_indices++ = num_indices;
+                        num_indices++;
+                        num_vertices++;
+                    }
+                }
+
+#if 0
+                s32_m x;
+                s32_m y;
+                s32_m z;
+                unpack_voxel_key(&x, &y, &z, voxels->keys[i_voxel]);
+                v3 pos = { .x=(f32)x, .y=(f32)y, .z=(f32)z };
+                v3 c = {.x = 1.0f, .y = 1.0f, .z = 1.0f };
+                debug_draw_sphere(&proj_mtx, &world_to_cam_mtx, pos, 0.1f, c);
+#endif
+            }
+        }
+
+        terrain_mesh->num_vertices = num_vertices;
+        terrain_mesh->num_indices = num_indices;
+    }
+
     f32 pos[3] = {0};
     draw_Mesh_1M(terrain_mesh, &camera_and_clip_mtx, 1, pos + 0, pos + 1, pos + 2);
 

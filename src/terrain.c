@@ -1,6 +1,5 @@
 
 #include "terrain.h"
-#include "math.h"
 #include "marching_cubes.h"
 
 #include <immintrin.h>
@@ -93,8 +92,6 @@
 // # samples = 18 * 64^3 = 4718592 (~5 million)
 //
 
-#define LOD0_WIDTH 128
-#define MAX_LOD 18
 
 INTERNAL inline __m256 pnoise8_calc_gradient(__m256 x, __m256 y, __m256 z, __m256 vx, __m256 vy, __m256 vz)
 {
@@ -170,6 +167,42 @@ INTERNAL inline __m256 pnoise8(const __m256 x, const __m256 y, const __m256 z)
     return r4;
 }
 
+INTERNAL inline __m256 sample_terrain(const __m256 x, const __m256 y, const __m256 z)
+{
+    __m256 layer0 = pnoise8(
+            _mm256_mul_ps(x, _mm256_set1_ps(0.02f)),
+            _mm256_mul_ps(y, _mm256_set1_ps(0.02f)),
+            _mm256_mul_ps(z, _mm256_set1_ps(0.02f))
+        );
+    //layer0 = _mm256_sub_ps(layer0, _mm256_mul_ps(y, _mm256_set1_ps(0.02f)));
+    __m256 layer1 = pnoise8(
+            _mm256_mul_ps(x, _mm256_set1_ps(0.01f)),
+            _mm256_mul_ps(y, _mm256_set1_ps(0.01f)),
+            _mm256_mul_ps(z, _mm256_set1_ps(0.01f))
+        );
+    layer1 = _mm256_sub_ps(layer1, _mm256_mul_ps(y, _mm256_set1_ps(0.01f)));
+    __m256 layer2 = pnoise8(
+            _mm256_mul_ps(x, _mm256_set1_ps(0.0015f)),
+            _mm256_mul_ps(y, _mm256_set1_ps(0.0025f)),
+            _mm256_mul_ps(z, _mm256_set1_ps(0.0015f))
+        );
+    layer2 = _mm256_sub_ps(layer2, _mm256_mul_ps(y, _mm256_set1_ps(0.0f)));
+
+    __m256 result = _mm256_fmadd_ps(
+        _mm256_set1_ps(0.1f),
+        layer0,
+        _mm256_fmadd_ps(
+            _mm256_set1_ps(0.2f),
+            layer1,
+            _mm256_mul_ps(
+                _mm256_set1_ps(2.0f),
+                layer2
+            )
+        )
+    );
+    return result;
+}
+
 // Input:
 // * LOD 0 width (static u32)
 // * Max LOD (static u32)
@@ -178,145 +211,131 @@ INTERNAL inline __m256 pnoise8(const __m256 x, const __m256 y, const __m256 z)
 // * List of tris (vertices, normals, indices)
 // * TODO Acceleration spatial lookup structure for finding terrain
 void generate_terrain(
-        u32_m* out_num_vertices,
-        f32_m* out_vx,
-        f32_m* out_vy,
-        f32_m* out_vz,
-        f32_m* out_nx,
-        f32_m* out_ny,
-        f32_m* out_nz,
-        u32_m* out_num_indices,
-        u32_m* out_indices,
+        struct Terrain* terrain,
         f32 cam_pos_x,
         f32 cam_pos_y,
-        f32 cam_pos_z,
-        u8 lod)
+        f32 cam_pos_z)
 {
-    u32_m num_vertices = 0;
-    u32_m num_indices = 0;
 
-    f32 x_freq = 0.02f;
-    f32 y_freq = 0.02f;
-    f32 z_freq = 0.02f;
-    f32 y_bias = 0.02f;
-
-    f32 region_width = LOD0_WIDTH;
-    f32 region_scale = (float)(1 << (u32)lod);
-
-
-    // sample_x = round_neg_inf(cam_pos.x / region_scale) - (f32)region_width * 0.5f * region_scale + offset;
-    const __m256 samples_x_start = _mm256_add_ps(
-            _mm256_sub_ps(
-                _mm256_mul_ps(
-                    _mm256_round_ps(_mm256_set1_ps((float)cam_pos_x / region_scale), _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC),
-                    _mm256_set1_ps(region_scale)
-                ),
-                _mm256_set1_ps((f32)region_width * 0.5f * region_scale)
-            ),
-            _mm256_setr_ps(0.0f, region_scale, region_scale, 0.0f, 0.0f, region_scale, region_scale, 0.0f)
-        );
-    // sample_y = round_neg_inf(cam_pos.y / region_scale) - (f32)region_width * 0.5f * region_scale + offset;
-    const __m256 samples_y_start = _mm256_add_ps(
-            _mm256_sub_ps(
-                _mm256_mul_ps(
-                    _mm256_round_ps(_mm256_set1_ps((float)cam_pos_y / region_scale), _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC),
-                    _mm256_set1_ps(region_scale)
-                ),
-                _mm256_set1_ps((f32)region_width * 0.5f * region_scale)
-            ),
-            _mm256_setr_ps(0.0f, 0.0f, 0.0f, 0.0f, region_scale, region_scale, region_scale, region_scale)
-        );
-    // sample_z = round_neg_inf(cam_pos.z / region_scale) - (f32)region_width * 0.5f * region_scale + offset;
-    const __m256 samples_z_start = _mm256_add_ps(
-            _mm256_sub_ps(
-                _mm256_mul_ps(
-                    _mm256_round_ps(_mm256_set1_ps((float)cam_pos_z / region_scale), _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC),
-                    _mm256_set1_ps(region_scale)
-                ),
-                _mm256_set1_ps((f32)region_width * 0.5f * region_scale)
-            ),
-            _mm256_setr_ps(0.0f, 0.0f, region_scale, region_scale, 0.0f, 0.0f, region_scale, region_scale)
-        );
-    for(s32_m i_y = 0; i_y < region_width; i_y++)
+    for(u8_m lod = 0; lod < TERRAIN_MAX_NUM_LOD; lod++)
     {
-        for(s32_m i_z = 0; i_z < region_width; i_z++)
+        f32 region_scale = (float)(1 << (u32)lod);
+
+        struct TerrainVoxels* voxels = terrain->terrain_lod + lod;
+
+        // sample_x = round_neg_inf(cam_pos.x / region_scale) - (f32)LOD_REGION_DIM * 0.5f * region_scale + offset;
+        const __m256 samples_x_start = _mm256_add_ps(
+                _mm256_sub_ps(
+                    _mm256_mul_ps(
+                        _mm256_round_ps(_mm256_set1_ps((float)cam_pos_x / region_scale), _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC),
+                        _mm256_set1_ps(region_scale)
+                    ),
+                    _mm256_set1_ps((f32)LOD_REGION_DIM * 0.5f * region_scale)
+                ),
+                _mm256_setr_ps(0.0f, region_scale, region_scale, 0.0f, 0.0f, region_scale, region_scale, 0.0f)
+            );
+        // sample_y = round_neg_inf(cam_pos.y / region_scale) - (f32)LOD_REGION_DIM * 0.5f * region_scale + offset;
+        const __m256 samples_y_start = _mm256_add_ps(
+                _mm256_sub_ps(
+                    _mm256_mul_ps(
+                        _mm256_round_ps(_mm256_set1_ps((float)cam_pos_y / region_scale), _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC),
+                        _mm256_set1_ps(region_scale)
+                    ),
+                    _mm256_set1_ps((f32)LOD_REGION_DIM * 0.5f * region_scale)
+                ),
+                _mm256_setr_ps(0.0f, 0.0f, 0.0f, 0.0f, region_scale, region_scale, region_scale, region_scale)
+            );
+        // sample_z = round_neg_inf(cam_pos.z / region_scale) - (f32)LOD_REGION_DIM * 0.5f * region_scale + offset;
+        const __m256 samples_z_start = _mm256_add_ps(
+                _mm256_sub_ps(
+                    _mm256_mul_ps(
+                        _mm256_round_ps(_mm256_set1_ps((float)cam_pos_z / region_scale), _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC),
+                        _mm256_set1_ps(region_scale)
+                    ),
+                    _mm256_set1_ps((f32)LOD_REGION_DIM * 0.5f * region_scale)
+                ),
+                _mm256_setr_ps(0.0f, 0.0f, region_scale, region_scale, 0.0f, 0.0f, region_scale, region_scale)
+            );
+        for(s32_m i_y = 0; i_y < LOD_REGION_DIM; i_y++)
         {
-            for(s32_m i_x = 0; i_x < region_width; i_x++)
+            for(s32_m i_z = 0; i_z < LOD_REGION_DIM; i_z++)
             {
-                const __m256 samples_x = _mm256_add_ps(_mm256_set1_ps((f32)i_x * region_scale), samples_x_start);
-                const __m256 samples_y = _mm256_add_ps(_mm256_set1_ps((f32)i_y * region_scale), samples_y_start);
-                const __m256 samples_z = _mm256_add_ps(_mm256_set1_ps((f32)i_z * region_scale), samples_z_start);
-
-                __m256 noise = pnoise8(
-                        _mm256_mul_ps(samples_x, _mm256_set1_ps(x_freq)),
-                        _mm256_mul_ps(samples_y, _mm256_set1_ps(y_freq)),
-                        _mm256_mul_ps(samples_z, _mm256_set1_ps(z_freq))
-                    );
-                noise = _mm256_sub_ps(noise, _mm256_mul_ps(samples_y, _mm256_set1_ps(y_bias)));
-
-                f32_m tris_x[5 * 3];
-                f32_m tris_y[5 * 3];
-                f32_m tris_z[5 * 3];
-                u32 num_tris = marching_cube(tris_x, tris_y, tris_z, noise);
-
-                _Alignas(32) f32_m samples_x_arr[8];
-                _Alignas(32) f32_m samples_y_arr[8];
-                _Alignas(32) f32_m samples_z_arr[8];
-                _mm256_store_ps(samples_x_arr, samples_x);
-                _mm256_store_ps(samples_y_arr, samples_y);
-                _mm256_store_ps(samples_z_arr, samples_z);
-
-                for(u64_m i_tri = 0; i_tri < num_tris; i_tri++)
+                for(s32_m i_x = 0; i_x < LOD_REGION_DIM; i_x++)
                 {
-                    v3 vert0 = { .x = tris_x[i_tri * 3 + 2], .y = tris_y[i_tri * 3 + 2], .z = tris_z[i_tri * 3 + 2] };
-                    v3 vert1 = { .x = tris_x[i_tri * 3 + 1], .y = tris_y[i_tri * 3 + 1], .z = tris_z[i_tri * 3 + 1] };
-                    v3 vert2 = { .x = tris_x[i_tri * 3 + 0], .y = tris_y[i_tri * 3 + 0], .z = tris_z[i_tri * 3 + 0] };
+                    const __m256 samples_x = _mm256_add_ps(_mm256_set1_ps((f32)i_x * region_scale), samples_x_start);
+                    const __m256 samples_y = _mm256_add_ps(_mm256_set1_ps((f32)i_y * region_scale), samples_y_start);
+                    const __m256 samples_z = _mm256_add_ps(_mm256_set1_ps((f32)i_z * region_scale), samples_z_start);
 
-                    v3 normal = v3_normalize(v3_cross(v3_sub(vert2, vert0), v3_sub(vert1, vert0)));
+                    __m256 noise = sample_terrain(samples_x, samples_y, samples_z);
 
-                    v3 sample_offset = {.x = samples_x_arr[0], .y = samples_y_arr[0], .z = samples_z_arr[0] };
+                    f32_m tris_x[5 * 3];
+                    f32_m tris_y[5 * 3];
+                    f32_m tris_z[5 * 3];
+                    u32 num_tris = marching_cube(tris_x, tris_y, tris_z, noise);
 
-                    vert0 = v3_scale(vert0, region_scale);
-                    vert1 = v3_scale(vert1, region_scale);
-                    vert2 = v3_scale(vert2, region_scale);
+                    if(num_tris)
+                    {
+                        // Store this voxel.
+                        ASSERT(voxels->num_voxels < TERRAIN_MAX_NUM_VOXELS, "Max num voxels exceeded.");
+                        u64 voxel_idx = voxels->num_voxels;
+                        voxels->num_voxels++;
+                        _Alignas(32) f32_m samples_x_arr[8];
+                        _Alignas(32) f32_m samples_y_arr[8];
+                        _Alignas(32) f32_m samples_z_arr[8];
+                        _mm256_store_ps(samples_x_arr, samples_x);
+                        _mm256_store_ps(samples_y_arr, samples_y);
+                        _mm256_store_ps(samples_z_arr, samples_z);
+                        voxels->keys[voxel_idx] = pack_voxel_key((s32)samples_x_arr[0], (s32)samples_y_arr[0], (s32)samples_z_arr[0]);
+                        voxels->num_tris[voxel_idx] = num_tris;
 
-                    vert0 = v3_add(vert0, sample_offset);
-                    vert1 = v3_add(vert1, sample_offset);
-                    vert2 = v3_add(vert2, sample_offset);
-                    
-                    *out_vx++ = vert0.x;
-                    *out_vy++ = vert0.y;
-                    *out_vz++ = vert0.z;
-                    *out_nx++ = normal.x;
-                    *out_ny++ = normal.y;
-                    *out_nz++ = normal.z;
+                        for(u64_m i_tri = 0; i_tri < num_tris; i_tri++)
+                        {
+                            v3 vert0 = { .x = tris_x[i_tri * 3 + 2], .y = tris_y[i_tri * 3 + 2], .z = tris_z[i_tri * 3 + 2] };
+                            v3 vert1 = { .x = tris_x[i_tri * 3 + 1], .y = tris_y[i_tri * 3 + 1], .z = tris_z[i_tri * 3 + 1] };
+                            v3 vert2 = { .x = tris_x[i_tri * 3 + 0], .y = tris_y[i_tri * 3 + 0], .z = tris_z[i_tri * 3 + 0] };
 
-                    *out_vx++ = vert1.x;
-                    *out_vy++ = vert1.y;
-                    *out_vz++ = vert1.z;
-                    *out_nx++ = normal.x;
-                    *out_ny++ = normal.y;
-                    *out_nz++ = normal.z;
+                            v3 normal = v3_normalize(v3_cross(v3_sub(vert2, vert0), v3_sub(vert1, vert0)));
 
-                    *out_vx++ = vert2.x;
-                    *out_vy++ = vert2.y;
-                    *out_vz++ = vert2.z;
-                    *out_nx++ = normal.x;
-                    *out_ny++ = normal.y;
-                    *out_nz++ = normal.z;
+                            v3 sample_offset = {.x = samples_x_arr[0], .y = samples_y_arr[0], .z = samples_z_arr[0] };
 
-                    num_vertices += 3;
+                            vert0 = v3_scale(vert0, region_scale);
+                            vert1 = v3_scale(vert1, region_scale);
+                            vert2 = v3_scale(vert2, region_scale);
 
-                    *out_indices++ = num_indices++;
-                    *out_indices++ = num_indices++;
-                    *out_indices++ = num_indices++;
+                            vert0 = v3_add(vert0, sample_offset);
+                            vert1 = v3_add(vert1, sample_offset);
+                            vert2 = v3_add(vert2, sample_offset);
+
+                            voxels->tris_x[voxel_idx * (5 * 3) + i_tri * 3 + 0] = vert0.x;
+                            voxels->tris_x[voxel_idx * (5 * 3) + i_tri * 3 + 1] = vert1.x;
+                            voxels->tris_x[voxel_idx * (5 * 3) + i_tri * 3 + 2] = vert2.x;
+
+                            voxels->tris_y[voxel_idx * (5 * 3) + i_tri * 3 + 0] = vert0.y;
+                            voxels->tris_y[voxel_idx * (5 * 3) + i_tri * 3 + 1] = vert1.y;
+                            voxels->tris_y[voxel_idx * (5 * 3) + i_tri * 3 + 2] = vert2.y;
+
+                            voxels->tris_z[voxel_idx * (5 * 3) + i_tri * 3 + 0] = vert0.z;
+                            voxels->tris_z[voxel_idx * (5 * 3) + i_tri * 3 + 1] = vert1.z;
+                            voxels->tris_z[voxel_idx * (5 * 3) + i_tri * 3 + 2] = vert2.z;
+
+
+                            voxels->normals_x[voxel_idx * (5 * 3) + i_tri * 3 + 0] = normal.x;
+                            voxels->normals_x[voxel_idx * (5 * 3) + i_tri * 3 + 1] = normal.x;
+                            voxels->normals_x[voxel_idx * (5 * 3) + i_tri * 3 + 2] = normal.x;
+
+                            voxels->normals_y[voxel_idx * (5 * 3) + i_tri * 3 + 0] = normal.y;
+                            voxels->normals_y[voxel_idx * (5 * 3) + i_tri * 3 + 1] = normal.y;
+                            voxels->normals_y[voxel_idx * (5 * 3) + i_tri * 3 + 2] = normal.y;
+
+                            voxels->normals_z[voxel_idx * (5 * 3) + i_tri * 3 + 0] = normal.z;
+                            voxels->normals_z[voxel_idx * (5 * 3) + i_tri * 3 + 1] = normal.z;
+                            voxels->normals_z[voxel_idx * (5 * 3) + i_tri * 3 + 2] = normal.z;
+                        }
+                    }
                 }
             }
         }
     }
-
-    *out_num_vertices = num_vertices;
-    *out_num_indices = num_indices;
 }
 
 
