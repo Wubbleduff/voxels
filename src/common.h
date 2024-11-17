@@ -3,6 +3,8 @@
 
 #include "win32_crt.h"
 
+#include <immintrin.h>
+
 
 #if defined(__clang__)
     #define MAYBE_UNUSED __attribute__((unused))

@@ -10,25 +10,46 @@
 int _fltused = 0;
 
 #pragma function(memset)
-void *memset(void *dest, int c, size_t count)
+void *memset(void *dst, int c, size_t count)
 {
-    char *bytes = (char *)dest;
+    char *bytes = (char *)dst;
     while (count--)
     {
         *bytes++ = (char)c;
     }
-    return dest;
+    return dst;
 }
 
 #pragma function(memcpy)
-void *memcpy(void *dest, const void *src, size_t count)
+void *memcpy(void *dst, const void *src, size_t count)
 {
-    char *dest8 = (char *)dest;
-    const char *src8 = (const char *)src;
-    while (count--)
+    //char *dst8 = (char *)dst;
+    //const char *src8 = (const char *)src;
+    //while (count--)
+    //{
+    //    *dst8++ = *src8++;
+    //}
+    //return dst;
+
+    if(count < 32)
     {
-        *dest8++ = *src8++;
+        for(u64_m i = 0; i < count; i++)
+        {
+            ((u8_m*)dst)[i] = ((u8*)src)[i];
+        }
     }
-    return dest;
+    else
+    {
+        for(u64_m i = 0; i < count; i += 32)
+        {
+            _mm256_storeu_si256((__m256i*)((u8_m*)dst + i), _mm256_loadu_si256((__m256i*)((u8*)src + i)));
+        }
+    }
+
+    for(u64_m i = count & ~31; i < count; i++)
+    {
+        ((u8_m*)dst)[i] = ((u8*)src)[i];
+    }
+    return (u8_m*)dst + count;
 }
 

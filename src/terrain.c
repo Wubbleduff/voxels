@@ -212,12 +212,19 @@ INTERNAL inline __m256 sample_terrain(const __m256 x, const __m256 y, const __m2
 // * TODO Acceleration spatial lookup structure for finding terrain
 void generate_terrain(
         struct Terrain* terrain,
+        struct TerrainProgress* progress,
         f32 cam_pos_x,
         f32 cam_pos_y,
-        f32 cam_pos_z)
+        f32 cam_pos_z,
+        u32 gen_max)
 {
+    u32_m num_generated = 0;
+    //u32_m num_nonzero_generated = 0;
+    u32_m first_lod_loop = 1;
+    u32_m first_y_loop = 1;
+    u32_m first_z_loop = 1;
 
-    for(u8_m lod = 0; lod < TERRAIN_MAX_NUM_LOD; lod++)
+    for(u8_m lod = progress->lod; lod < TERRAIN_MAX_NUM_LOD; lod++)
     {
         f32 region_scale = (float)(1 << (u32)lod);
 
@@ -256,11 +263,11 @@ void generate_terrain(
                 ),
                 _mm256_setr_ps(0.0f, 0.0f, region_scale, region_scale, 0.0f, 0.0f, region_scale, region_scale)
             );
-        for(s32_m i_y = 0; i_y < LOD_REGION_DIM; i_y++)
+        for(s32_m i_y = first_lod_loop ? progress->i_y : 0; i_y < LOD_REGION_DIM; i_y++)
         {
-            for(s32_m i_z = 0; i_z < LOD_REGION_DIM; i_z++)
+            for(s32_m i_z = first_y_loop ? progress->i_z : 0; i_z < LOD_REGION_DIM; i_z++)
             {
-                for(s32_m i_x = 0; i_x < LOD_REGION_DIM; i_x++)
+                for(s32_m i_x = first_z_loop ? progress->i_x : 0; i_x < LOD_REGION_DIM; i_x++)
                 {
                     const __m256 samples_x = _mm256_add_ps(_mm256_set1_ps((f32)i_x * region_scale), samples_x_start);
                     const __m256 samples_y = _mm256_add_ps(_mm256_set1_ps((f32)i_y * region_scale), samples_y_start);
@@ -332,9 +339,28 @@ void generate_terrain(
                             voxels->normals_z[voxel_idx * (5 * 3) + i_tri * 3 + 2] = normal.z;
                         }
                     }
+
+                    progress->i_x = i_x == LOD_REGION_DIM - 1 ? 0 : i_x + 1;
+
+                    num_generated++;
+                    //num_nonzero_generated += num_tris ? 1 : 0;
+                    if(num_generated >= gen_max)
+                    {
+                        goto end_gen;
+                    }
                 }
+                progress->i_z = i_z == LOD_REGION_DIM - 1 ? 0 : i_z + 1;
+                first_z_loop = 0;
             }
+            progress->i_y = i_y == LOD_REGION_DIM - 1 ? 0 : i_y + 1;
+            first_y_loop = 0;
         }
+        progress->lod = lod + 1;
+        first_lod_loop = 0;
+    }
+
+end_gen:
+    {
     }
 }
 

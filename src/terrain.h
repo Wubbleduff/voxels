@@ -29,6 +29,14 @@ struct Terrain
     struct TerrainVoxels terrain_lod[TERRAIN_MAX_NUM_LOD];
 };
 
+struct TerrainProgress
+{
+    u8_m lod;
+    s32_m i_x;
+    s32_m i_y;
+    s32_m i_z;
+};
+
 INTERNAL u64 pack_voxel_key(s32 x, s32 y, s32 z)
 {
     ASSERT(abs_s32(x) < (1 << 19), "Voxel position will overflow when packing.");
@@ -84,6 +92,8 @@ INTERNAL void copy_terrain(struct Terrain* dst, const struct Terrain* src)
 
 void generate_terrain(
         struct Terrain* terrain,
+        struct TerrainProgress* progress,
         f32 cam_pos_x,
         f32 cam_pos_y,
-        f32 cam_pos_z);
+        f32 cam_pos_z,
+        u32 gen_max);

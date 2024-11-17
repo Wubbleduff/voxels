@@ -12,8 +12,8 @@ struct GameState
     f32_m player_pitch_turns;
     f32_m player_yaw_turns;
 
-    u32_m terrain_generated;
     struct Terrain terrain;
+    struct TerrainProgress terrain_progress;
 };
 
 INTERNAL void reset_game_state(struct GameState* game_state)
@@ -22,7 +22,7 @@ INTERNAL void reset_game_state(struct GameState* game_state)
     game_state->player_pitch_turns = 0.0f;
     game_state->player_yaw_turns = 0.0f;
 
-    game_state->terrain_generated = 0;
     reset_terrain(&game_state->terrain);
+    memset(&game_state->terrain_progress, 0, sizeof(struct TerrainProgress));
 }
 
