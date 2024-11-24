@@ -1293,7 +1293,7 @@ void WinMainCRTStartup()
                 "{\n"
                 "    vec3 base_color = vec3(0.1f, 0.7f, 0.0f);\n"
                 "    vec3 light_dir = -vec3(0.5f, 0.5f, 0.5f);\n"
-                "    float inten = clamp(dot(light_dir, v_normal), 0.2f, 1.0f);\n"
+                "    float inten = clamp(dot(light_dir, -v_normal), 0.2f, 1.0f);\n"
                 "    result_frag_color = vec4(base_color * inten, 1.0f);\n"
                 //"    result_frag_color = vec4(0.05f, 0.5f, 0.0f, 1.0f);\n"
                 //"    result_frag_color = vec4(0.05f, 0.5f, 0.0f, 1.0f);\n"

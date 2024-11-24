@@ -203,13 +203,20 @@ INTERNAL inline __m256 sample_terrain(const __m256 x, const __m256 y, const __m2
     return result;
 }
 
-// Input:
-// * LOD 0 width (static u32)
-// * Max LOD (static u32)
-// * Camera pos (3x s32)
-// Output:
-// * List of tris (vertices, normals, indices)
-// * TODO Acceleration spatial lookup structure for finding terrain
+INTERNAL inline struct TerrainChunk* get_chunk(struct Terrain* terrain, s32 x, s32 y, s32 z)
+{
+    u64 key = pack_voxel_key(x, y, z);
+    u64_m chunk_idx = (u64_m)-1;
+    for(u64_m i = 0; i < terrain->num_chunks; i++)
+    {
+        if(terrain->chunk_key[i] == key)
+        {
+            chunk_idx = i;
+        }
+    }
+    return chunk_idx == (u64_m)-1 ? NULL : terrain->chunks + chunk_idx;
+}
+
 void generate_terrain(
         struct Terrain* terrain,
         struct TerrainProgress* progress,
@@ -218,150 +225,90 @@ void generate_terrain(
         f32 cam_pos_z,
         u32 gen_max)
 {
-    u32_m num_generated = 0;
-    //u32_m num_nonzero_generated = 0;
-    u32_m first_lod_loop = 1;
-    u32_m first_y_loop = 1;
-    u32_m first_z_loop = 1;
+    (void)terrain;
+    (void)progress;
+    (void)cam_pos_x;
+    (void)cam_pos_y;
+    (void)cam_pos_z;
+    (void)gen_max;
 
-    for(u8_m lod = progress->lod; lod < TERRAIN_MAX_NUM_LOD; lod++)
+    terrain->num_chunks = 0;
+
+    __m256 s_x8 = _mm256_setr_ps(
+            -64.0f + 0.0f,
+            -64.0f + 1.0f,
+            -64.0f + 2.0f,
+            -64.0f + 3.0f,
+            -64.0f + 4.0f,
+            -64.0f + 5.0f,
+            -64.0f + 6.0f,
+            -64.0f + 7.0f);
+    __m256 s_z8 = _mm256_setr_ps(
+            -64.0f,
+            -64.0f,
+            -64.0f,
+            -64.0f,
+            -64.0f,
+            -64.0f,
+            -64.0f,
+            -64.0f);
+    for(s32_m s_z = -128; s_z < 128; s_z++)
     {
-        f32 region_scale = (float)(1 << (u32)lod);
-
-        struct TerrainVoxels* voxels = terrain->terrain_lod + lod;
-
-        // sample_x = round_neg_inf(cam_pos.x / region_scale) - (f32)LOD_REGION_DIM * 0.5f * region_scale + offset;
-        const __m256 samples_x_start = _mm256_add_ps(
-                _mm256_sub_ps(
-                    _mm256_mul_ps(
-                        _mm256_round_ps(_mm256_set1_ps((float)cam_pos_x / region_scale), _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC),
-                        _mm256_set1_ps(region_scale)
-                    ),
-                    _mm256_set1_ps((f32)LOD_REGION_DIM * 0.5f * region_scale)
-                ),
-                _mm256_setr_ps(0.0f, region_scale, region_scale, 0.0f, 0.0f, region_scale, region_scale, 0.0f)
-            );
-        // sample_y = round_neg_inf(cam_pos.y / region_scale) - (f32)LOD_REGION_DIM * 0.5f * region_scale + offset;
-        const __m256 samples_y_start = _mm256_add_ps(
-                _mm256_sub_ps(
-                    _mm256_mul_ps(
-                        _mm256_round_ps(_mm256_set1_ps((float)cam_pos_y / region_scale), _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC),
-                        _mm256_set1_ps(region_scale)
-                    ),
-                    _mm256_set1_ps((f32)LOD_REGION_DIM * 0.5f * region_scale)
-                ),
-                _mm256_setr_ps(0.0f, 0.0f, 0.0f, 0.0f, region_scale, region_scale, region_scale, region_scale)
-            );
-        // sample_z = round_neg_inf(cam_pos.z / region_scale) - (f32)LOD_REGION_DIM * 0.5f * region_scale + offset;
-        const __m256 samples_z_start = _mm256_add_ps(
-                _mm256_sub_ps(
-                    _mm256_mul_ps(
-                        _mm256_round_ps(_mm256_set1_ps((float)cam_pos_z / region_scale), _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC),
-                        _mm256_set1_ps(region_scale)
-                    ),
-                    _mm256_set1_ps((f32)LOD_REGION_DIM * 0.5f * region_scale)
-                ),
-                _mm256_setr_ps(0.0f, 0.0f, region_scale, region_scale, 0.0f, 0.0f, region_scale, region_scale)
-            );
-        for(s32_m i_y = first_lod_loop ? progress->i_y : 0; i_y < LOD_REGION_DIM; i_y++)
+        for(s32_m s_x = -128; s_x < 128; s_x += 8)
         {
-            for(s32_m i_z = first_y_loop ? progress->i_z : 0; i_z < LOD_REGION_DIM; i_z++)
+            __m256 noise = pnoise8(
+                    _mm256_mul_ps(s_x8, _mm256_set1_ps(0.01f)),
+                    _mm256_set1_ps(5.0f),
+                    _mm256_mul_ps(s_z8, _mm256_set1_ps(0.01f)));
+            noise = _mm256_mul_ps(noise, _mm256_set1_ps(70.0f));
+            _Alignas(32) f32_m noise_arr[8];
+            _mm256_store_ps(noise_arr, noise);
+
+            for(s32_m i_arr = 0; i_arr < 8; i_arr++)
             {
-                for(s32_m i_x = first_z_loop ? progress->i_x : 0; i_x < LOD_REGION_DIM; i_x++)
+                s32 chunk_x = truncate_chunk(s_x + i_arr);
+                s32 chunk_y = truncate_chunk((s32)noise_arr[i_arr]);
+                s32 chunk_z = truncate_chunk(s_z);
+                struct TerrainChunk* chunk = get_chunk(terrain, chunk_x, chunk_y, chunk_z);
+                if(!chunk)
                 {
-                    const __m256 samples_x = _mm256_add_ps(_mm256_set1_ps((f32)i_x * region_scale), samples_x_start);
-                    const __m256 samples_y = _mm256_add_ps(_mm256_set1_ps((f32)i_y * region_scale), samples_y_start);
-                    const __m256 samples_z = _mm256_add_ps(_mm256_set1_ps((f32)i_z * region_scale), samples_z_start);
-
-                    __m256 noise = sample_terrain(samples_x, samples_y, samples_z);
-
-                    f32_m tris_x[5 * 3];
-                    f32_m tris_y[5 * 3];
-                    f32_m tris_z[5 * 3];
-                    u32 num_tris = marching_cube(tris_x, tris_y, tris_z, noise);
-
-                    if(num_tris)
-                    {
-                        // Store this voxel.
-                        ASSERT(voxels->num_voxels < TERRAIN_MAX_NUM_VOXELS, "Max num voxels exceeded.");
-                        u64 voxel_idx = voxels->num_voxels;
-                        voxels->num_voxels++;
-                        _Alignas(32) f32_m samples_x_arr[8];
-                        _Alignas(32) f32_m samples_y_arr[8];
-                        _Alignas(32) f32_m samples_z_arr[8];
-                        _mm256_store_ps(samples_x_arr, samples_x);
-                        _mm256_store_ps(samples_y_arr, samples_y);
-                        _mm256_store_ps(samples_z_arr, samples_z);
-                        voxels->keys[voxel_idx] = pack_voxel_key((s32)samples_x_arr[0], (s32)samples_y_arr[0], (s32)samples_z_arr[0]);
-                        voxels->num_tris[voxel_idx] = num_tris;
-
-                        for(u64_m i_tri = 0; i_tri < num_tris; i_tri++)
-                        {
-                            v3 vert0 = { .x = tris_x[i_tri * 3 + 2], .y = tris_y[i_tri * 3 + 2], .z = tris_z[i_tri * 3 + 2] };
-                            v3 vert1 = { .x = tris_x[i_tri * 3 + 1], .y = tris_y[i_tri * 3 + 1], .z = tris_z[i_tri * 3 + 1] };
-                            v3 vert2 = { .x = tris_x[i_tri * 3 + 0], .y = tris_y[i_tri * 3 + 0], .z = tris_z[i_tri * 3 + 0] };
-
-                            v3 normal = v3_normalize(v3_cross(v3_sub(vert2, vert0), v3_sub(vert1, vert0)));
-
-                            v3 sample_offset = {.x = samples_x_arr[0], .y = samples_y_arr[0], .z = samples_z_arr[0] };
-
-                            vert0 = v3_scale(vert0, region_scale);
-                            vert1 = v3_scale(vert1, region_scale);
-                            vert2 = v3_scale(vert2, region_scale);
-
-                            vert0 = v3_add(vert0, sample_offset);
-                            vert1 = v3_add(vert1, sample_offset);
-                            vert2 = v3_add(vert2, sample_offset);
-
-                            voxels->tris_x[voxel_idx * (5 * 3) + i_tri * 3 + 0] = vert0.x;
-                            voxels->tris_x[voxel_idx * (5 * 3) + i_tri * 3 + 1] = vert1.x;
-                            voxels->tris_x[voxel_idx * (5 * 3) + i_tri * 3 + 2] = vert2.x;
-
-                            voxels->tris_y[voxel_idx * (5 * 3) + i_tri * 3 + 0] = vert0.y;
-                            voxels->tris_y[voxel_idx * (5 * 3) + i_tri * 3 + 1] = vert1.y;
-                            voxels->tris_y[voxel_idx * (5 * 3) + i_tri * 3 + 2] = vert2.y;
-
-                            voxels->tris_z[voxel_idx * (5 * 3) + i_tri * 3 + 0] = vert0.z;
-                            voxels->tris_z[voxel_idx * (5 * 3) + i_tri * 3 + 1] = vert1.z;
-                            voxels->tris_z[voxel_idx * (5 * 3) + i_tri * 3 + 2] = vert2.z;
-
-
-                            voxels->normals_x[voxel_idx * (5 * 3) + i_tri * 3 + 0] = normal.x;
-                            voxels->normals_x[voxel_idx * (5 * 3) + i_tri * 3 + 1] = normal.x;
-                            voxels->normals_x[voxel_idx * (5 * 3) + i_tri * 3 + 2] = normal.x;
-
-                            voxels->normals_y[voxel_idx * (5 * 3) + i_tri * 3 + 0] = normal.y;
-                            voxels->normals_y[voxel_idx * (5 * 3) + i_tri * 3 + 1] = normal.y;
-                            voxels->normals_y[voxel_idx * (5 * 3) + i_tri * 3 + 2] = normal.y;
-
-                            voxels->normals_z[voxel_idx * (5 * 3) + i_tri * 3 + 0] = normal.z;
-                            voxels->normals_z[voxel_idx * (5 * 3) + i_tri * 3 + 1] = normal.z;
-                            voxels->normals_z[voxel_idx * (5 * 3) + i_tri * 3 + 2] = normal.z;
-                        }
-                    }
-
-                    progress->i_x = i_x == LOD_REGION_DIM - 1 ? 0 : i_x + 1;
-
-                    num_generated++;
-                    //num_nonzero_generated += num_tris ? 1 : 0;
-                    if(num_generated >= gen_max)
-                    {
-                        goto end_gen;
-                    }
+                    u64 num_chunks = terrain->num_chunks;
+                    ASSERT(num_chunks < TERRAIN_MAX_CHUNKS, "Chunk overflow");
+                    terrain->chunk_key[num_chunks] = pack_voxel_key(chunk_x, chunk_y, chunk_z);
+                    terrain->chunk_exponent[num_chunks] = 1;
+                    terrain->num_chunks++;
+                    chunk = terrain->chunks + num_chunks;
                 }
-                progress->i_z = i_z == LOD_REGION_DIM - 1 ? 0 : i_z + 1;
-                first_z_loop = 0;
+
+                s32 x = s_x + i_arr - chunk_x;
+                s32 y = (s32)noise_arr[i_arr] - chunk_y;
+                s32 z = s_z - chunk_z;
+
+                for(s32_m i_y = 0; i_y < y; i_y++)
+                {
+                    chunk->m_filled[z * CHUNK_DIM*CHUNK_DIM + i_y*CHUNK_DIM + x] = 1;
+                }
+                for(s32_m i_y = y; i_y < CHUNK_DIM; i_y++)
+                {
+                    chunk->m_filled[z * CHUNK_DIM*CHUNK_DIM + i_y*CHUNK_DIM + x] = 0;
+                }
             }
-            progress->i_y = i_y == LOD_REGION_DIM - 1 ? 0 : i_y + 1;
-            first_y_loop = 0;
+
+            s_x8 = _mm256_add_ps(s_x8, _mm256_set1_ps(8.0f));
         }
-        progress->lod = lod + 1;
-        first_lod_loop = 0;
+
+        s_x8 = _mm256_setr_ps(
+            -64.0f + 0.0f,
+            -64.0f + 1.0f,
+            -64.0f + 2.0f,
+            -64.0f + 3.0f,
+            -64.0f + 4.0f,
+            -64.0f + 5.0f,
+            -64.0f + 6.0f,
+            -64.0f + 7.0f);
+        s_z8 = _mm256_add_ps(s_z8, _mm256_set1_ps(1.0f));
     }
 
-end_gen:
-    {
-    }
 }
 
 

@@ -9,7 +9,7 @@
 // |                 |
 // | 0    1          | 4    5       
 // +-------> x       +-------> x       
-const v3 MARCHING_CUBES_CUBE_VERTS[8] =
+static const v3 MARCHING_CUBES_CUBE_VERTS[8] =
 {
     {.x = 0.0f, .y = 0.0f, .z = 0.0f},
     {.x = 1.0f, .y = 0.0f, .z = 0.0f},
@@ -326,7 +326,7 @@ static v3 marching_cubes_vert_interp(v3 p0, v3 p1, f32 r0, f32 r1)
     return p;
 }
 
-u32 marching_cube(
+INTERNAL u32 marching_cube(
         f32_m* out_tris_x,
         f32_m* out_tris_y,
         f32_m* out_tris_z,

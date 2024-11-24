@@ -6,35 +6,32 @@
 
 struct MemoryArena;
 
-#define TERRAIN_MAX_NUM_LOD 6
-#define TERRAIN_MAX_NUM_VOXELS 65536
-#define LOD_REGION_DIM 128
+#define TERRAIN_MAX_CHUNKS 65536
+#define CHUNK_DIM 16
 
-// Sparse storage for terrain voxels
-struct TerrainVoxels
+INTERNAL inline s32 truncate_chunk(s32 n)
 {
-    u64_m num_voxels;
-    u64_m keys[TERRAIN_MAX_NUM_VOXELS];
+    return n & ~15;
+}
 
-    u64_m num_tris[TERRAIN_MAX_NUM_VOXELS];
-    f32_m tris_x[TERRAIN_MAX_NUM_VOXELS * 5 * 3];
-    f32_m tris_y[TERRAIN_MAX_NUM_VOXELS * 5 * 3];
-    f32_m tris_z[TERRAIN_MAX_NUM_VOXELS * 5 * 3];
-    f32_m normals_x[TERRAIN_MAX_NUM_VOXELS * 5 * 3];
-    f32_m normals_y[TERRAIN_MAX_NUM_VOXELS * 5 * 3];
-    f32_m normals_z[TERRAIN_MAX_NUM_VOXELS * 5 * 3];
+struct TerrainChunk
+{
+    // 16*16*16 bitarray
+    //u8 m_filled[512];
+    // Indexed by z * CHUNK_DIM*CHUNK_DIM + y*CHUNK_DIM + x
+    u8_m m_filled[16*16*16];
 };
 struct Terrain
 {
-    struct TerrainVoxels terrain_lod[TERRAIN_MAX_NUM_LOD];
+    u64_m num_chunks;
+    u64_m chunk_key[TERRAIN_MAX_CHUNKS];
+    u8_m chunk_exponent[TERRAIN_MAX_CHUNKS];
+    struct TerrainChunk chunks[TERRAIN_MAX_CHUNKS];
 };
 
 struct TerrainProgress
 {
-    u8_m lod;
-    s32_m i_x;
-    s32_m i_y;
-    s32_m i_z;
+    int b;
 };
 
 INTERNAL u64 pack_voxel_key(s32 x, s32 y, s32 z)
@@ -67,27 +64,13 @@ INTERNAL void unpack_voxel_key(s32_m* x, s32_m* y, s32_m* z, u64 k)
 
 INTERNAL void reset_terrain(struct Terrain* terrain)
 {
-    for(u64_m i = 0; i < ARRAY_COUNT(terrain->terrain_lod); i++)
-    {
-        terrain->terrain_lod[i].num_voxels = 0;
-    }
+    (void)terrain;
 }
 
 INTERNAL void copy_terrain(struct Terrain* dst, const struct Terrain* src)
 {
-    for(u64_m i = 0; i < ARRAY_COUNT(src->terrain_lod); i++)
-    {
-        u64 num_voxels = src->terrain_lod[i].num_voxels;
-        dst->terrain_lod[i].num_voxels = num_voxels;
-        ARRAY_COPY(dst->terrain_lod[i].keys, src->terrain_lod[i].keys, num_voxels);
-        ARRAY_COPY(dst->terrain_lod[i].num_tris, src->terrain_lod[i].num_tris, num_voxels);
-        ARRAY_COPY(dst->terrain_lod[i].tris_x, src->terrain_lod[i].tris_x, num_voxels * 5 * 3);
-        ARRAY_COPY(dst->terrain_lod[i].tris_y, src->terrain_lod[i].tris_y, num_voxels * 5 * 3);
-        ARRAY_COPY(dst->terrain_lod[i].tris_z, src->terrain_lod[i].tris_z, num_voxels * 5 * 3);
-        ARRAY_COPY(dst->terrain_lod[i].normals_x, src->terrain_lod[i].normals_x, num_voxels * 5 * 3);
-        ARRAY_COPY(dst->terrain_lod[i].normals_y, src->terrain_lod[i].normals_y, num_voxels * 5 * 3);
-        ARRAY_COPY(dst->terrain_lod[i].normals_z, src->terrain_lod[i].normals_z, num_voxels * 5 * 3);
-    }
+    (void)dst;
+    (void)src;
 }
 
 void generate_terrain(

@@ -5,6 +5,7 @@
 #include "game_state.h"
 
 #include "graphics.h"
+#include "marching_cubes.h"
 
 INTERNAL inline void make_world_to_camera_space_mtx(mtx4x4* result, const v3 pos, f32 pitch_turns, f32 yaw_turns)
 {
@@ -57,6 +58,7 @@ void do_one_frame(
         v3 J_cam = {.m={world_to_cam_mtx.m[1*4 + 0], world_to_cam_mtx.m[1*4 + 1], world_to_cam_mtx.m[1*4 + 2]}};
         v3 K_cam = {.m={world_to_cam_mtx.m[2*4 + 0], world_to_cam_mtx.m[2*4 + 1], world_to_cam_mtx.m[2*4 + 2]}};
 
+        //f32 speed = 0.02f;
         f32 speed = 1.0f;
         player_pos = v3_add(player_pos, v3_scale(K_cam, -speed * (f32)is_key_down(KB_W)));
         player_pos = v3_add(player_pos, v3_scale(K_cam,  speed * (f32)is_key_down(KB_S)));
@@ -329,25 +331,29 @@ void draw_game_state(struct GameState* game_state, struct MemoryArena* memory_ar
 
     f32 aspect_ratio = get_screen_aspect_ratio();
 
-    f32 n = 0.1f;
-    f32 f = 10000.0f;
-    f32 C_w = 0.125f;
-    f32 C_h = C_w * aspect_ratio;
-    mtx4x4 proj_mtx = {
-        .m = {
-            //    X         Y             Z                          W
-            n / C_w,     0.0f,           0.0f,                      0.0f,
-               0.0f,  n / C_h,           0.0f,                      0.0f,
-               0.0f,     0.0f,    (f + n) / (n - f),  (2.0f * n * f) / (n - f),
-               0.0f,     0.0f,          -1.0f,                      0.0f,
-        }
-    };
+    mtx4x4 proj_mtx;
+    {
+        f32 n = 0.1f;
+        f32 f = 10000.0f;
+        f32 C_w = 0.125f;
+        f32 C_h = C_w * aspect_ratio;
+        mtx4x4 m = {
+            .m = {
+                //    X         Y             Z                          W
+                n / C_w,     0.0f,           0.0f,                      0.0f,
+                   0.0f,  n / C_h,           0.0f,                      0.0f,
+                   0.0f,     0.0f,    (f + n) / (n - f),  (2.0f * n * f) / (n - f),
+                   0.0f,     0.0f,          -1.0f,                      0.0f,
+            }
+        };
+        proj_mtx = m;
+    }
 
     mtx4x4 camera_and_clip_mtx;
     mtx4x4_mul(&camera_and_clip_mtx, &proj_mtx, &world_to_cam_mtx);
 
+    /*
     struct Mesh_1M* terrain_mesh = (struct Mesh_1M*)MEMORY_ARENA_ALLOCATE(memory_arena, sizeof(struct Mesh_1M));
-
     for(u8_m lod = 0; lod < TERRAIN_MAX_NUM_LOD; lod++)
     {
 
@@ -417,6 +423,130 @@ void draw_game_state(struct GameState* game_state, struct MemoryArena* memory_ar
                     num_vertices++;
                 }
             }
+        }
+
+        terrain_mesh->num_vertices = num_vertices;
+        terrain_mesh->num_indices = num_indices;
+
+        f32 pos[3] = {0};
+        draw_Mesh_1M(terrain_mesh, &camera_and_clip_mtx, 1, pos + 0, pos + 1, pos + 2);
+    }
+    */
+
+    {
+        struct Mesh_1M* terrain_mesh = (struct Mesh_1M*)MEMORY_ARENA_ALLOCATE(memory_arena, sizeof(struct Mesh_1M));
+
+        f32_m* dst_vx = terrain_mesh->vx;
+        f32_m* dst_vy = terrain_mesh->vy;
+        f32_m* dst_vz = terrain_mesh->vz;
+        f32_m* dst_nx = terrain_mesh->nx;
+        f32_m* dst_ny = terrain_mesh->ny;
+        f32_m* dst_nz = terrain_mesh->nz;
+        u32_m* dst_indices = terrain_mesh->indices;
+
+        u32_m num_vertices = 0;
+        u32_m num_indices = 0;
+
+        struct Terrain* terrain = &game_state->terrain;
+        for(u64_m i_chunk = 0; i_chunk < terrain->num_chunks; i_chunk++)
+        {
+            struct TerrainChunk* chunk = terrain->chunks + i_chunk;
+            s32_m chunk_x;
+            s32_m chunk_y;
+            s32_m chunk_z;
+            unpack_voxel_key(&chunk_x, &chunk_y, &chunk_z, terrain->chunk_key[i_chunk]);
+
+            // TODO(mfritz) Ignoring neighbors for now
+            for(s32_m z0 = 0; z0 < CHUNK_DIM - 1; z0++)
+            {
+                for(s32_m y0 = 0; y0 < CHUNK_DIM - 1; y0++)
+                {
+                    for(s32_m x0 = 0; x0 < CHUNK_DIM - 1; x0++)
+                    {
+                        s32 x1 = x0 + 1;
+                        s32 y1 = y0 + 1;
+                        s32 z1 = z0 + 1;
+                        _Alignas(32) f32 vals[8] = 
+                        {
+                            chunk->m_filled[z0 * CHUNK_DIM*CHUNK_DIM + y0*CHUNK_DIM + x0] ? -1.0f : 1.0f,
+                            chunk->m_filled[z0 * CHUNK_DIM*CHUNK_DIM + y0*CHUNK_DIM + x1] ? -1.0f : 1.0f,
+                            chunk->m_filled[z1 * CHUNK_DIM*CHUNK_DIM + y0*CHUNK_DIM + x1] ? -1.0f : 1.0f,
+                            chunk->m_filled[z1 * CHUNK_DIM*CHUNK_DIM + y0*CHUNK_DIM + x0] ? -1.0f : 1.0f,
+
+                            chunk->m_filled[z0 * CHUNK_DIM*CHUNK_DIM + y1*CHUNK_DIM + x0] ? -1.0f : 1.0f,
+                            chunk->m_filled[z0 * CHUNK_DIM*CHUNK_DIM + y1*CHUNK_DIM + x1] ? -1.0f : 1.0f,
+                            chunk->m_filled[z1 * CHUNK_DIM*CHUNK_DIM + y1*CHUNK_DIM + x1] ? -1.0f : 1.0f,
+                            chunk->m_filled[z1 * CHUNK_DIM*CHUNK_DIM + y1*CHUNK_DIM + x0] ? -1.0f : 1.0f,
+                        };
+
+                        f32 offset_x = (f32)(chunk_x + x0);
+                        f32 offset_y = (f32)(chunk_y + y0);
+                        f32 offset_z = (f32)(chunk_z + z0);
+
+                        f32_m tris_x[5 * 3];
+                        f32_m tris_y[5 * 3];
+                        f32_m tris_z[5 * 3];
+                        u32 num_tris = marching_cube(tris_x, tris_y, tris_z, _mm256_load_ps(vals));
+
+                        for(u64_m i_tri = 0; i_tri < num_tris; i_tri++)
+                        {
+                            v3 v_0 = make_v3(tris_x[i_tri * 3 + 0], tris_y[i_tri * 3 + 0], tris_z[i_tri * 3 + 0]);
+                            v3 v_1 = make_v3(tris_x[i_tri * 3 + 1], tris_y[i_tri * 3 + 1], tris_z[i_tri * 3 + 1]);
+                            v3 v_2 = make_v3(tris_x[i_tri * 3 + 2], tris_y[i_tri * 3 + 2], tris_z[i_tri * 3 + 2]);
+
+                            v3 n = v3_normalize(v3_cross(v3_sub(v_1, v_0), v3_sub(v_2, v_0)));
+
+                            *dst_vx++ = tris_x[i_tri * 3 + 0] + offset_x;
+                            *dst_vy++ = tris_y[i_tri * 3 + 0] + offset_y;
+                            *dst_vz++ = tris_z[i_tri * 3 + 0] + offset_z;
+                            *dst_nx++ = n.x;
+                            *dst_ny++ = n.y;
+                            *dst_nz++ = n.z;
+                            *dst_indices++ = num_indices;
+                            num_indices++;
+                            num_vertices++;
+
+                            *dst_vx++ = tris_x[i_tri * 3 + 1] + offset_x;
+                            *dst_vy++ = tris_y[i_tri * 3 + 1] + offset_y;
+                            *dst_vz++ = tris_z[i_tri * 3 + 1] + offset_z;
+                            *dst_nx++ = n.x;
+                            *dst_ny++ = n.y;
+                            *dst_nz++ = n.z;
+                            *dst_indices++ = num_indices;
+                            num_indices++;
+                            num_vertices++;
+
+                            *dst_vx++ = tris_x[i_tri * 3 + 2] + offset_x;
+                            *dst_vy++ = tris_y[i_tri * 3 + 2] + offset_y;
+                            *dst_vz++ = tris_z[i_tri * 3 + 2] + offset_z;
+                            *dst_nx++ = n.x;
+                            *dst_ny++ = n.y;
+                            *dst_nz++ = n.z;
+                            *dst_indices++ = num_indices;
+                            num_indices++;
+                            num_vertices++;
+                        }
+                    }
+                }
+            }
+
+
+            debug_draw_line(&camera_and_clip_mtx, make_v3((f32)chunk_x +         0, (f32)chunk_y +         0, (f32)chunk_z +         0),     make_v3((f32)chunk_x + CHUNK_DIM, (f32)chunk_y +         0, (f32)chunk_z +         0),     make_v3(1.0f, 0.0f, 0.0f));
+            debug_draw_line(&camera_and_clip_mtx, make_v3((f32)chunk_x +         0, (f32)chunk_y + CHUNK_DIM, (f32)chunk_z +         0),     make_v3((f32)chunk_x + CHUNK_DIM, (f32)chunk_y + CHUNK_DIM, (f32)chunk_z +         0),     make_v3(1.0f, 0.0f, 0.0f));
+            debug_draw_line(&camera_and_clip_mtx, make_v3((f32)chunk_x +         0, (f32)chunk_y +         0, (f32)chunk_z + CHUNK_DIM),     make_v3((f32)chunk_x + CHUNK_DIM, (f32)chunk_y +         0, (f32)chunk_z + CHUNK_DIM),     make_v3(1.0f, 0.0f, 0.0f));
+            debug_draw_line(&camera_and_clip_mtx, make_v3((f32)chunk_x +         0, (f32)chunk_y + CHUNK_DIM, (f32)chunk_z + CHUNK_DIM),     make_v3((f32)chunk_x + CHUNK_DIM, (f32)chunk_y + CHUNK_DIM, (f32)chunk_z + CHUNK_DIM),     make_v3(1.0f, 0.0f, 0.0f));
+
+
+            debug_draw_line(&camera_and_clip_mtx, make_v3((f32)chunk_x +         0, (f32)chunk_y +         0, (f32)chunk_z +         0),     make_v3((f32)chunk_x +         0, (f32)chunk_y + CHUNK_DIM, (f32)chunk_z +         0),     make_v3(0.0f, 1.0f, 0.0f));
+            debug_draw_line(&camera_and_clip_mtx, make_v3((f32)chunk_x + CHUNK_DIM, (f32)chunk_y +         0, (f32)chunk_z +         0),     make_v3((f32)chunk_x + CHUNK_DIM, (f32)chunk_y + CHUNK_DIM, (f32)chunk_z +         0),     make_v3(0.0f, 1.0f, 0.0f));
+            debug_draw_line(&camera_and_clip_mtx, make_v3((f32)chunk_x +         0, (f32)chunk_y +         0, (f32)chunk_z + CHUNK_DIM),     make_v3((f32)chunk_x +         0, (f32)chunk_y + CHUNK_DIM, (f32)chunk_z + CHUNK_DIM),     make_v3(0.0f, 1.0f, 0.0f));
+            debug_draw_line(&camera_and_clip_mtx, make_v3((f32)chunk_x + CHUNK_DIM, (f32)chunk_y +         0, (f32)chunk_z + CHUNK_DIM),     make_v3((f32)chunk_x + CHUNK_DIM, (f32)chunk_y + CHUNK_DIM, (f32)chunk_z + CHUNK_DIM),     make_v3(0.0f, 1.0f, 0.0f));
+
+
+            debug_draw_line(&camera_and_clip_mtx, make_v3((f32)chunk_x +         0, (f32)chunk_y +         0, (f32)chunk_z +         0),     make_v3((f32)chunk_x +         0, (f32)chunk_y +         0, (f32)chunk_z + CHUNK_DIM),     make_v3(0.0f, 0.0f, 1.0f));
+            debug_draw_line(&camera_and_clip_mtx, make_v3((f32)chunk_x + CHUNK_DIM, (f32)chunk_y +         0, (f32)chunk_z +         0),     make_v3((f32)chunk_x + CHUNK_DIM, (f32)chunk_y +         0, (f32)chunk_z + CHUNK_DIM),     make_v3(0.0f, 0.0f, 1.0f));
+            debug_draw_line(&camera_and_clip_mtx, make_v3((f32)chunk_x +         0, (f32)chunk_y + CHUNK_DIM, (f32)chunk_z +         0),     make_v3((f32)chunk_x +         0, (f32)chunk_y + CHUNK_DIM, (f32)chunk_z + CHUNK_DIM),     make_v3(0.0f, 0.0f, 1.0f));
+            debug_draw_line(&camera_and_clip_mtx, make_v3((f32)chunk_x + CHUNK_DIM, (f32)chunk_y + CHUNK_DIM, (f32)chunk_z +         0),     make_v3((f32)chunk_x + CHUNK_DIM, (f32)chunk_y + CHUNK_DIM, (f32)chunk_z + CHUNK_DIM),     make_v3(0.0f, 0.0f, 1.0f));
         }
 
         terrain_mesh->num_vertices = num_vertices;
