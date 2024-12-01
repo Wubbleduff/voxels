@@ -41,14 +41,21 @@ typedef long long s64_m;
 typedef float f32_m;
 typedef double f64_m;
 
+#define u8_MAX 0xFF
+#define u16_MAX 0xFFFF
+#define u32_MAX 0xFFFFFFFF
+#define u64_MAX 0xFFFFFFFFFFFFFFFF
+#define s8_MAX 0x7F
+#define s16_MAX 0x7FFF
+#define s32_MAX 0x7FFFFFFF
+#define s64_MAX 0x7FFFFFFFFFFFFFFF
+
 void assert_fn(const char* file, int line, u64 c, const char* msg);
 #define ASSERT(c, msg) assert_fn(__FILE__, __LINE__, (u64)(c), (msg))
 
-#define MAX_U32 ((u32)(-1))
-
 #define ARRAY_COUNT(N) (sizeof(N) / sizeof((N)[0]))
 
-#define ARRAY_COPY(DST, SRC, NUM) \
+#define COPY(DST, SRC, NUM) \
     do { \
         _Static_assert(sizeof((DST)[0]) == sizeof((SRC)[0]), "Array element sizes do not match."); \
         ASSERT(NUM <= ARRAY_COUNT(SRC), "Number of elements is larger than array size."); \

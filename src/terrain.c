@@ -167,6 +167,49 @@ INTERNAL inline __m256 pnoise8(const __m256 x, const __m256 y, const __m256 z)
     return r4;
 }
 
+
+
+
+
+
+
+
+// Thoughts on terrain generation:
+//
+// The goal here is to generate a flat-ish world with features that can form along all axis (that is to say, can cross back on itself in any axis).
+//
+// Ideas:
+// * Generate a 2D heightmap terrain. Iterate over the generated chunks and apply a 3D modification to give overhands. 
+//   This could work, but a key property we want to preserve is the ability to query any point in space and tell whether it's ground or air.
+//   The 2D heightmap and 3D modification process would need to match the function used to query a point. The 2 different modes would be:
+//   Generating terrain:
+//   1. Iterate (x, z) points in a 2D grid and generate a y value. Add chunks.
+//   2. Iterate chunks, for each point in the chunk, add or substract its noise values based on a secondary noise function. If the function bleeds into neighbors,
+//      regenerate them. Repeat until all chunks are ground or air. Is this basically the surface walker idea?
+//   Querying terrain:
+//   1. Given (x, y, z), generate the height value from (x, z).
+//   2. Add the secondary noise function given (x, y, z)
+//   3. Check whether the noise function is <= 0.
+//
+// * Write a surface walking algorithm. Find a start point on the terrain and generate neighboring chunks containing the surface. Recursively generate terrain
+//   outwards.
+//   This would miss details like small floating islands. The Dijkstra-like "open-list" would get pretty massive.
+//
+// * Iterate over a (x, z) region. As you iterate, keep track of a "y-window" which has a variable min and max. As you iterate, the y-window will change and
+//   tell you what possible chunks there are to generate. The y-window itself can be driven by a noies function.
+//
+//
+// I think the y-window option is what I wanna do because it looks closest to brute force. If we go too far down the path of the surface walker and I decide I
+// don't like, we're screwed.
+//
+// Are option 1 and 3 basically the same?
+//
+// Changing my mind. I want the terrain generation to be entirely driven by noise so it's simple to query. Forcing a range of Y values sounds hacky and restrictive.
+// Let's try option 2 and see where it leads us. Then we can either pivot or simplify.
+//
+
+
+#if 0
 INTERNAL inline __m256 sample_terrain(const __m256 x, const __m256 y, const __m256 z)
 {
     __m256 layer0 = pnoise8(
@@ -202,19 +245,91 @@ INTERNAL inline __m256 sample_terrain(const __m256 x, const __m256 y, const __m2
     );
     return result;
 }
-
-INTERNAL inline struct TerrainChunk* get_chunk(struct Terrain* terrain, s32 x, s32 y, s32 z)
+#else
+INTERNAL inline __m256 sample_terrain(const __m256 x, const __m256 y, const __m256 z)
 {
-    u64 key = pack_voxel_key(x, y, z);
-    u64_m chunk_idx = (u64_m)-1;
-    for(u64_m i = 0; i < terrain->num_chunks; i++)
+    __m256 noise = pnoise8(
+            _mm256_mul_ps(x, _mm256_set1_ps(0.03f)),
+            _mm256_mul_ps(y, _mm256_set1_ps(0.03f)),
+            _mm256_mul_ps(z, _mm256_set1_ps(0.03f)));
+    //noise = _mm256_fmadd_ps(
+    //        y,
+    //        _mm256_set1_ps(0.03f),
+    //        noise);
+    noise = _mm256_fmadd_ps(
+            y,
+            _mm256_set1_ps(0.0075f),
+            noise);
+    return noise;
+}
+
+INTERNAL inline f32 sample_terrain_scalar(f32 s_x, f32 s_y, f32 s_z)
+{
+    _Alignas(32) f32_m arr[8];
+    _mm256_store_ps(
+            arr,
+            sample_terrain(
+                _mm256_set1_ps(s_x),
+                _mm256_set1_ps(s_y),
+                _mm256_set1_ps(s_z)));
+    return arr[0];
+}
+#endif
+
+u8 generate_chunk(struct TerrainChunk* chunk, s32 chunk_x, s32 chunk_y, s32 chunk_z)
+{
+    u8_m res_mask = 0;
+    u8_m is_first_iter = 1;
+
+    __m256 x8 = _mm256_setr_ps(
+        (f32)(chunk_x + 0),
+        (f32)(chunk_x + 1),
+        (f32)(chunk_x + 2),
+        (f32)(chunk_x + 3),
+        (f32)(chunk_x + 4),
+        (f32)(chunk_x + 5),
+        (f32)(chunk_x + 6),
+        (f32)(chunk_x + 7)
+    );
+    __m256 y8 = _mm256_set1_ps((f32)chunk_y);
+    __m256 z8 = _mm256_set1_ps((f32)chunk_z);
+
+    for(s32_m i_y = 0; i_y < CHUNK_DIM; i_y++)
     {
-        if(terrain->chunk_key[i] == key)
+        for(s32_m i_z = 0; i_z < CHUNK_DIM; i_z++)
         {
-            chunk_idx = i;
+            for(s32_m i_x = 0; i_x < CHUNK_DIM; i_x += 8)
+            {
+                _Alignas(32) const __m256 noise = sample_terrain(x8, y8, z8);
+                _mm256_store_ps(chunk->m_val + i_z * CHUNK_DIM*CHUNK_DIM + i_y*CHUNK_DIM + i_x, noise);
+
+                u8 mask = (u8)_mm256_movemask_ps(noise);
+
+                res_mask = res_mask ^ mask;
+                res_mask = is_first_iter ? 0 : res_mask;
+                is_first_iter = 0;
+
+                x8 = _mm256_add_ps(x8, _mm256_set1_ps(8.0f));
+            }
+
+            x8 = _mm256_setr_ps(
+                (f32)(chunk_x + 0),
+                (f32)(chunk_x + 1),
+                (f32)(chunk_x + 2),
+                (f32)(chunk_x + 3),
+                (f32)(chunk_x + 4),
+                (f32)(chunk_x + 5),
+                (f32)(chunk_x + 6),
+                (f32)(chunk_x + 7)
+            );
+            z8 = _mm256_add_ps(z8, _mm256_set1_ps(1.0f));
         }
+
+        z8 = _mm256_set1_ps((f32)chunk_z);
+        y8 = _mm256_add_ps(y8, _mm256_set1_ps(1.0f));
     }
-    return chunk_idx == (u64_m)-1 ? NULL : terrain->chunks + chunk_idx;
+
+    return res_mask > 0;
 }
 
 void generate_terrain(
@@ -232,81 +347,197 @@ void generate_terrain(
     (void)cam_pos_z;
     (void)gen_max;
 
-    terrain->num_chunks = 0;
-
-    __m256 s_x8 = _mm256_setr_ps(
-            -64.0f + 0.0f,
-            -64.0f + 1.0f,
-            -64.0f + 2.0f,
-            -64.0f + 3.0f,
-            -64.0f + 4.0f,
-            -64.0f + 5.0f,
-            -64.0f + 6.0f,
-            -64.0f + 7.0f);
-    __m256 s_z8 = _mm256_setr_ps(
-            -64.0f,
-            -64.0f,
-            -64.0f,
-            -64.0f,
-            -64.0f,
-            -64.0f,
-            -64.0f,
-            -64.0f);
-    for(s32_m s_z = -128; s_z < 128; s_z++)
+    u32_m num_chunks = 0;
+    for(s32_m chunk_y = -64; chunk_y < 64; chunk_y += CHUNK_DIM)
     {
-        for(s32_m s_x = -128; s_x < 128; s_x += 8)
+        for(s32_m chunk_z = -64; chunk_z < 64; chunk_z += CHUNK_DIM)
         {
-            __m256 noise = pnoise8(
-                    _mm256_mul_ps(s_x8, _mm256_set1_ps(0.01f)),
-                    _mm256_set1_ps(5.0f),
-                    _mm256_mul_ps(s_z8, _mm256_set1_ps(0.01f)));
-            noise = _mm256_mul_ps(noise, _mm256_set1_ps(70.0f));
-            _Alignas(32) f32_m noise_arr[8];
-            _mm256_store_ps(noise_arr, noise);
-
-            for(s32_m i_arr = 0; i_arr < 8; i_arr++)
+            for(s32_m chunk_x = -64; chunk_x < 64; chunk_x += CHUNK_DIM)
             {
-                s32 chunk_x = truncate_chunk(s_x + i_arr);
-                s32 chunk_y = truncate_chunk((s32)noise_arr[i_arr]);
-                s32 chunk_z = truncate_chunk(s_z);
-                struct TerrainChunk* chunk = get_chunk(terrain, chunk_x, chunk_y, chunk_z);
-                if(!chunk)
-                {
-                    u64 num_chunks = terrain->num_chunks;
-                    ASSERT(num_chunks < TERRAIN_MAX_CHUNKS, "Chunk overflow");
-                    terrain->chunk_key[num_chunks] = pack_voxel_key(chunk_x, chunk_y, chunk_z);
-                    terrain->chunk_exponent[num_chunks] = 1;
-                    terrain->num_chunks++;
-                    chunk = terrain->chunks + num_chunks;
-                }
+                ASSERT(num_chunks < TERRAIN_MAX_CHUNKS, "Overflow max chunks.");
 
-                s32 x = s_x + i_arr - chunk_x;
-                s32 y = (s32)noise_arr[i_arr] - chunk_y;
-                s32 z = s_z - chunk_z;
+                terrain->chunks_key[num_chunks] = pack_voxel_key(chunk_x, chunk_y, chunk_z);
+                terrain->chunks_exponent[num_chunks] = 1;
+                struct TerrainChunk* chunk = terrain->chunks + num_chunks;
+                u8 add_chunk = generate_chunk(chunk, chunk_x, chunk_y, chunk_z);
 
-                for(s32_m i_y = 0; i_y < y; i_y++)
+                num_chunks += add_chunk;
+            }
+        }
+    }
+    terrain->num_chunks = num_chunks;
+
+
+
+    for(u64_m i_chunk = 0; i_chunk < terrain->num_chunks; i_chunk++)
+    {
+        struct TerrainChunkGeometry* chunk_geo = terrain->chunks_geometry + i_chunk;
+        f32_m* dst_vx = chunk_geo->vx;
+        f32_m* dst_vy = chunk_geo->vy;
+        f32_m* dst_vz = chunk_geo->vz;
+        f32_m* dst_nx = chunk_geo->nx;
+        f32_m* dst_ny = chunk_geo->ny;
+        f32_m* dst_nz = chunk_geo->nz;
+        u16_m* dst_indices = chunk_geo->indices;
+        u32_m num_verts = 0;
+        u16_m num_indices = 0;
+
+        struct TerrainChunk* chunk_000 = terrain->chunks + i_chunk;
+        s32_m chunk_x;
+        s32_m chunk_y;
+        s32_m chunk_z;
+        unpack_voxel_key(&chunk_x, &chunk_y, &chunk_z, terrain->chunks_key[i_chunk]);
+
+        struct TerrainChunk* chunk_001 = get_chunk(terrain, chunk_x + 1, chunk_y + 0, chunk_z + 0);
+        struct TerrainChunk* chunk_010 = get_chunk(terrain, chunk_x + 0, chunk_y + 1, chunk_z + 0);
+        struct TerrainChunk* chunk_011 = get_chunk(terrain, chunk_x + 1, chunk_y + 1, chunk_z + 0);
+        struct TerrainChunk* chunk_100 = get_chunk(terrain, chunk_x + 0, chunk_y + 0, chunk_z + 1);
+        struct TerrainChunk* chunk_101 = get_chunk(terrain, chunk_x + 1, chunk_y + 0, chunk_z + 1);
+        struct TerrainChunk* chunk_110 = get_chunk(terrain, chunk_x + 0, chunk_y + 1, chunk_z + 1);
+        struct TerrainChunk* chunk_111 = get_chunk(terrain, chunk_x + 1, chunk_y + 1, chunk_z + 1);
+
+        // TODO(mfritz) neighbors
+        for(s32_m i_z0 = 0; i_z0 < CHUNK_DIM - 1; i_z0++)
+        {
+            for(s32_m i_y0 = 0; i_y0 < CHUNK_DIM - 1; i_y0++)
+            {
+                for(s32_m i_x0 = 0; i_x0 < CHUNK_DIM - 1; i_x0++)
                 {
-                    chunk->m_filled[z * CHUNK_DIM*CHUNK_DIM + i_y*CHUNK_DIM + x] = 1;
-                }
-                for(s32_m i_y = y; i_y < CHUNK_DIM; i_y++)
-                {
-                    chunk->m_filled[z * CHUNK_DIM*CHUNK_DIM + i_y*CHUNK_DIM + x] = 0;
+                    f32 x0 = (f32)chunk_x + i_x0;
+                    f32 y0 = (f32)chunk_y + i_y0;
+                    f32 z0 = (f32)chunk_z + i_z0;
+                    f32 x1 = (f32)chunk_x + i_x0 + 1;
+                    f32 y1 = (f32)chunk_y + i_y0 + 1;
+                    f32 z1 = (f32)chunk_z + i_z0 + 1;
+
+                    u8 x_on_edge = i_x0 + 1 == CHUNK_DIM;
+                    u8 y_on_edge = i_y0 + 1 == CHUNK_DIM;
+                    u8 z_on_edge = i_z0 + 1 == CHUNK_DIM;
+                    s32 i_x1 = x_on_edge ? 0 : i_x0 + 1;
+                    s32 i_y1 = y_on_edge ? 0 : i_y0 + 1;
+                    s32 i_z1 = z_on_edge ? 0 : i_z0 + 1;
+
+                    struct TerrainChunk* chunk_table[] = {
+                        chunk_000,
+                        chunk_001,
+                        chunk_010,
+                        chunk_011,
+
+                        chunk_100,
+                        chunk_101,
+                        chunk_110,
+                        chunk_111,
+                    };
+
+                    struct TerrainChunk* chunk_for_sample_000 = chunk_table[0 * 4 +         0 * 2 +         0];
+                    struct TerrainChunk* chunk_for_sample_001 = chunk_table[0 * 4 +         0 * 2 + x_on_edge];
+                    struct TerrainChunk* chunk_for_sample_010 = chunk_table[0 * 4 + y_on_edge * 2 +         0];
+                    struct TerrainChunk* chunk_for_sample_011 = chunk_table[0 * 4 + y_on_edge * 2 + x_on_edge];
+
+                    struct TerrainChunk* chunk_for_sample_100 = chunk_table[z_on_edge * 4 +         0 * 2 +         0];
+                    struct TerrainChunk* chunk_for_sample_101 = chunk_table[z_on_edge * 4 +         0 * 2 + x_on_edge];
+                    struct TerrainChunk* chunk_for_sample_110 = chunk_table[z_on_edge * 4 + y_on_edge * 2 +         0];
+                    struct TerrainChunk* chunk_for_sample_111 = chunk_table[z_on_edge * 4 + y_on_edge * 2 + x_on_edge];
+
+                    _Alignas(32) f32_m vals[8] = {};
+                    // _mm256_store_ps(vals, sample_terrain(
+                    //     _mm256_setr_ps(x0, x1, x1, x0, x0, x1, x1, x0),
+                    //     _mm256_setr_ps(y0, y0, y0, y0, y1, y1, y1, y1),
+                    //     _mm256_setr_ps(z0, z0, z1, z1, z0, z0, z1, z1)
+                    // ));
+                    (void)x1;
+                    (void)y1;
+                    (void)z1;
+
+                    vals[0] = 
+                        chunk_for_sample_000
+                        ? chunk_for_sample_000->m_val[i_z0 * CHUNK_DIM*CHUNK_DIM + i_y0*CHUNK_DIM + i_x0]
+                        : vals[0];
+                    vals[1] =
+                        chunk_for_sample_001
+                        ? chunk_for_sample_001->m_val[i_z0 * CHUNK_DIM*CHUNK_DIM + i_y0*CHUNK_DIM + i_x1]
+                        : vals[1];
+                    vals[2] =
+                        chunk_for_sample_101
+                        ? chunk_for_sample_101->m_val[i_z1 * CHUNK_DIM*CHUNK_DIM + i_y0*CHUNK_DIM + i_x1]
+                        : vals[2];
+                    vals[3] =
+                        chunk_for_sample_100
+                        ? chunk_for_sample_100->m_val[i_z1 * CHUNK_DIM*CHUNK_DIM + i_y0*CHUNK_DIM + i_x0]
+                        : vals[3];
+
+                    vals[4] =
+                        chunk_for_sample_010
+                        ? chunk_for_sample_010->m_val[i_z0 * CHUNK_DIM*CHUNK_DIM + i_y1*CHUNK_DIM + i_x0]
+                        : vals[4];
+                    vals[5] =
+                        chunk_for_sample_011
+                        ? chunk_for_sample_011->m_val[i_z0 * CHUNK_DIM*CHUNK_DIM + i_y1*CHUNK_DIM + i_x1]
+                        : vals[5];
+                    vals[6] =
+                        chunk_for_sample_111
+                        ? chunk_for_sample_111->m_val[i_z1 * CHUNK_DIM*CHUNK_DIM + i_y1*CHUNK_DIM + i_x1]
+                        : vals[6];
+                    vals[7] =
+                        chunk_for_sample_110
+                        ? chunk_for_sample_110->m_val[i_z1 * CHUNK_DIM*CHUNK_DIM + i_y1*CHUNK_DIM + i_x0]
+                        : vals[7];
+
+                    f32_m tris_x[5 * 3];
+                    f32_m tris_y[5 * 3];
+                    f32_m tris_z[5 * 3];
+                    u32 num_tris = marching_cube(tris_x, tris_y, tris_z, _mm256_load_ps(vals));
+
+                    for(u64_m i_tri = 0; i_tri < num_tris; i_tri++)
+                    {
+                        v3 v_0 = make_v3(tris_x[i_tri * 3 + 0], tris_y[i_tri * 3 + 0], tris_z[i_tri * 3 + 0]);
+                        v3 v_1 = make_v3(tris_x[i_tri * 3 + 1], tris_y[i_tri * 3 + 1], tris_z[i_tri * 3 + 1]);
+                        v3 v_2 = make_v3(tris_x[i_tri * 3 + 2], tris_y[i_tri * 3 + 2], tris_z[i_tri * 3 + 2]);
+
+                        v3 n = v3_normalize(v3_cross(v3_sub(v_1, v_0), v3_sub(v_2, v_0)));
+
+                        *dst_vx++ = tris_x[i_tri * 3 + 0] + x0;
+                        *dst_vy++ = tris_y[i_tri * 3 + 0] + y0;
+                        *dst_vz++ = tris_z[i_tri * 3 + 0] + z0;
+                        *dst_nx++ = n.x;
+                        *dst_ny++ = n.y;
+                        *dst_nz++ = n.z;
+                        *dst_indices++ = num_indices;
+                        num_indices++;
+                        ASSERT(num_indices < u16_MAX, "Vertex index overflow.");
+                        num_verts++;
+
+                        *dst_vx++ = tris_x[i_tri * 3 + 1] + x0;
+                        *dst_vy++ = tris_y[i_tri * 3 + 1] + y0;
+                        *dst_vz++ = tris_z[i_tri * 3 + 1] + z0;
+                        *dst_nx++ = n.x;
+                        *dst_ny++ = n.y;
+                        *dst_nz++ = n.z;
+                        *dst_indices++ = num_indices;
+                        num_indices++;
+                        ASSERT(num_indices < u16_MAX, "Vertex index overflow.");
+                        num_verts++;
+
+                        *dst_vx++ = tris_x[i_tri * 3 + 2] + x0;
+                        *dst_vy++ = tris_y[i_tri * 3 + 2] + y0;
+                        *dst_vz++ = tris_z[i_tri * 3 + 2] + z0;
+                        *dst_nx++ = n.x;
+                        *dst_ny++ = n.y;
+                        *dst_nz++ = n.z;
+                        *dst_indices++ = num_indices;
+                        num_indices++;
+                        ASSERT(num_indices < u16_MAX, "Vertex index overflow.");
+                        num_verts++;
+
+                        ASSERT(num_verts < TERRAIN_CHUNK_MAX_VERTS, "Exceeded max verts per chunk.");
+                        ASSERT(num_indices < TERRAIN_CHUNK_MAX_VERTS * 3, "Exceeded max indices per chunk.");
+                    }
                 }
             }
-
-            s_x8 = _mm256_add_ps(s_x8, _mm256_set1_ps(8.0f));
         }
 
-        s_x8 = _mm256_setr_ps(
-            -64.0f + 0.0f,
-            -64.0f + 1.0f,
-            -64.0f + 2.0f,
-            -64.0f + 3.0f,
-            -64.0f + 4.0f,
-            -64.0f + 5.0f,
-            -64.0f + 6.0f,
-            -64.0f + 7.0f);
-        s_z8 = _mm256_add_ps(s_z8, _mm256_set1_ps(1.0f));
+        chunk_geo->num_verts = num_verts;
+        chunk_geo->num_indices = num_indices;
     }
 
 }

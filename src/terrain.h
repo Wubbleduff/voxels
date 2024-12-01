@@ -6,8 +6,9 @@
 
 struct MemoryArena;
 
-#define TERRAIN_MAX_CHUNKS 65536
+#define TERRAIN_MAX_CHUNKS 2048
 #define CHUNK_DIM 16
+#define TERRAIN_CHUNK_MAX_VERTS 8192
 
 INTERNAL inline s32 truncate_chunk(s32 n)
 {
@@ -16,17 +17,30 @@ INTERNAL inline s32 truncate_chunk(s32 n)
 
 struct TerrainChunk
 {
-    // 16*16*16 bitarray
-    //u8 m_filled[512];
     // Indexed by z * CHUNK_DIM*CHUNK_DIM + y*CHUNK_DIM + x
-    u8_m m_filled[16*16*16];
+    _Alignas(32) f32_m m_val[CHUNK_DIM*CHUNK_DIM*CHUNK_DIM];
+};
+struct TerrainChunkGeometry
+{
+    u32_m num_verts;
+    f32_m vx[TERRAIN_CHUNK_MAX_VERTS];
+    f32_m vy[TERRAIN_CHUNK_MAX_VERTS];
+    f32_m vz[TERRAIN_CHUNK_MAX_VERTS];
+    f32_m nx[TERRAIN_CHUNK_MAX_VERTS];
+    f32_m ny[TERRAIN_CHUNK_MAX_VERTS];
+    f32_m nz[TERRAIN_CHUNK_MAX_VERTS];
+
+    _Static_assert(TERRAIN_CHUNK_MAX_VERTS <= u16_MAX, "TERRAIN_CHUNK_MAX_VERTS overflow.");
+    u32_m num_indices;
+    u16_m indices[TERRAIN_CHUNK_MAX_VERTS * 3];
 };
 struct Terrain
 {
     u64_m num_chunks;
-    u64_m chunk_key[TERRAIN_MAX_CHUNKS];
-    u8_m chunk_exponent[TERRAIN_MAX_CHUNKS];
+    u64_m chunks_key[TERRAIN_MAX_CHUNKS];
+    u8_m chunks_exponent[TERRAIN_MAX_CHUNKS];
     struct TerrainChunk chunks[TERRAIN_MAX_CHUNKS];
+    struct TerrainChunkGeometry chunks_geometry[TERRAIN_MAX_CHUNKS];
 };
 
 struct TerrainProgress
@@ -60,6 +74,20 @@ INTERNAL void unpack_voxel_key(s32_m* x, s32_m* y, s32_m* z, u64 k)
     *x = arr[1];
     *y = arr[3];
     *z = arr[5];
+}
+
+INTERNAL inline struct TerrainChunk* get_chunk(struct Terrain* terrain, s32 x, s32 y, s32 z)
+{
+    u64 key = pack_voxel_key(x, y, z);
+    u64_m chunk_idx = (u64_m)-1;
+    for(u64_m i = 0; i < terrain->num_chunks; i++)
+    {
+        if(terrain->chunks_key[i] == key)
+        {
+            chunk_idx = i;
+        }
+    }
+    return chunk_idx == (u64_m)-1 ? NULL : terrain->chunks + chunk_idx;
 }
 
 INTERNAL void reset_terrain(struct Terrain* terrain)
