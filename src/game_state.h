@@ -9,8 +9,8 @@
 struct GameState
 {
     v3 player_pos;
-    f32_m player_pitch_turns;
-    f32_m player_yaw_turns;
+    f32 player_pitch_turns;
+    f32 player_yaw_turns;
 
     struct Terrain terrain;
     struct TerrainProgress terrain_progress;

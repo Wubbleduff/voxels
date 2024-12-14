@@ -6,17 +6,17 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Math
 
-INTERNAL inline f32 abs_f32(f32 a)
+INTERNAL inline f32 abs_f32(const f32 a)
 {
     return a < 0.0f ? -a : a;
 } 
 
-INTERNAL inline s32 abs_s32(s32 a)
+INTERNAL inline s32 abs_s32(const s32 a)
 {
     return a < 0 ? -a : a;
 } 
 
-INTERNAL inline f32 round_neg_inf(f32 a)
+INTERNAL inline f32 round_neg_inf(const f32 a)
 {
     return _mm_cvtss_f32(_mm_round_ps(_mm_set1_ps(a), _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
 }
@@ -32,7 +32,7 @@ typedef struct mtx4x4Tag
 {
     union
     {
-        _Alignas(32) f32_m m[16];
+        _Alignas(32) f32 m[16];
         __m128 v[4];
     };
 } mtx4x4;
@@ -41,12 +41,12 @@ typedef struct v2Tag
 {
     union
     {
-        _Alignas(16) f32_m m[4];
+        _Alignas(16) f32 m[4];
         __m128 v;
         struct
         {
-            f32_m x;
-            f32_m y;
+            f32 x;
+            f32 y;
         };
     };
 } v2;
@@ -55,13 +55,13 @@ typedef struct v3Tag
 {
     union
     {
-        _Alignas(16) f32_m m[4];
+        _Alignas(16) f32 m[4];
         __m128 v;
         struct
         {
-            f32_m x;
-            f32_m y;
-            f32_m z;
+            f32 x;
+            f32 y;
+            f32 z;
         };
     };
 } v3;
@@ -70,19 +70,19 @@ typedef struct v4Tag
 {
     union
     {
-        _Alignas(16) f32_m m[4];
+        _Alignas(16) f32 m[4];
         __m128 v;
         struct
         {
-            f32_m x;
-            f32_m y;
-            f32_m z;
-            f32_m w;
+            f32 x;
+            f32 y;
+            f32 z;
+            f32 w;
         };
     };
 } v4;
 
-INTERNAL inline v3 make_v3(f32 x, f32 y, f32 z)
+INTERNAL inline v3 make_v3(const f32 x, const f32 y, const f32 z)
 {
     v3 r;
     r.x = x;
@@ -152,7 +152,7 @@ INTERNAL inline v3 v3_sub(v3 a, v3 b)
     return r;
 }
 
-INTERNAL inline v3 v3_scale(v3 a, f32 b)
+INTERNAL inline v3 v3_scale(v3 a, const f32 b)
 {
     v3 r;
     r.v = _mm_mul_ps(a.v, _mm_set1_ps(b));
@@ -163,8 +163,8 @@ INTERNAL inline v3 v3_normalize(v3 a)
 {
     // TODO(mfritz) No need to go to scalar here.
     v3 r = a;
-    f32 len_sqr = v3_dot(a, a);
-    f32 len = _mm_cvtss_f32(_mm_sqrt_ss(_mm_set1_ps(len_sqr)));
+    const f32 len_sqr = v3_dot(a, a);
+    const f32 len = _mm_cvtss_f32(_mm_sqrt_ss(_mm_set1_ps(len_sqr)));
     r = v3_scale(r, 1.0f / len);
     return r;
 }
@@ -258,9 +258,9 @@ INTERNAL inline void mtx4x4_mul(mtx4x4* r, mtx4x4* a, mtx4x4* b)
 
     /*
     Reference
-    for(u64_m i = 0; i < 4; i++)
+    for(u64 i = 0; i < 4; i++)
     {
-        for(u64_m j = 0; j < 4; j++)
+        for(u64 j = 0; j < 4; j++)
         {
             r[i*4 + j] =
                 a[i*4 + 0] * b[0*4 + j] + 
@@ -271,7 +271,7 @@ INTERNAL inline void mtx4x4_mul(mtx4x4* r, mtx4x4* a, mtx4x4* b)
     }
     */
 
-    for(u64_m row = 0; row < 4; row++)
+    for(u64 row = 0; row < 4; row++)
     {
         const __m128 v = _mm_fmadd_ps(
             _mm_broadcast_ss(a->m + row*4 + 0),
@@ -293,13 +293,13 @@ INTERNAL inline void mtx4x4_mul(mtx4x4* r, mtx4x4* a, mtx4x4* b)
     }
 }
 
-INTERNAL inline void make_x_axis_rotation_mtx(mtx4x4* r, f32 turns)
+INTERNAL inline void make_x_axis_rotation_mtx(mtx4x4* r, const f32 turns)
 {
     __m256 a_v = approx_sin8(_mm256_setr_ps(TAU * turns, TAU * turns + H_PI, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f));
-    _Alignas(32) f32_m a[8];
+    _Alignas(32) f32 a[8];
     _mm256_store_ps(a, a_v);
-    f32 sin_a = a[0];
-    f32 cos_a = a[1];
+    const f32 sin_a = a[0];
+    const f32 cos_a = a[1];
 
     r->m[0] = 1.0f;   r->m[1] = 0.0f;   r->m[2] = 0.0f;    r->m[3] = 0.0f;
     r->m[4] = 0.0f;   r->m[5] = cos_a;  r->m[6] = -sin_a;  r->m[7] = 0.0f;
@@ -307,13 +307,13 @@ INTERNAL inline void make_x_axis_rotation_mtx(mtx4x4* r, f32 turns)
     r->m[12] = 0.0f;  r->m[13] = 0.0f;  r->m[14] = 0.0f;   r->m[15] = 1.0f;
 }
 
-INTERNAL inline void make_y_axis_rotation_mtx(mtx4x4* r, f32 turns)
+INTERNAL inline void make_y_axis_rotation_mtx(mtx4x4* r, const f32 turns)
 {
     __m256 a_v = approx_sin8(_mm256_setr_ps(TAU * turns, TAU * turns + H_PI, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f));
-    _Alignas(32) f32_m a[8];
+    _Alignas(32) f32 a[8];
     _mm256_store_ps(a, a_v);
-    f32 sin_a = a[0];
-    f32 cos_a = a[1];
+    const f32 sin_a = a[0];
+    const f32 cos_a = a[1];
 
     r->m[0] = cos_a;   r->m[1] = 0.0f;   r->m[2] = sin_a;   r->m[3] = 0.0f;
     r->m[4] = 0.0f;    r->m[5] = 1.0f;   r->m[6] = 0.0f;    r->m[7] = 0.0f;
@@ -329,7 +329,7 @@ INTERNAL inline void make_translation_mtx(mtx4x4* r, v3 v)
     r->m[12] = 0.0f;  r->m[13] = 0.0f;   r->m[14] = 0.0f;  r->m[15] = 1.0f;
 }
 
-INTERNAL inline u32 rand_u32(u32_m n)
+INTERNAL inline u32 rand_u32(u32 n)
 {
     n ^= n << 13;
     n ^= n >> 17;

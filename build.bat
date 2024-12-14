@@ -10,7 +10,7 @@ set SRC=src
 
 REM Avoid C runtime library
 REM https://hero.handmade.network/forums/code-discussion/t/94-guide_-_how_to_avoid_c_c++_runtime_on_windows
-set COMMON_COMPILE_FLAGS=/O2 /c /W4 /WX /EHsc /std:c17 /GS- /Gs9999999
+set COMMON_COMPILE_FLAGS=/Od /c /W4 /WX /EHsc /std:c17 /GS- /Gs9999999
 set INCLUDE_DIRS=/I"src"
 set DEBUG_COMPILE_FLAGS=/DDEBUG /Zi
 set DEBUG_LINK_FLAGS=/NODEFAULTLIB /STACK:0x100000,0x100000 /SUBSYSTEM:WINDOWS /MACHINE:X64 /DEBUG:FULL

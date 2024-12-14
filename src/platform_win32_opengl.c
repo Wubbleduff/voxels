@@ -20,7 +20,7 @@ struct Platform_Win32* g_platform;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /// Platform Win32 impl
-void assert_fn(const char* file, int line, u64 c, const char* msg)
+void assert_fn(const char* file, int line, const u64 c, const char* msg)
 {
     if(!c)
     {
@@ -46,18 +46,18 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     {
         case WM_KEYDOWN: 
         {
-            u32 vk = (u32)wParam;
+            const u32 vk = (const u32)wParam;
             ASSERT(vk < ARRAY_COUNT(win32_vk_code_to_keyboard_key), "Invalid VK code");
-            u32 k = win32_vk_code_to_keyboard_key[vk];
+            const u32 k = win32_vk_code_to_keyboard_key[vk];
             platform->input_state.key[k] = 1;
             break;
         }
 
         case WM_KEYUP:
         {
-            u32 vk = (u32)wParam;
+            const u32 vk = (const u32)wParam;
             ASSERT(vk < ARRAY_COUNT(win32_vk_code_to_keyboard_key), "Invalid VK code");
-            u32 k = win32_vk_code_to_keyboard_key[vk];
+            const u32 k = win32_vk_code_to_keyboard_key[vk];
             platform->input_state.key[k] = 0;
             break;
         }
@@ -213,7 +213,7 @@ INTERNAL GLuint make_shader_program(const char* vertex_source, const char* fragm
         ASSERT(0, "Failed to compile fragment shader.");
     }
 
-    u32_m result_program;
+    u32 result_program;
     CALL_GL_RET(&result_program, GLuint, glCreateProgram);
     CALL_GL(glAttachShader, result_program, vertex_shader);
     CALL_GL(glAttachShader, result_program, fragment_shader);
@@ -240,15 +240,15 @@ f32 get_screen_aspect_ratio()
 }
 
 void draw_mesh(
-    u32 num_verts,
-    f32* vx,
-    f32* vy,
-    f32* vz,
-    f32* nx,
-    f32* ny,
-    f32* nz,
-    u32 num_indices,
-    u16* indices,
+    const u32 num_verts,
+    const f32* vx,
+    const f32* vy,
+    const f32* vz,
+    const f32* nx,
+    const f32* ny,
+    const f32* nz,
+    const u32 num_indices,
+    const u16* indices,
     const mtx4x4* mvp)
 {
     struct OpenGLState* opengl_state = &g_platform->opengl_state;
@@ -262,25 +262,25 @@ void draw_mesh(
     CALL_GL(glBindVertexArray, opengl_state->vertex_array_object);
 
     CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->vertex_buffer_object_vx);
-    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_verts * sizeof(f32), vx);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_verts * sizeof(const f32), vx);
 
     CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->vertex_buffer_object_vy);
-    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_verts * sizeof(f32), vy);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_verts * sizeof(const f32), vy);
 
     CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->vertex_buffer_object_vz);
-    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_verts * sizeof(f32), vz);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_verts * sizeof(const f32), vz);
 
     CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->vertex_buffer_object_nx);
-    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_verts * sizeof(f32), nx);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_verts * sizeof(const f32), nx);
 
     CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->vertex_buffer_object_ny);
-    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_verts * sizeof(f32), ny);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_verts * sizeof(const f32), ny);
 
     CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->vertex_buffer_object_nz);
-    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_verts * sizeof(f32), nz);
+    CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_verts * sizeof(const f32), nz);
 
     CALL_GL(glBindBuffer, GL_ELEMENT_ARRAY_BUFFER, opengl_state->index_buffer_object);
-    CALL_GL(glBufferSubData, GL_ELEMENT_ARRAY_BUFFER, 0, num_indices * sizeof(u16), indices);
+    CALL_GL(glBufferSubData, GL_ELEMENT_ARRAY_BUFFER, 0, num_indices * sizeof(const u16), indices);
 
     CALL_GL(glDrawElements, GL_TRIANGLES, num_indices, GL_UNSIGNED_SHORT, 0);
 
@@ -303,14 +303,14 @@ void debug_draw_line(const mtx4x4* camera_and_clip_mtx, v3 a, v3 b, v3 c)
     
     CALL_GL(glBindVertexArray, opengl_state->debug_line_vertex_array_object);
 
-    f32 line_vertices[6] = {
+    const f32 line_vertices[6] = {
         0.0f, 0.0f, 0.0f,
         1.0f, 1.0f, 1.0f,
     };
     CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->debug_line_vertex_buffer_object_vertices);
     CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(line_vertices), line_vertices);
 
-    u32 num_lines = 1;
+    const u32 num_lines = 1;
     CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->debug_line_instanced_vertex_buffer_object_start_x);
     CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_lines * sizeof(float), a.m + 0);
 
@@ -346,7 +346,7 @@ void debug_draw_line(const mtx4x4* camera_and_clip_mtx, v3 a, v3 b, v3 c)
     CALL_GL(glUseProgram, 0);
 }
 
-void debug_draw_sphere(const mtx4x4* proj_mtx, const mtx4x4* cam_mtx, v3 pos, f32 r, v3 c)
+void debug_draw_sphere(const mtx4x4* proj_mtx, const mtx4x4* cam_mtx, v3 pos, const f32 r, v3 c)
 {
     struct OpenGLState* opengl_state = &g_platform->opengl_state;
     CALL_GL(glUseProgram, opengl_state->debug_sphere_shader_program);
@@ -367,7 +367,7 @@ void debug_draw_sphere(const mtx4x4* proj_mtx, const mtx4x4* cam_mtx, v3 pos, f3
       |    |
       1----2
     */
-    f32 verts[3 * 4] = {
+    const f32 verts[3 * 4] = {
         // X      Y     Z
         -1.0f, -1.0f, 0.0f,
          1.0f, -1.0f, 0.0f,
@@ -377,7 +377,7 @@ void debug_draw_sphere(const mtx4x4* proj_mtx, const mtx4x4* cam_mtx, v3 pos, f3
     CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->debug_sphere_vertex_buffer_object_vertices);
     CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
 
-    u32 num_spheres = 1;
+    const u32 num_spheres = 1;
     CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->debug_sphere_instanced_vertex_buffer_object_pos_x);
     CALL_GL(glBufferSubData, GL_ARRAY_BUFFER, 0, num_spheres * sizeof(float), pos.m + 0);
 
@@ -426,7 +426,7 @@ void draw_frame_buffer(struct FrameBuffer* fb)
 
     CALL_GL(glBindVertexArray, g_opengl_state->fullscreen_quad_vertex_array_object);
 
-    f32 quad_vertices[] = {
+    const f32 quad_vertices[] = {
         -1.0f, -1.0f,
          1.0f, -1.0f,
          1.0f,  1.0f,
@@ -461,7 +461,7 @@ INTERNAL s64 get_timestamp_us()
     QueryPerformanceCounter(&cy);
     cy.QuadPart *= 1000000LL;
     cy.QuadPart /= g_platform->clock_freq;
-    s64 result_us = cy.QuadPart;
+    const s64 result_us = cy.QuadPart;
     ASSERT(result_us >= 0, "get_timestamp_us overflow.");
     return result_us;
 }
@@ -478,7 +478,7 @@ u32 is_key_down(enum KeyboardKey k)
     ASSERT(k >= 0, "is_key_down key code underflow");
     ASSERT(k < NUM_KEYBOARD_KEYS, "is_key_down key code overflow");
     struct InputState* input_state = &g_platform->input_state;
-    return input_state->key[(u32)k];
+    return input_state->key[(const u32)k];
 }
 
 u32 is_key_toggled_down(enum KeyboardKey k)
@@ -486,7 +486,7 @@ u32 is_key_toggled_down(enum KeyboardKey k)
     ASSERT(k >= 0, "is_key_down key code underflow");
     ASSERT(k < NUM_KEYBOARD_KEYS, "is_key_down key code overflow");
     struct InputState* input_state = &g_platform->input_state;
-    return input_state->key[(u32)k] && !input_state->last_key[(u32)k];
+    return input_state->key[(const u32)k] && !input_state->last_key[(const u32)k];
 }
 
 u32 is_fps_mode()
@@ -495,14 +495,14 @@ u32 is_fps_mode()
     return input_state->fps_mode;
 }
 
-void get_mouse_delta(s32_m* x, s32_m* y)
+void get_mouse_delta(s32* x, s32* y)
 {
     struct InputState* input_state = &g_platform->input_state;
     *x = input_state->mouse_screen_dx;
     *y = input_state->mouse_screen_dy;
 }
 
-void show_cursor(u32_m show)
+void show_cursor(u32 show)
 {
     // https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-cursorinfo
     CURSORINFO ci = { .cbSize = sizeof(CURSORINFO) };
@@ -511,7 +511,7 @@ void show_cursor(u32_m show)
     if(show && ci.flags == 0)
     {
         // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showcursor
-        s32_m show_cursor_display_counter = ShowCursor(1);
+        s32 show_cursor_display_counter = ShowCursor(1);
         while(show_cursor_display_counter < 0)
         {
             show_cursor_display_counter = ShowCursor(1);
@@ -520,7 +520,7 @@ void show_cursor(u32_m show)
     else if(!show && ci.flags == 0x1)
     {
         // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showcursor
-        s32_m show_cursor_display_counter = ShowCursor(0);
+        s32 show_cursor_display_counter = ShowCursor(0);
         while(show_cursor_display_counter >= 0)
         {
             show_cursor_display_counter = ShowCursor(0);
@@ -569,10 +569,10 @@ void WinMainCRTStartup()
         ATOM register_class_result = RegisterClass(&window_class);
         ASSERT(register_class_result, "Register class failed");
 
-        u64 window_width = 1920;
-        u64 window_height = 1080;
-        u64 window_start_x = (GetSystemMetrics(SM_CXSCREEN) - window_width) / 2;
-        u64 window_start_y = (GetSystemMetrics(SM_CYSCREEN) - window_height) / 2;
+        const u64 window_width = 1920;
+        const u64 window_height = 1080;
+        const u64 window_start_x = (GetSystemMetrics(SM_CXSCREEN) - window_width) / 2;
+        const u64 window_start_y = (GetSystemMetrics(SM_CYSCREEN) - window_height) / 2;
         platform->hwnd = CreateWindowEx(0,          // Extended style
                 window_class.lpszClassName,               // Class name
                 "",                                       // Window name
@@ -698,7 +698,7 @@ void WinMainCRTStartup()
             CALL_GL(glBindBuffer, GL_ELEMENT_ARRAY_BUFFER, opengl_state->index_buffer_object);
             CALL_GL(glBufferData, GL_ELEMENT_ARRAY_BUFFER, INDEX_ARRAY_BYTES, 0, GL_DYNAMIC_DRAW);
 
-            u32_m attr_idx = 0;
+            u32 attr_idx = 0;
 
             // Vertex buffer: vx
             CALL_GL(glGenBuffers, 1, &opengl_state->vertex_buffer_object_vx);
@@ -824,12 +824,12 @@ void WinMainCRTStartup()
             CALL_GL(glGenVertexArrays, 1, &opengl_state->debug_line_vertex_array_object);
             CALL_GL(glBindVertexArray, opengl_state->debug_line_vertex_array_object);
 
-            u32_m attr_idx = 0;
+            u32 attr_idx = 0;
 
             // Vertex buffer: vertices
             CALL_GL(glGenBuffers, 1, &opengl_state->debug_line_vertex_buffer_object_vertices);
             CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->debug_line_vertex_buffer_object_vertices);
-            CALL_GL(glBufferData, GL_ARRAY_BUFFER, 6 * sizeof(f32), NULL, GL_DYNAMIC_DRAW);
+            CALL_GL(glBufferData, GL_ARRAY_BUFFER, 6 * sizeof(const f32), NULL, GL_DYNAMIC_DRAW);
             CALL_GL(glVertexAttribPointer, attr_idx, 3, GL_FLOAT, GL_FALSE, 0, 0);
             CALL_GL(glEnableVertexAttribArray, attr_idx);
             attr_idx++;
@@ -960,12 +960,12 @@ void WinMainCRTStartup()
             CALL_GL(glGenVertexArrays, 1, &opengl_state->debug_sphere_vertex_array_object);
             CALL_GL(glBindVertexArray, opengl_state->debug_sphere_vertex_array_object);
 
-            u32_m attr_idx = 0;
+            u32 attr_idx = 0;
 
             // Vertex buffer: vertices
             CALL_GL(glGenBuffers, 1, &opengl_state->debug_sphere_vertex_buffer_object_vertices);
             CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->debug_sphere_vertex_buffer_object_vertices);
-            CALL_GL(glBufferData, GL_ARRAY_BUFFER, 12 * sizeof(f32), NULL, GL_DYNAMIC_DRAW);
+            CALL_GL(glBufferData, GL_ARRAY_BUFFER, 12 * sizeof(const f32), NULL, GL_DYNAMIC_DRAW);
             CALL_GL(glVertexAttribPointer, attr_idx, 3, GL_FLOAT, GL_FALSE, 0, 0);
             CALL_GL(glEnableVertexAttribArray, attr_idx);
             attr_idx++;
@@ -1134,12 +1134,12 @@ void WinMainCRTStartup()
             CALL_GL(glGenVertexArrays, 1, &opengl_state->fullscreen_quad_vertex_array_object);
             CALL_GL(glBindVertexArray, opengl_state->fullscreen_quad_vertex_array_object);
 
-            u32_m attr_idx = 0;
+            u32 attr_idx = 0;
 
             // Vertex buffer: vertices
             CALL_GL(glGenBuffers, 1, &opengl_state->fullscreen_quad_vertex_buffer_object_pos);
             CALL_GL(glBindBuffer, GL_ARRAY_BUFFER, opengl_state->fullscreen_quad_vertex_buffer_object_pos);
-            CALL_GL(glBufferData, GL_ARRAY_BUFFER, 6 * 2 * sizeof(f32), NULL, GL_STATIC_DRAW);
+            CALL_GL(glBufferData, GL_ARRAY_BUFFER, 6 * 2 * sizeof(const f32), NULL, GL_STATIC_DRAW);
             CALL_GL(glVertexAttribPointer, attr_idx, 2, GL_FLOAT, GL_FALSE, 0, 0);
             CALL_GL(glEnableVertexAttribArray, attr_idx);
             attr_idx++;
@@ -1158,8 +1158,8 @@ void WinMainCRTStartup()
         ASSERT(get_cursor_pos_succes, "Failed GetCursorPos");
         const BOOL screen_to_client_success = ScreenToClient(platform->hwnd, &p);
         ASSERT(screen_to_client_success, "Failed ScreenToClient");
-        input_state->mouse_screen_pos_x = (s32_m)p.x;
-        input_state->mouse_screen_pos_y = (s32_m)p.y;
+        input_state->mouse_screen_pos_x = (s32)p.x;
+        input_state->mouse_screen_pos_y = (s32)p.y;
         input_state->mouse_screen_dx = 0;
         input_state->mouse_screen_dy = 0;
         input_state->fps_mode = 0;
@@ -1179,8 +1179,8 @@ void WinMainCRTStartup()
     reset_game_state(game_state_B);
 
     // Main loop
-    s64 engine_start_timestamp_us = get_timestamp_us();
-    s64_m last_frame_timestamp_us = engine_start_timestamp_us;
+    const s64 engine_start_timestamp_us = get_timestamp_us();
+    s64 last_frame_timestamp_us = engine_start_timestamp_us;
     while(1)
     {
         MSG msg;
@@ -1203,7 +1203,7 @@ void WinMainCRTStartup()
         // Main loop time control.
 #define ENGINE_FRAME_DURATION_US 8333LL
         {
-            s64 time_since_last_frame_us = get_timestamp_us() - last_frame_timestamp_us;
+            const s64 time_since_last_frame_us = get_timestamp_us() - last_frame_timestamp_us;
             if(time_since_last_frame_us >= ENGINE_FRAME_DURATION_US)
             {
                 last_frame_timestamp_us += ENGINE_FRAME_DURATION_US;
@@ -1217,13 +1217,13 @@ void WinMainCRTStartup()
         // Read input
         {
             struct InputState* input_state = &platform->input_state;
-            s32_m last_mouse_screen_pos_x = input_state->mouse_screen_pos_x;
-            s32_m last_mouse_screen_pos_y = input_state->mouse_screen_pos_y;
+            s32 last_mouse_screen_pos_x = input_state->mouse_screen_pos_x;
+            s32 last_mouse_screen_pos_y = input_state->mouse_screen_pos_y;
             POINT p;
             const BOOL get_cursor_pos_succes = GetCursorPos(&p);
             ASSERT(get_cursor_pos_succes, "Failed GetCursorPos");
-            input_state->mouse_screen_pos_x = (s32_m)p.x;
-            input_state->mouse_screen_pos_y = (s32_m)p.y;
+            input_state->mouse_screen_pos_x = (s32)p.x;
+            input_state->mouse_screen_pos_y = (s32)p.y;
 
             if(is_key_toggled_down(KB_E))
             {
@@ -1236,8 +1236,8 @@ void WinMainCRTStartup()
                 RECT clip_rect;
                 const BOOL get_client_rect_success = GetClientRect(platform->hwnd, &clip_rect);
                 ASSERT(get_client_rect_success, "GetClientRect failed.");
-                s32 tx = (clip_rect.left + clip_rect.right) / 2;
-                s32 ty = (clip_rect.bottom + clip_rect.top) / 2;
+                const s32 tx = (clip_rect.left + clip_rect.right) / 2;
+                const s32 ty = (clip_rect.bottom + clip_rect.top) / 2;
 
                 POINT client_to_screen_point = {
                     .x = tx,

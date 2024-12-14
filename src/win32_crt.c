@@ -33,23 +33,23 @@ void *memcpy(void *dst, const void *src, size_t count)
 
     if(count < 32)
     {
-        for(u64_m i = 0; i < count; i++)
+        for(u64 i = 0; i < count; i++)
         {
-            ((u8_m*)dst)[i] = ((u8*)src)[i];
+            ((u8*)dst)[i] = ((const u8*)src)[i];
         }
     }
     else
     {
-        for(u64_m i = 0; i < count; i += 32)
+        for(u64 i = 0; i < count; i += 32)
         {
-            _mm256_storeu_si256((__m256i*)((u8_m*)dst + i), _mm256_loadu_si256((__m256i*)((u8*)src + i)));
+            _mm256_storeu_si256((__m256i*)((u8*)dst + i), _mm256_loadu_si256((__m256i*)((const u8*)src + i)));
         }
     }
 
-    for(u64_m i = count & ~31; i < count; i++)
+    for(u64 i = count & ~31; i < count; i++)
     {
-        ((u8_m*)dst)[i] = ((u8*)src)[i];
+        ((u8*)dst)[i] = ((const u8*)src)[i];
     }
-    return (u8_m*)dst + count;
+    return (u8*)dst + count;
 }
 

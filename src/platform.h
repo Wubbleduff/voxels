@@ -12,10 +12,10 @@
 /// Memory
 
 struct MemoryArena;
-struct MemoryArena memory_arena_init(void* base, u64 cap);
+struct MemoryArena memory_arena_init(void* base, const u64 cap);
 void memory_arena_reset(struct MemoryArena* arena);
-void* memory_arena_allocate(const char* file, s32 line, struct MemoryArena* arena, u64 req_bytes);
-void* memory_arena_allocate_zeroed(const char* file, s32 line, struct MemoryArena* arena, u64 req_bytes);
+void* memory_arena_allocate(const char* file, const s32 line, struct MemoryArena* arena, const u64 req_bytes);
+void* memory_arena_allocate_zeroed(const char* file, const s32 line, struct MemoryArena* arena, const u64 req_bytes);
 #define MEMORY_ARENA_ALLOCATE(arena, req_bytes) memory_arena_allocate(__FILE__, __LINE__, (arena), (req_bytes))
 #define MEMORY_ARENA_ALLOCATE_ZEROED(arena, req_bytes) memory_arena_allocate_zeroed(__FILE__, __LINE__, (arena), (req_bytes))
 
@@ -74,7 +74,7 @@ enum KeyboardKey
 u32 is_key_down(enum KeyboardKey k);
 u32 is_key_toggled_down(enum KeyboardKey k);
 u32 is_fps_mode();
-void get_mouse_delta(s32_m* x, s32_m* y);
-void show_cursor(u32_m show);
+void get_mouse_delta(s32* x, s32* y);
+void show_cursor(u32 show);
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

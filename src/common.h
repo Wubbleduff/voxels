@@ -19,27 +19,27 @@
 #endif
 #define INTERNAL MAYBE_UNUSED static
 
-typedef const unsigned char u8;
-typedef const unsigned short u16;
-typedef const unsigned int u32;
-typedef const unsigned long long u64;
-typedef const char s8;
-typedef const short s16;
-typedef const int s32;
-typedef const long long s64;
-typedef const float f32;
-typedef const double f64;
+typedef unsigned char u8;
+typedef unsigned short u16;
+typedef unsigned int u32;
+typedef unsigned long long u64;
+typedef char s8;
+typedef short s16;
+typedef int s32;
+typedef long long s64;
+typedef float f32;
+typedef double f64;
 
-typedef unsigned char u8_m;
-typedef unsigned short u16_m;
-typedef unsigned int u32_m;
-typedef unsigned long long u64_m;
-typedef char s8_m;
-typedef short s16_m;
-typedef int s32_m;
-typedef long long s64_m;
-typedef float f32_m;
-typedef double f64_m;
+_Static_assert(sizeof(u8) == 1, "Unexpected type size.");
+_Static_assert(sizeof(u16) == 2, "Unexpected type size.");
+_Static_assert(sizeof(u32) == 4, "Unexpected type size.");
+_Static_assert(sizeof(u64) == 8, "Unexpected type size.");
+_Static_assert(sizeof(s8) == 1, "Unexpected type size.");
+_Static_assert(sizeof(s16) == 2, "Unexpected type size.");
+_Static_assert(sizeof(s32) == 4, "Unexpected type size.");
+_Static_assert(sizeof(s64) == 8, "Unexpected type size.");
+_Static_assert(sizeof(f32) == 4, "Unexpected type size.");
+_Static_assert(sizeof(f64) == 8, "Unexpected type size.");
 
 #define u8_MAX 0xFF
 #define u16_MAX 0xFFFF
@@ -50,8 +50,8 @@ typedef double f64_m;
 #define s32_MAX 0x7FFFFFFF
 #define s64_MAX 0x7FFFFFFFFFFFFFFF
 
-void assert_fn(const char* file, int line, u64 c, const char* msg);
-#define ASSERT(c, msg) assert_fn(__FILE__, __LINE__, (u64)(c), (msg))
+void assert_fn(const char* file, int line, const u64 c, const char* msg);
+#define ASSERT(c, msg) assert_fn(__FILE__, __LINE__, (const u64)(c), (msg))
 
 #define ARRAY_COUNT(N) (sizeof(N) / sizeof((N)[0]))
 
@@ -70,7 +70,7 @@ void assert_fn(const char* file, int line, u64 c, const char* msg);
 
 static inline u64 cstr_len(const char* s)
 {
-    u64_m n = 0;
+    u64 n = 0;
     while(*s++) n++;
     return n;
 }
@@ -86,18 +86,18 @@ static inline const char* StringBuf32_to_cstr(const StringBuf32* s)
     return s->buf;
 }
 
-static inline StringBuf32 u32_to_StringBuf32(u32_m n)
+static inline StringBuf32 u32_to_StringBuf32(u32 n)
 {
     StringBuf32 result;
     memset(result.buf, 0, sizeof(result));
-    u64_m size = 0;
+    u64 size = 0;
     while(n && size < 31)
     {
-        u32 digit = n % 10;
+        const u32 digit = n % 10;
         result.buf[size++] = (char)('0' + digit);
         n /= 10;
     }
-    for(u64_m i = 0; i < size / 2; i++)
+    for(u64 i = 0; i < size / 2; i++)
     {
         char tmp = result.buf[i];
         result.buf[i] = result.buf[size - i - 1];

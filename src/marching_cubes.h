@@ -21,7 +21,7 @@ static const v3 MARCHING_CUBES_CUBE_VERTS[8] =
     {.x = 0.0f, .y = 1.0f, .z = 1.0f},
 };
 
-static u32 MARCHING_CUBES_EDGE_TABLE[256] =
+static const u32 MARCHING_CUBES_EDGE_TABLE[256] =
 {
     0x0  , 0x109, 0x203, 0x30a, 0x406, 0x50f, 0x605, 0x70c,
     0x80c, 0x905, 0xa0f, 0xb06, 0xc0a, 0xd03, 0xe09, 0xf00,
@@ -56,7 +56,7 @@ static u32 MARCHING_CUBES_EDGE_TABLE[256] =
     0xf00, 0xe09, 0xd03, 0xc0a, 0xb06, 0xa0f, 0x905, 0x80c,
     0x70c, 0x605, 0x50f, 0x406, 0x30a, 0x203, 0x109, 0x0
 };
-static s32 MARCHING_CUBES_TRI_TABLE[256][16] =
+static const s32 MARCHING_CUBES_TRI_TABLE[256][16] =
 {
     {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
     {0, 8, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
@@ -316,9 +316,9 @@ static s32 MARCHING_CUBES_TRI_TABLE[256][16] =
     {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1}
 };
 
-static v3 marching_cubes_vert_interp(v3 p0, v3 p1, f32 r0, f32 r1)
+static v3 marching_cubes_vert_interp(v3 p0, v3 p1, const f32 r0, const f32 r1)
 {
-    f32 mu = -r0 / (r1 - r0);
+    const f32 mu = -r0 / (r1 - r0);
     v3 p;
     p.x = p0.x + mu * (p1.x - p0.x);
     p.y = p0.y + mu * (p1.y - p0.y);
@@ -327,12 +327,12 @@ static v3 marching_cubes_vert_interp(v3 p0, v3 p1, f32 r0, f32 r1)
 }
 
 INTERNAL u32 marching_cube(
-        f32_m* out_tris_x,
-        f32_m* out_tris_y,
-        f32_m* out_tris_z,
+        f32* out_tris_x,
+        f32* out_tris_y,
+        f32* out_tris_z,
         const __m256 cube_vals)
 {
-    s32 cube_idx = _mm256_movemask_ps(cube_vals);
+    const s32 cube_idx = _mm256_movemask_ps(cube_vals);
 
     // Cube is entirely in/out of the surface
     if (MARCHING_CUBES_EDGE_TABLE[cube_idx] == 0)
@@ -340,7 +340,7 @@ INTERNAL u32 marching_cube(
         return 0;
     }
 
-    _Alignas(32) f32_m cube_vals_arr[8];
+    _Alignas(32) f32 cube_vals_arr[8];
     _mm256_store_ps(cube_vals_arr, cube_vals);
 
     /* Find the vertices where the surface intersects the cube */
@@ -359,8 +359,8 @@ INTERNAL u32 marching_cube(
     if (MARCHING_CUBES_EDGE_TABLE[cube_idx] & 2048) vertlist[11] = marching_cubes_vert_interp(MARCHING_CUBES_CUBE_VERTS[3], MARCHING_CUBES_CUBE_VERTS[7], cube_vals_arr[3], cube_vals_arr[7]);
 
     /* Create the triangle */
-    u32_m num_tris = 0;
-    for (u64_m i = 0; MARCHING_CUBES_TRI_TABLE[cube_idx][i] != -1; i += 3)
+    u32 num_tris = 0;
+    for (u64 i = 0; MARCHING_CUBES_TRI_TABLE[cube_idx][i] != -1; i += 3)
     {
         out_tris_x[num_tris * 3 + 0] = vertlist[MARCHING_CUBES_TRI_TABLE[cube_idx][i + 0]].x;
         out_tris_y[num_tris * 3 + 0] = vertlist[MARCHING_CUBES_TRI_TABLE[cube_idx][i + 0]].y;

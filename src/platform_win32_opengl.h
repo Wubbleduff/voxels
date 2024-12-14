@@ -68,8 +68,8 @@ typedef void (*fnptr_glTexSubImage2D)(GLenum target, GLint level, GLint xoffset,
 struct OpenGLState
 {
     HWND hwnd;
-    u32_m screen_width;
-    u32_m screen_height;
+    u32 screen_width;
+    u32 screen_height;
 
     HGLRC gl_context;
     GLuint last_gl_error;
@@ -152,10 +152,10 @@ struct OpenGLState
     fnptr_glTexSubImage2D glTexSubImage2D;
 };
 
-INTERNAL f32 s_cube_mesh_vx[] = { -0.5f,  0.5f, -0.5f,  0.5f, -0.5f,  0.5f, -0.5f,  0.5f };
-INTERNAL f32 s_cube_mesh_vy[] = { -0.5f, -0.5f,  0.5f,  0.5f, -0.5f, -0.5f,  0.5f,  0.5f };
-INTERNAL f32 s_cube_mesh_vz[] = { -0.5f, -0.5f, -0.5f, -0.5f,  0.5f,  0.5f,  0.5f,  0.5f };
-INTERNAL u32 s_cube_mesh_indices[] = 
+INTERNAL const f32 s_cube_mesh_vx[] = { -0.5f,  0.5f, -0.5f,  0.5f, -0.5f,  0.5f, -0.5f,  0.5f };
+INTERNAL const f32 s_cube_mesh_vy[] = { -0.5f, -0.5f,  0.5f,  0.5f, -0.5f, -0.5f,  0.5f,  0.5f };
+INTERNAL const f32 s_cube_mesh_vz[] = { -0.5f, -0.5f, -0.5f, -0.5f,  0.5f,  0.5f,  0.5f,  0.5f };
+INTERNAL const u32 s_cube_mesh_indices[] = 
 {
     0, 4, 2, // -X
     2, 4, 6, // -X
@@ -184,21 +184,21 @@ INTERNAL u32 s_cube_mesh_indices[] =
 #define MAX_MOUSE_KEYS 32
 struct InputState
 {
-    u32_m key[NUM_KEYBOARD_KEYS];
-    u32_m mouse_key[MAX_MOUSE_KEYS];
+    u32 key[NUM_KEYBOARD_KEYS];
+    u32 mouse_key[MAX_MOUSE_KEYS];
 
-    u32_m last_key[NUM_KEYBOARD_KEYS];
-    u32_m last_mouse_key[MAX_MOUSE_KEYS];
+    u32 last_key[NUM_KEYBOARD_KEYS];
+    u32 last_mouse_key[MAX_MOUSE_KEYS];
 
-    u32_m fps_mode; 
-    s32_m mouse_screen_pos_x;
-    s32_m mouse_screen_pos_y;
-    s32_m mouse_screen_dx;
-    s32_m mouse_screen_dy;
+    u32 fps_mode; 
+    s32 mouse_screen_pos_x;
+    s32 mouse_screen_pos_y;
+    s32 mouse_screen_dx;
+    s32 mouse_screen_dy;
 };
 
 // Maps Win32 VK code to KeyboardKey enum.
-INTERNAL u32 win32_vk_code_to_keyboard_key[] = {
+INTERNAL const u32 win32_vk_code_to_keyboard_key[] = {
     // https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes
     /* -              0x00 */  KB_NOT_SUPPORTED,
     /* VK_LBUTTON     0x01 */  KB_NOT_SUPPORTED,
@@ -384,7 +384,7 @@ struct Platform_Win32
 {
     HANDLE log_file;
     HWND hwnd;
-    u64_m clock_freq;
+    u64 clock_freq;
 
     struct OpenGLState opengl_state;
     struct InputState input_state;
