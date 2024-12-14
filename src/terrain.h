@@ -6,7 +6,7 @@
 
 struct MemoryArena;
 
-#define TERRAIN_MAX_CHUNKS 2048
+#define TERRAIN_MAX_CHUNKS 3000
 #define CHUNK_DIM 16
 #define TERRAIN_CHUNK_MAX_VERTS 8192
 
@@ -45,7 +45,7 @@ struct Terrain
 
 struct TerrainProgress
 {
-    int b;
+    s32_m i;
 };
 
 INTERNAL u64 pack_voxel_key(s32 x, s32 y, s32 z)
@@ -76,9 +76,8 @@ INTERNAL void unpack_voxel_key(s32_m* x, s32_m* y, s32_m* z, u64 k)
     *z = arr[5];
 }
 
-INTERNAL inline struct TerrainChunk* get_chunk(struct Terrain* terrain, s32 x, s32 y, s32 z)
+INTERNAL inline struct TerrainChunk* get_chunk_packed(struct Terrain* terrain, u64 key)
 {
-    u64 key = pack_voxel_key(x, y, z);
     u64_m chunk_idx = (u64_m)-1;
     for(u64_m i = 0; i < terrain->num_chunks; i++)
     {
@@ -90,15 +89,24 @@ INTERNAL inline struct TerrainChunk* get_chunk(struct Terrain* terrain, s32 x, s
     return chunk_idx == (u64_m)-1 ? NULL : terrain->chunks + chunk_idx;
 }
 
+INTERNAL inline struct TerrainChunk* get_chunk(struct Terrain* terrain, s32 x, s32 y, s32 z)
+{
+    u64 key = pack_voxel_key(x, y, z);
+    return get_chunk_packed(terrain, key);
+}
+
 INTERNAL void reset_terrain(struct Terrain* terrain)
 {
-    (void)terrain;
+    terrain->num_chunks = 0;
 }
 
 INTERNAL void copy_terrain(struct Terrain* dst, const struct Terrain* src)
 {
-    (void)dst;
-    (void)src;
+    dst->num_chunks = src->num_chunks;
+    COPY(dst->chunks_key, src->chunks_key, src->num_chunks);
+    COPY(dst->chunks_exponent, src->chunks_exponent, src->num_chunks);
+    COPY(dst->chunks, src->chunks, src->num_chunks);
+    COPY(dst->chunks_geometry, src->chunks_geometry, src->num_chunks);
 }
 
 void generate_terrain(

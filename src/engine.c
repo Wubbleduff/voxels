@@ -73,13 +73,18 @@ void do_one_frame(
 
     copy_terrain(&next_game_state->terrain, &prev_game_state->terrain);
     memcpy(&next_game_state->terrain_progress, &prev_game_state->terrain_progress, sizeof(struct TerrainProgress));
+    if(next_game_state->terrain.num_chunks == 0)
+    {
+        next_game_state->terrain_progress.i = 0;
+    }
+
     generate_terrain(
             &next_game_state->terrain,
             &next_game_state->terrain_progress,
             player_pos.x,
             player_pos.y,
             player_pos.z,
-            30000);
+            64);
 }
 
 void draw_game_state(struct GameState* game_state)
