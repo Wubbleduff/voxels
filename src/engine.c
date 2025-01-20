@@ -77,7 +77,18 @@ void do_one_frame(
     static u8 initted = 0;
     if(!initted)
     {
-        next_game_state->terrain_progress.i = 0;
+        for(s32 i = 0; i < 32*32*32; i++)
+        {
+            s32 i_x = (i & 31);
+            s32 i_y = ((i >> 5) & 31);
+            s32 i_z = ((i >> 10) & 31);
+
+            next_game_state->terrain_progress.to_gen_x[i] = i_x;
+            next_game_state->terrain_progress.to_gen_y[i] = i_y;
+            next_game_state->terrain_progress.to_gen_z[i] = i_z;
+        }
+        next_game_state->terrain_progress.num_to_gen = 32*32*32;
+
         initted = 1;
     }
 
@@ -380,7 +391,7 @@ void draw_game_state(struct GameState* game_state)
             s32 chunk_z;
             unpack_voxel_key(&chunk_x, &chunk_y, &chunk_z, terrain->chunks_key[i_chunk]);
 
-#if 1
+#if 0
             debug_draw_line(&camera_and_clip_mtx, make_v3((const f32)chunk_x +         0, (const f32)chunk_y +         0, (const f32)chunk_z +         0),     make_v3((const f32)chunk_x + CHUNK_DIM, (const f32)chunk_y +         0, (const f32)chunk_z +         0),     make_v3(1.0f, 0.0f, 0.0f));
             debug_draw_line(&camera_and_clip_mtx, make_v3((const f32)chunk_x +         0, (const f32)chunk_y + CHUNK_DIM, (const f32)chunk_z +         0),     make_v3((const f32)chunk_x + CHUNK_DIM, (const f32)chunk_y + CHUNK_DIM, (const f32)chunk_z +         0),     make_v3(1.0f, 0.0f, 0.0f));
             debug_draw_line(&camera_and_clip_mtx, make_v3((const f32)chunk_x +         0, (const f32)chunk_y +         0, (const f32)chunk_z + CHUNK_DIM),     make_v3((const f32)chunk_x + CHUNK_DIM, (const f32)chunk_y +         0, (const f32)chunk_z + CHUNK_DIM),     make_v3(1.0f, 0.0f, 0.0f));

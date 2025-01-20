@@ -6,7 +6,7 @@
 
 struct MemoryArena;
 
-#define TERRAIN_MAX_CHUNKS 3000
+#define TERRAIN_MAX_CHUNKS 4096
 #define CHUNK_DIM 16
 #define CHUNK_POW 4
 #define TERRAIN_CHUNK_MAX_VERTS 8192
@@ -40,7 +40,10 @@ struct Terrain
 
 struct TerrainProgress
 {
-    s32 i;
+    u32 num_to_gen;
+    s32 to_gen_x[32*32*32];
+    s32 to_gen_y[32*32*32];
+    s32 to_gen_z[32*32*32];
 };
 
 INTERNAL u64 pack_voxel_key(const s32 x, const s32 y, const s32 z)

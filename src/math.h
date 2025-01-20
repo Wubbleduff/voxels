@@ -21,12 +21,44 @@ INTERNAL inline f32 round_neg_inf(const f32 a)
     return _mm_cvtss_f32(_mm_round_ps(_mm_set1_ps(a), _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
 }
 
+INTERNAL inline u8 square_u8(const u8 n) { return n*n; }
+INTERNAL inline u16 square_u16(const u16 n) { return n*n; }
+INTERNAL inline u32 square_u32(const u32 n) { return n*n; }
+INTERNAL inline u64 square_u64(const u64 n) { return n*n; }
+
+INTERNAL inline s8 square_s8(const s8 n) { return n*n; }
+INTERNAL inline s16 square_s16(const s16 n) { return n*n; }
+INTERNAL inline s32 square_s32(const s32 n) { return n*n; }
+INTERNAL inline s64 square_s64(const s64 n) { return n*n; }
+
+INTERNAL inline u8 min_u8(const u8 a, const u8 b) { return a < b ? a : b; }
+INTERNAL inline u16 min_u16(const u16 a, const u16 b) { return a < b ? a : b; }
+INTERNAL inline u32 min_u32(const u32 a, const u32 b) { return a < b ? a : b; }
+INTERNAL inline u64 min_u64(const u64 a, const u64 b) { return a < b ? a : b; }
+
+INTERNAL inline s8 min_s8(const s8 a, const s8 b) { return a < b ? a : b; }
+INTERNAL inline s16 min_s16(const s16 a, const s16 b) { return a < b ? a : b; }
+INTERNAL inline s32 min_s32(const s32 a, const s32 b) { return a < b ? a : b; }
+INTERNAL inline s64 min_s64(const s64 a, const s64 b) { return a < b ? a : b; }
+
+INTERNAL inline u8 max_u8(const u8 a, const u8 b) { return a > b ? a : b; }
+INTERNAL inline u16 max_u16(const u16 a, const u16 b) { return a > b ? a : b; }
+INTERNAL inline u32 max_u32(const u32 a, const u32 b) { return a > b ? a : b; }
+INTERNAL inline u64 max_u64(const u64 a, const u64 b) { return a > b ? a : b; }
+
+INTERNAL inline s8 max_s8(const s8 a, const s8 b) { return a > b ? a : b; }
+INTERNAL inline s16 max_s16(const s16 a, const s16 b) { return a > b ? a : b; }
+INTERNAL inline s32 max_s32(const s32 a, const s32 b) { return a > b ? a : b; }
+INTERNAL inline s64 max_s64(const s64 a, const s64 b) { return a > b ? a : b; }
+
 #define H_PI 1.57079637f
 #define PI 3.14159274f
 #define TAU 6.28318548f
 #define INV_PI 0.318309873f
 #define INV_H_PI 0.636620f
 #define INV_TAU 0.159154937f
+// Pulled from the MSVC headers.
+#define INFINITY (f32)(1e300*1e300)
 
 typedef struct mtx4x4Tag
 {
@@ -169,12 +201,45 @@ INTERNAL inline v3 v3_normalize(v3 a)
     return r;
 }
 
-static inline __m256 lerp8(__m256 a, __m256 b, __m256 t)
+INTERNAL inline __m256 lerp8(__m256 a, __m256 b, __m256 t)
 {
     return _mm256_add_ps(
             _mm256_mul_ps(_mm256_sub_ps(_mm256_set1_ps(1.0f), t), a),
             _mm256_mul_ps(t, b)
             );
+}
+
+INTERNAL inline __m256 inv_lerp8(__m256 a, __m256 b, __m256 t)
+{
+    return _mm256_div_ps(
+            _mm256_sub_ps(t, a),
+            _mm256_sub_ps(b, a)
+            );
+}
+
+INTERNAL inline __m256 inv_smooth_lerp8(__m256 a, __m256 b, __m256 t)
+{
+    __m256 r = _mm256_div_ps(
+            _mm256_sub_ps(t, a),
+            _mm256_sub_ps(b, a)
+            );
+    __m256 r2 = _mm256_mul_ps(r, r);
+    __m256 r3 = _mm256_mul_ps(r2, r);
+    return _mm256_add_ps(
+            _mm256_mul_ps(
+                _mm256_set1_ps(-2.0f),
+                r3
+                ),
+            _mm256_mul_ps(
+                _mm256_set1_ps(3.0f),
+                r2
+                )
+            );
+}
+
+INTERNAL inline __m256 clamp8(__m256 a, __m256 b, __m256 t)
+{
+    return _mm256_max_ps(_mm256_min_ps(t, b), a);
 }
 
 INTERNAL inline __m256 approx_sin8(__m256 x)
