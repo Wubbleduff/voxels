@@ -537,7 +537,7 @@ void draw_game_state(struct GameState* game_state);
 void WinMainCRTStartup()
 {
     // Init application memory.
-    void* game_memory_starting_address = (void*)0x100000;
+    void* game_memory_starting_address = 0;
     void* game_memory_storage = VirtualAlloc(
         game_memory_starting_address,
         sizeof(struct GameMemory),

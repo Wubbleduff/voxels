@@ -6,7 +6,7 @@
 
 struct MemoryArena;
 
-#define TERRAIN_MAX_CHUNKS 4096
+#define TERRAIN_MAX_CHUNKS 8192
 #define CHUNK_DIM 16
 #define CHUNK_POW 4
 #define TERRAIN_CHUNK_MAX_VERTS 8192
